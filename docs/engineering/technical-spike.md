@@ -38,8 +38,7 @@ It grows out of the AlterLab launch-trailer pipeline (RapierCraftStudios/AlterLa
   - cloud: Postgres with row-level security per workspace, and S3-compatible object storage for media.
 - **Integrations:**
   - ElevenLabs (VO, SFX);
-  - image generation (OpenAI images; the Codex CLI as a local provider);
-  - a vision LLM for critique (Anthropic or OpenAI, pluggable);
+  - AI through the user's own subscriptions: ChatGPT through the official Codex CLI sign-in (text, image generation) and Claude through the official Claude Code sign-in (text, vision, agents). OAuth means no API keys, with keys as an optional fallback;
   - Playwright;
   - Blender 4.5 LTS;
   - ffmpeg;
@@ -244,8 +243,7 @@ Retention: media is kept until the project is deleted; caches are evicted LRU by
 | Credential or account | Env var(s) | needs-human issue | Mock in dev/CI |
 |-----------------------|------------|-------------------|----------------|
 | ElevenLabs API (paid plan, commercial licence) | `ELEVENLABS_API_KEY` | ElevenLabs paid plan and API key | `providers/mock_tts.py` (silent WAV with timed markers) |
-| Image generation (OpenAI images) | `OPENAI_API_KEY` | Image generation provider key | `providers/mock_image.py` (labelled placeholder frames) |
-| Vision critique model | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Vision model API key | `providers/mock_vision.py` (rubric-scored fixtures) |
+| AI providers: ChatGPT (images, text) and Claude (vision, text, agents) | none by default: the user's subscription sign-in via the official Codex CLI and Claude Code (OAuth); optional `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` fallback | none (the AI provider layer issue) | `providers/mock_image.py`, `providers/mock_vision.py` |
 | Music licensing source | `MUSIC_LIBRARY_API_KEY` | Music licensing source | `providers/mock_music.py` (generated click track) |
 | Domain + DNS (spectracut.com, .dev, .io) | `CLOUDFLARE_API_TOKEN` | Domains and DNS | n/a (localhost) |
 | Cloud VPS + GPU worker account | `DEPLOY_SSH_KEY`, `GPU_PROVIDER_API_KEY` | Cloud hosting and GPU account | local host agent |
@@ -256,7 +254,7 @@ Retention: media is kept until the project is deleted; caches are evicted LRU by
 | CLA bot + trademark clearance | `CLA_ASSISTANT_GIST_URL` | CLA and trademark | n/a |
 | Ad platform accounts (YouTube, Meta, TikTok, X, LinkedIn, Reddit) | `YOUTUBE_API_KEY`, `META_ACCESS_TOKEN` | Ad and analytics platform accounts | `providers/mock_metrics.py` |
 
-**Rationale**: each external input is something agents cannot create (accounts, payments, legal). Mocks keep every code path testable in dev and CI, so no build issue blocks on a human.
+**Rationale**: AI calls ride the user's existing ChatGPT and Claude subscriptions through the official CLIs' OAuth sign-in, so a new user needs no API keys and SpectraCut never stores AI tokens. For the hosted cloud, provider terms are checked before subscription sign-in is offered; until then the cloud uses each workspace's own keys. Each remaining external input is something agents cannot create (accounts, payments, legal). Mocks keep every code path testable in dev and CI, so no build issue blocks on a human.
 
 ## Milestone plan
 
