@@ -1,0 +1,8 @@
+# ForgeDock lane scratch and tool caches
+.forge-lean/
+.eslintcache
+*.tsbuildinfo
+
+# ForgeDock config (contains local paths)
+forge.yaml
+forge.yaml.bak
