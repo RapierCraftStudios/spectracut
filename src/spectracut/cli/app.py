@@ -11,6 +11,7 @@ from spectracut.cli.auth import auth_app
 from spectracut.cli.bench import bench_app
 from spectracut.cli.doctor import doctor
 from spectracut.cli.render import hosts_app, render_cmd, status_cmd
+from spectracut.cli.setup import setup_cmd
 from spectracut.cli.studio import studio_app
 
 app = typer.Typer(no_args_is_help=True, help="SpectraCut: an agent-run CGI studio.")
@@ -21,6 +22,7 @@ app.add_typer(hosts_app, name="hosts")
 app.command("render")(render_cmd)
 app.command("status")(status_cmd)
 app.command("doctor")(doctor)
+app.command("setup")(setup_cmd)
 
 
 @app.command("mcp")

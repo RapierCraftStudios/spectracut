@@ -146,7 +146,7 @@ def component_lines() -> list[str]:
     """Bundled components from the setup manifest (#80); a seam until it exists."""
     if importlib.util.find_spec("spectracut.setup") is None:
         return [NO_MANIFEST]
-    from spectracut import setup  # type: ignore[attr-defined]  # added by #80
+    from spectracut import setup
 
     report = getattr(setup, "component_lines", None)
     return [redact(line) for line in report()] if callable(report) else [NO_MANIFEST]
