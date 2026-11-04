@@ -37,6 +37,12 @@ from spectracut.setup.storage import (
     wifi_warnings,
     write_file_step,
 )
+from spectracut.setup.wheels import (
+    CONTROL_PLANE_PIN,
+    LocalWheels,
+    install_fields,
+    wheel_copy_steps,
+)
 from spectracut.spec._base import StrictModel
 from spectracut.studio.store import spectracut_home, write_atomic
 
@@ -115,8 +121,10 @@ def _roles(name: str, storage_host: str | None) -> set[Role]:
     return roles
 
 
-def _pins(manifest: Manifest, set_id: str) -> dict[str, str]:
-    return dict(manifest.tested_set(set_id).versions)
+def _pins(manifest: Manifest, set_id: str, wheels: LocalWheels) -> dict[str, str]:
+    """The set's pins; a component built on the control plane is pinned to its wheels."""
+    pins = dict(manifest.tested_set(set_id).versions)
+    return {c: wheels.pin if v == CONTROL_PLANE_PIN else v for c, v in pins.items()}
 
 
 def _worker_args(
@@ -273,20 +281,28 @@ def _install_steps(
     f: HostFacts,
     have: Mapping[str, str],
     roles: set[Role],
+    wheels: LocalWheels,
 ) -> list[Step]:
-    """Install steps for every component this machine's roles need and does not yet have."""
+    """Install steps for every component this machine's roles need and does not yet have.
+
+    A component built on the control plane (pinned to ``wheels.pin``) first gets its
+    wheels copied to the host.
+    """
     steps: list[Step] = []
+    fields = install_fields(f.os, wheels)
     for cname, comp in manifest.components.items():
         if not roles & set(comp.roles) or f.os not in comp.os:
             continue
         if have.get(cname) == pins[cname]:
             continue
+        if pins[cname] == wheels.pin:
+            steps += wheel_copy_steps(f, wheels)
         steps.append(
             Step(
                 f.name,
                 f"install:{cname}:{f.name}",
                 f"install {cname} {pins[cname]}",
-                comp.install[f.os].format(version=pins[cname]),
+                comp.install[f.os].format(**fields, version=pins[cname]),
                 "powershell" if f.os == "windows" else "sh",
                 component=cname,
                 version=pins[cname],
@@ -325,6 +341,8 @@ def build_plan(
     state: SetupState,
     cred: Credential,
     storage: StorageTarget | None = None,
+    *,
+    wheels: LocalWheels,
 ) -> Plan:
     """Steps still needed to bring every machine to ``set_id`` with storage on ``storage``.
 
@@ -333,7 +351,7 @@ def build_plan(
     """
     target = storage or state.storage or choose_default_host(facts)
     storage_host = target.host if target.kind == "host" else None
-    pins = _pins(manifest, set_id)
+    pins = _pins(manifest, set_id, wheels)
     manager_url = f"http://{facts[CONTROL].address}:{MANAGER_PORT}"
     gpu_src = gpu_script_source()
     gpu_hash = hashlib.sha256(gpu_src.encode("utf-8")).hexdigest()[:12]
@@ -343,7 +361,7 @@ def build_plan(
         f = facts[name]
         have = state.hosts.get(name, HostState()).components
         roles = _roles(name, storage_host)
-        steps += _install_steps(manifest, pins, f, have, roles)
+        steps += _install_steps(manifest, pins, f, have, roles, wheels)
         if name == CONTROL:
             svc = _service_steps(f, manager_url, pins["flamenco-manager"])
         elif name in workers:
@@ -415,7 +433,12 @@ class Bootstrapped:
 
 
 def bootstrap_host(
-    manifest: Manifest, alias: str, runner: BootstrapRunner, home: Path | None = None
+    manifest: Manifest,
+    alias: str,
+    runner: BootstrapRunner,
+    home: Path | None = None,
+    *,
+    wheels: LocalWheels,
 ) -> Bootstrapped:
     """Probe ``alias`` over SSH, run the host install steps and read its render profile.
 
@@ -425,11 +448,11 @@ def bootstrap_host(
     facts = runner.probe(alias)
     state = load_state(home)
     set_id = state.set_id or manifest.sets[0].id
-    pins = _pins(manifest, set_id)
+    pins = _pins(manifest, set_id, wheels)
     have = state.hosts.get(alias, HostState()).components
     gpu_src = gpu_script_source()
     gpu_hash = hashlib.sha256(gpu_src.encode("utf-8")).hexdigest()[:12]
-    steps = _install_steps(manifest, pins, facts, have, {"host"})
+    steps = _install_steps(manifest, pins, facts, have, {"host"}, wheels)
     steps += _worker_prep_steps(facts, have, pins, gpu_src, gpu_hash)
     profile_step = _profile_step(facts, f"{pins['spectracut-host']}+{pins['blender']}")
     if not any(s.id == profile_step.id for s in steps):

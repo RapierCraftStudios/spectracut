@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
+import spectracut
 from spectracut.cli.render import HostEntry
 from spectracut.queue.profile import RenderProfile
-from spectracut.setup.manifest import HostFacts, load_manifest
-from spectracut.setup.plan import SetupState, build_plan
+from spectracut.setup.manifest import HostFacts, Step, load_manifest
+from spectracut.setup.plan import Plan, SetupState, build_plan
 from spectracut.setup.storage import (
     CONTROL,
     Credential,
@@ -14,6 +18,7 @@ from spectracut.setup.storage import (
     storage_notes,
     windows_storage_source,
 )
+from spectracut.setup.wheels import LocalWheels
 
 CRED = Credential("spectracut-share", "pw-secret-value")
 FACTS = {
@@ -24,10 +29,24 @@ FACTS = {
 TARGET = StorageTarget(kind="host", host="legion")
 
 
-def _plan():  # type: ignore[no-untyped-def]
+def _fake_wheels(payload: bytes = b"code") -> LocalWheels:
+    """Two tiny stand-in wheel files; the same payload gives the same digest."""
+    d = Path(tempfile.mkdtemp(prefix="sc-wheels-"))
+    v = spectracut.__version__
+    core, host = d / f"spectracut-{v}-py3-none-any.whl", d / f"spectracut_host-{v}-py3-none-any.whl"
+    core.write_bytes(b"core:" + payload)
+    host.write_bytes(b"host:" + payload)
+    return LocalWheels.from_files(v, core, host)
+
+
+WHEELS = _fake_wheels()
+
+
+def _plan() -> Plan:
     return build_plan(
-        load_manifest(), "2026.11", FACTS, ["legion", "rig"], SetupState(), CRED, TARGET
-    )
+        load_manifest(), "2026.11", FACTS, ["legion", "rig"], SetupState(), CRED, TARGET,
+        wheels=WHEELS,
+    )  # fmt: skip
 
 
 def test_windows_storage_host_writes_admin_script_then_gates_then_mounts_and_maps() -> None:
@@ -91,7 +110,10 @@ class _SimulatedWindowsHost:
         self.share_ready = True
         self.password = None  # the script deletes the password file
 
-    def run(self, step):  # type: ignore[no-untyped-def]
+    def probe(self, host: str) -> HostFacts:
+        return FACTS[host]
+
+    def run(self, step: Step) -> str | None:
         from spectracut.setup.plan import SetupError
 
         self.ran.append(step.id)

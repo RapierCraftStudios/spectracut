@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import pytest
 import yaml
 from typer.testing import CliRunner
 
+import spectracut
 from spectracut.cli import setup as setup_cli
 from spectracut.cli.app import app
 from spectracut.setup.manifest import HostFacts, Step, load_manifest
@@ -32,6 +34,7 @@ from spectracut.setup.storage import (
     wifi_warnings,
     windows_storage_source,
 )
+from spectracut.setup.wheels import LocalWheels
 
 CRED = Credential("spectracut-share", "pw-secret-value")
 FACTS = {
@@ -40,6 +43,19 @@ FACTS = {
     "rig": HostFacts("rig", "linux", "100.64.0.3", wired=True, free_gb=900),
 }
 WORKERS = ["legion", "rig"]
+
+
+def _fake_wheels(payload: bytes = b"code") -> LocalWheels:
+    """Two tiny stand-in wheel files; the same payload gives the same digest."""
+    d = Path(tempfile.mkdtemp(prefix="sc-wheels-"))
+    v = spectracut.__version__
+    core, host = d / f"spectracut-{v}-py3-none-any.whl", d / f"spectracut_host-{v}-py3-none-any.whl"
+    core.write_bytes(b"core:" + payload)
+    host.write_bytes(b"host:" + payload)
+    return LocalWheels.from_files(v, core, host)
+
+
+WHEELS = _fake_wheels()
 
 
 class FakeRunner:
@@ -57,7 +73,9 @@ class FakeRunner:
 
 
 def _plan(state: SetupState, storage: StorageTarget | None = None):  # type: ignore[no-untyped-def]
-    return build_plan(load_manifest(), "2026.11", FACTS, WORKERS, state, CRED, storage)
+    return build_plan(
+        load_manifest(), "2026.11", FACTS, WORKERS, state, CRED, storage, wheels=WHEELS
+    )
 
 
 def test_default_storage_is_wired_machine_with_most_free_space() -> None:
@@ -174,6 +192,7 @@ def test_cli_setup_dry_run_and_idempotent_rerun(
     monkeypatch.setenv("SPECTRACUT_HOME", str(home))
     runner = FakeRunner()
     monkeypatch.setattr(setup_cli, "CommandRunner", lambda: runner)
+    monkeypatch.setattr(setup_cli, "build_wheels", lambda _out: WHEELS)
     cli = CliRunner()
     cli.invoke(app, ["hosts", "add", "--help"])
     (home).mkdir()
@@ -208,6 +227,11 @@ def test_spectracut_host_installed_and_profiled_on_every_worker(tmp_path: Path) 
     state = load_state(tmp_path)
     apply_plan(plan, runner, state, tmp_path)
     assert (tmp_path / "profiles" / "legion.json").read_text() == runner.out
+    recorded = load_state(tmp_path).hosts
+    for worker in WORKERS:
+        assert recorded[worker].components["spectracut-host"] == WHEELS.pin
+    copies = [s for s in runner.ran if s.id.startswith("wheel:")]
+    assert {s.host for s in copies} == set(WORKERS) and all(s.component is None for s in copies)
 
 
 def test_windows_worker_is_a_per_user_logon_task_under_the_profile() -> None:

@@ -30,6 +30,7 @@ from spectracut.queue.signing import (
 )
 from spectracut.setup.manifest import load_manifest
 from spectracut.setup.plan import CommandRunner, SetupError, bootstrap_host
+from spectracut.setup.wheels import build_wheels
 from spectracut.spec._base import Slug, StrictModel, canonical_json
 from spectracut.spec.recipe import Recipe
 from spectracut.studio.store import ProductionError, ProductionStore, spectracut_home, write_atomic
@@ -318,7 +319,10 @@ def hosts_add(
         profile = _read_model(profile_file, RenderProfile, "render profile")
     else:
         try:
-            found = bootstrap_host(load_manifest(), name, CommandRunner(), _home(home))
+            wheels = build_wheels(_home(home) / "wheels")
+            found = bootstrap_host(
+                load_manifest(), name, CommandRunner(), _home(home), wheels=wheels
+            )
         except (SetupError, ValueError, OSError) as exc:
             raise _fail(str(exc)) from exc
         profile = found.profile

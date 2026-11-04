@@ -14,8 +14,14 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+import spectracut
 from spectracut.cli.app import app
 from spectracut.cli.render import load_hosts
+
+HOST_VERSION = {
+    "linux": '"$HOME/.local/bin/spectracut-host" --version',
+    "windows": "& (Join-Path $env:USERPROFILE '.local/bin/spectracut-host.exe') --version",
+}
 
 ALIASES = [a for a in os.environ.get("SPECTRACUT_E2E_HOSTS", "").split(",") if a]
 
@@ -32,6 +38,16 @@ def test_hosts_add_bootstraps_real_hosts_and_setup_has_nothing_left_to_install(
         res = cli.invoke(app, ["hosts", "add", alias, "--role", "general"])
         assert res.exit_code == 0, res.output
     assert [s.name for s in load_hosts(home)] == ALIASES
+    from spectracut.setup.plan import CommandRunner
+
+    runner = CommandRunner(timeout=120)
+    for alias in ALIASES:
+        os_name = runner.probe(alias).os
+        shell = "powershell" if os_name == "windows" else "sh"
+        proc = runner._exec(alias, HOST_VERSION[os_name], shell, None)
+        assert proc.returncode == 0, proc.stderr
+        # installed from the control plane's wheels: same version, no PyPI release needed
+        assert proc.stdout.strip() == spectracut.__version__, alias
     dry = cli.invoke(app, ["setup", "--dry-run"])
     assert dry.exit_code == 0, dry.output
     for alias in ALIASES:

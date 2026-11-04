@@ -205,3 +205,15 @@ def test_profile_and_tags(host_env: dict[str, str]) -> None:
     assert data["gpu_driver"] == "560.94"
     tags = host(host_env, "tags", "--capability", "eevee")
     assert tags.stdout.split() == ["4070ti", "vram-12gb", "eevee"]
+
+
+def test_version_flag_prints_the_installed_package_version() -> None:
+    import os
+
+    import spectracut_host
+
+    import spectracut
+
+    res = host(dict(os.environ), "--version")
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == spectracut_host.__version__ == spectracut.__version__

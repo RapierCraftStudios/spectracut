@@ -135,7 +135,7 @@ SYSTEM_TOOLS = {
 
 
 def test_first_command_token_of_every_install_and_version_cmd_resolves() -> None:
-    """The first token of each install/version_cmd is with a shipped script or a whitelisted tool."""
+    """The first token of each install/version_cmd is a shipped script or a whitelisted tool."""
     shipped: set[str] = set()
     for pyproject in (ROOT / "pyproject.toml", ROOT / "host" / "pyproject.toml"):
         shipped |= set(tomllib.loads(pyproject.read_text())["project"]["scripts"])
@@ -198,3 +198,48 @@ def test_powershell_commands_silence_progress_and_report_the_real_error(
     assert script.startswith("$ProgressPreference = 'SilentlyContinue';")
     assert str(err.value).endswith("Method invocation failed")
     assert "CLIXML" not in str(err.value) and "<" not in str(err.value)
+
+
+def test_doctor_judges_spectracut_host_by_the_control_plane_version(tmp_path: Path) -> None:
+    import spectracut
+
+    m = load_manifest()
+    v = spectracut.__version__
+    assert f"spectracut-host {v}: not installed" in component_lines(tmp_path, m)
+    save_state(
+        SetupState(
+            set_id="2026.11",
+            hosts={
+                "legion": HostState(components={"spectracut-host": f"{v}+0123456789ab"}),
+                "rig": HostState(components={"spectracut-host": "9.9.9+0123456789ab"}),
+            },
+        ),
+        tmp_path,
+    )
+    lines = component_lines(tmp_path, m)
+    assert f"spectracut-host {v}+0123456789ab on legion: healthy" in lines
+    assert f"spectracut-host 9.9.9+0123456789ab on rig: drift (pinned {v})" in lines
+
+
+def test_spectracut_host_installs_from_local_wheels_not_pypi() -> None:
+    m = load_manifest()
+    assert m.sets[0].versions["spectracut-host"] == "control-plane"
+    comp = m.components["spectracut-host"]
+    fields = {
+        "wheel_dir": "W",
+        "spectracut_wheel": "W/spectracut-1.2.3-py3-none-any.whl",
+        "host_wheel": "W/spectracut_host-1.2.3-py3-none-any.whl",
+        "public_version": "1.2.3",
+    }
+    for os_name, raw in comp.install.items():
+        cmd = raw.format(version="1.2.3+abc", **fields)
+        assert "{{" not in cmd and "}}" not in cmd, os_name
+        assert '--find-links "W"' in cmd and "--reinstall" in cmd
+        assert '--with "W/spectracut-1.2.3-py3-none-any.whl"' in cmd
+        assert '"W/spectracut_host-1.2.3-py3-none-any.whl"' in cmd
+        assert "spectracut-host==" not in cmd
+        assert "--version" in cmd and "1.2.3" in cmd
+        assert comp.version_cmd[os_name].endswith("--version")
+    assert re.search(
+        r"-ne '1\.2\.3'\) \{ throw ", comp.install["windows"].format(**fields, version="")
+    )

@@ -33,6 +33,7 @@ from spectracut.setup.storage import (
     StorageTarget,
     parse_storage_host,
 )
+from spectracut.setup.wheels import build_wheels
 
 SHARE_USER = "spectracut-share"
 NAS_USER_ENV = "SPECTRACUT_NAS_USER"
@@ -96,7 +97,8 @@ def setup_cmd(
         runner: StepRunner = CommandRunner()
         facts: dict[str, HostFacts] = {n: runner.probe(n) for n in (CONTROL, *workers)}
         cred = share_credential(root, target or state.storage)
-        plan = build_plan(manifest, set_id, facts, workers, state, cred, target)
+        wheels = build_wheels(root / "wheels")
+        plan = build_plan(manifest, set_id, facts, workers, state, cred, target, wheels=wheels)
         for note in plan.notes:
             typer.echo(f"warning: {note}")
         if not plan.steps:

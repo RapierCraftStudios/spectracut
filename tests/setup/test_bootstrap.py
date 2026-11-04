@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+import spectracut
 from spectracut.cli import render as render_cli
 from spectracut.cli.app import app
 from spectracut.cli.render import load_hosts
@@ -22,10 +24,24 @@ from spectracut.setup.plan import (
     load_state,
 )
 from spectracut.setup.storage import CONTROL, Credential
+from spectracut.setup.wheels import LocalWheels
 
 PROFILE = RenderProfile(
     blender_version="4.2.3", gpu_model="NVIDIA GeForce RTX 4070 Ti", vram_gb=12, os="linux"
 )
+
+
+def _fake_wheels(payload: bytes = b"code") -> LocalWheels:
+    """Two tiny stand-in wheel files; the same payload gives the same digest."""
+    d = Path(tempfile.mkdtemp(prefix="sc-wheels-"))
+    v = spectracut.__version__
+    core, host = d / f"spectracut-{v}-py3-none-any.whl", d / f"spectracut_host-{v}-py3-none-any.whl"
+    core.write_bytes(b"core:" + payload)
+    host.write_bytes(b"host:" + payload)
+    return LocalWheels.from_files(v, core, host)
+
+
+WHEELS = _fake_wheels()
 
 
 class FakeHost:
@@ -55,6 +71,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _use(monkeypatch: pytest.MonkeyPatch, fake: FakeHost) -> None:
     monkeypatch.setattr(render_cli, "CommandRunner", lambda: fake)
+    monkeypatch.setattr(render_cli, "build_wheels", lambda _out: WHEELS)
 
 
 def test_general_host_is_installed_profiled_and_registered_under_its_alias(
@@ -68,6 +85,12 @@ def test_general_host_is_installed_profiled_and_registered_under_its_alias(
     assert "install:spectracut-host:legion" in ids
     assert "install:blender:legion" in ids
     assert ids[-1] == "host:profile:legion"
+    copies = [i for i in ids if i.startswith("wheel:")]
+    assert copies == [f"wheel:{w.name}:legion" for w in WHEELS.files]
+    assert max(ids.index(c) for c in copies) < ids.index("install:spectracut-host:legion")
+    (install,) = [s for s in fake.ran if s.id == "install:spectracut-host:legion"]
+    assert install.version == WHEELS.pin
+    assert load_state(home).hosts["legion"].components["spectracut-host"] == WHEELS.pin
     (slot,) = load_hosts(home)
     assert (slot.name, slot.cpus, slot.mem_gb, slot.build_lanes) == ("legion", 16, 64, True)
     assert slot.profile == PROFILE
@@ -122,7 +145,7 @@ def test_setup_after_bootstrap_has_no_host_install_steps(
     manifest = load_manifest()
     plan = build_plan(
         manifest, state.set_id or manifest.sets[0].id, facts, ["legion"], state,
-        Credential("u", "p"),
+        Credential("u", "p"), wheels=WHEELS,
     )  # fmt: skip
     ids = [s.id for s in plan.steps if s.host == "legion"]
     # Blender, the worker and spectracut-host are in place; storage and the service are setup's.
@@ -137,6 +160,11 @@ def test_explicit_profile_file_path_needs_no_ssh(
     home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _use(monkeypatch, FakeHost(fail="must not be called"))
+
+    def no_build(_out: Path) -> LocalWheels:
+        raise AssertionError("--profile-file must not build wheels")
+
+    monkeypatch.setattr(render_cli, "build_wheels", no_build)
     pf = tmp_path / "p.json"
     pf.write_text(json.dumps(PROFILE.model_dump()), encoding="utf-8")
     args = ["hosts", "add", "rig", "--cpus", "4", "--mem-gb", "8", "--profile-file", str(pf)]

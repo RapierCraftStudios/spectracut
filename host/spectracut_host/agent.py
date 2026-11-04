@@ -13,6 +13,9 @@ Commands::
         Print this host's render profile (Blender version, GPU model, driver).
     spectracut-host tags [--capability NAME ...]
         Print the Flamenco worker tags for this host (GPU model, VRAM, capabilities).
+    spectracut-host --version
+        Print the installed spectracut-host version (setup checks it equals the
+        control plane's).
 
 Exit codes: 0 done, 1 usage, 2 refused by the guard, 3 render failed, 4 pull failed.
 """
@@ -31,6 +34,7 @@ from typing import Protocol
 
 from spectracut.queue.profile import RenderProfile, frame_cache_key
 from spectracut.queue.signing import JobSignatureError, SignedJob, parse_signed_job
+from spectracut_host import __version__
 from spectracut_host.guard import ExecutionGuard, GuardRefused, load_registration
 from spectracut_host.profile import DEFAULT_CAPABILITIES, probe_profile, worker_tags
 
@@ -182,6 +186,7 @@ def cmd_once(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="spectracut-host", description=__doc__.split("\n")[0])
+    parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--once", action="store_true", help="pull one job, run it and exit")
     parser.add_argument("--job", help="job id for --once")
     parser.add_argument("--jobs-dir", help="shared-storage directory of signed jobs (--once)")
