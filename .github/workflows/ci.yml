@@ -37,6 +37,18 @@ jobs:
       - name: Pytest
         run: uv run pytest -q
 
+  network:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: uv sync --locked
+      - name: Manifest URLs resolve
+        run: SPECTRACUT_NETWORK=1 uv run pytest -q tests/setup/test_manifest_urls.py
+
   node:
     runs-on: ubuntu-latest
     steps:
