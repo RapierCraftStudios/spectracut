@@ -316,7 +316,8 @@ def plan_storage(
                 name,
                 f"storage:restart-worker:{name}",
                 "restart the Flamenco Worker",
-                "Restart-ScheduledTask -TaskName spectracut-worker"
+                "Stop-ScheduledTask -TaskName spectracut-worker -ErrorAction SilentlyContinue; "
+                "Start-ScheduledTask -TaskName spectracut-worker"
                 if facts[name].os == "windows"
                 else "systemctl --user restart spectracut-worker",
                 "powershell" if facts[name].os == "windows" else "sh",
