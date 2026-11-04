@@ -107,7 +107,7 @@ Prompt: describe the clip in 2 sentences, rate quality 1-5, list defects.
 | Model | Licence | Card | VRAM | Time | Answer quality |
 |---|---|---|---|---|---|
 | Qwen2.5-Omni-7B Q4_K_M + mmproj Q8_0 (`ggml-org/Qwen2.5-Omni-7B-GGUF`) | Apache-2.0 | 3070 8 GB (real) | 7.25 GB (all layers on GPU, ctx 8192) | 12 s per clip incl. load | Kokoro clip: "synthesised female voice ... high quality" (correct, but it did not hear the words); ACE clip: "melodic electronic tune with synth pattern and steady drum beat ... 4/5" (plausible). Coarse critic, cannot be trusted for defect spotting alone |
-| Qwen3-Omni-30B-A3B Q4_K_M with expert offload | Apache-2.0 | | | | QWEN3_RESULT_PLACEHOLDER |
+| Qwen3-Omni-30B-A3B Q4_K_M with expert offload | Apache-2.0 | | | | **Not measured**: the 17.3 GB Q4_K_M + 1.2 GB mmproj download to `legion` ran at about 2 MB/s (4.4 GB after about 50 min) and was stopped; partial files deleted. Whether it fits 8 GB VRAM + 34 GB RAM with `--n-cpu-moe` is still open. To run it: `run.ps1 tts hf_get.py ggml-org/Qwen3-Omni-30B-A3B-Instruct-GGUF Qwen3-Omni-30B-A3B-Instruct-Q4_K_M.gguf mmproj-Qwen3-Omni-30B-A3B-Instruct-Q8_0.gguf` then `omni_llama.ps1 -NCpuMoe 30 -Cuda 12.4 ...` on `legion` only (RAM rule) |
 
 RAM peak 4.7 GB on `legion`. Needs more than the `mrdubey-1` 4 GB cap once the model is memory-mapped, so run it on `legion`.
 
@@ -130,7 +130,7 @@ models are small enough that it will fit).
 | Music | ACE-Step 1.5 turbo (DiT, add LM 0.6B for structure) | HeartMuLa-oss-3B (not measured) | 7.2 GB DiT / 8.6 GB +LM; 5.9 / 6.6 GB with offload | yes with offload (emulated) | yes (real) | 2-7 s DiT, 24-35 s +LM per 30 s | repo clone + `uv sync`, Windows native | MIT |
 | Image | Z-Image-Turbo, GGUF Q8_0 on 12 GB, Q4_K_M on 8 GB | FLUX.2 klein 4B (not measured) | 8.0-8.4 GB with offload | yes, no headroom (real) | yes (real) | 22 s (12 GB), 37 s (8 GB) per 1024^2 | `diffusers` + `gguf`, Windows native | Apache-2.0 |
 | SFX | Stable Audio Open 1.0 (owner action: HF token + licence acceptance), not measured | MOSS-SoundEffect 8B NF4 (measured) | 11 GB (MOSS) | no (MOSS) | yes, barely (MOSS) | about 100 s per 10 s clip (MOSS) | `transformers==5.0.0` + bitsandbytes, local snapshot path | Stability AI Community / Apache-2.0 |
-| Omni critic | Qwen2.5-Omni-7B Q4_K_M via llama.cpp | Qwen3-Omni-30B-A3B (see row above) | 7.25 GB | yes, tight (real) | yes | 12 s per clip | llama.cpp prebuilt CUDA 12.4 zip + two GGUF files | Apache-2.0 |
+| Omni critic | Qwen2.5-Omni-7B Q4_K_M via llama.cpp | Qwen3-Omni-30B-A3B (not measured), LFM3-Omni-2B (not measured) | 7.25 GB | yes, tight (real) | yes | 12 s per clip | llama.cpp prebuilt CUDA 12.4 zip + two GGUF files | Apache-2.0 |
 | ASR / alignment | faster-whisper large-v3-turbo | | 2.3 GB | expected | yes (real) | 0.34 s per 10 s | uv + CUDA DLL dirs | MIT |
 | CLAP | laion/larger_clap_general | | 0.9 GB | expected | yes (real) | 0.8 s | transformers | Apache-2.0 |
 | Video-to-audio foley | not measured | | | | | | | HunyuanVideo-Foley XL: Tencent community; ThinkSound: Apache-2.0 |
@@ -156,6 +156,7 @@ models are small enough that it will fit).
 | Video-to-audio foley (HunyuanVideo-Foley XL, ThinkSound) | 17 GB+ downloads at 1-4 MB/s plus an offload path that the 4 GB RAM rule forbids on `mrdubey-1`; ran out of time budget |
 | Image-to-3D (Pixal3D, Hunyuan3D-2.1) | same: large downloads, then the RAM rule; lowest priority in the brief |
 | Motion (Kimodo-SOMA-RP) | same; Windows support unverified |
+| Qwen3-Omni-30B-A3B GGUF (job 5 headline candidate) | download too slow (about 2 MB/s, 18.5 GB); stopped part-way |
 | HeartMuLa, Chatterbox-Turbo, Qwen3-TTS-0.6B, FLUX.2 klein 4B, LFM3-Omni-2B | second candidates, skipped for time; the first pick for each job was measured first |
 | Real 8 GB run of ACE-Step | 10 GB download to `legion` at about 1 MB/s; emulated with an 8 GiB cap instead |
 | Real 12 GB re-runs under the 4 GB RAM rule | cap arrived after the runs; the re-run was killed at the limit, which is itself the finding |
