@@ -1,0 +1,51 @@
+[
+  {
+    "path": "manual/render/transparent-background",
+    "title": "Rendering with a transparent background",
+    "text": "To cut the subject out of the background, turn on transparent film. The world still lights the scene but is not drawn, and the output keeps an alpha channel. Save to a format with alpha such as PNG RGBA.",
+    "see": ["bpy.types.RenderSettings.film_transparent"]
+  },
+  {
+    "path": "manual/render/color-management",
+    "title": "Colour management: view transforms, looks and exposure",
+    "text": "The view transform turns scene light into display colour; AgX is the default and keeps bright highlights from clipping. Looks add contrast presets. Exposure shifts brightness in stops before the transform.",
+    "see": [
+      "bpy.types.ColorManagedViewSettings.view_transform",
+      "bpy.types.ColorManagedViewSettings.look",
+      "bpy.types.ColorManagedViewSettings.exposure"
+    ]
+  },
+  {
+    "path": "manual/render/motion-blur",
+    "title": "Motion blur",
+    "text": "Motion blur smears moving things over the time the shutter is open. Turn it on and set the shutter length in frames; half a frame is a common film look.",
+    "see": [
+      "bpy.types.RenderSettings.use_motion_blur",
+      "bpy.types.RenderSettings.motion_blur_shutter"
+    ]
+  },
+  {
+    "path": "manual/render/sampling",
+    "title": "Render sampling and noise",
+    "text": "Each renderer averages several samples per pixel. Cycles uses path tracing samples; EEVEE uses anti-aliasing samples. Raise samples to reduce noise and jagged edges at the cost of render time.",
+    "see": ["bpy.types.CyclesRenderSettings.samples", "bpy.types.SceneEEVEE.taa_render_samples"]
+  },
+  {
+    "path": "manual/camera/depth-of-field",
+    "title": "Camera depth of field",
+    "text": "Depth of field blurs what is in front of or behind the focus distance. A low f-stop gives a shallow, soft background that isolates a product.",
+    "see": ["bpy.types.CameraDOFSettings.use_dof", "bpy.types.CameraDOFSettings.aperture_fstop"]
+  },
+  {
+    "path": "manual/render/output-resolution",
+    "title": "Output resolution and aspect",
+    "text": "Width and height set the frame size and aspect ratio; the percentage scales both for quick previews.",
+    "see": ["bpy.types.RenderSettings.resolution_x", "bpy.types.RenderSettings.resolution_y"]
+  },
+  {
+    "path": "manual/render/frame-rate",
+    "title": "Frame rate",
+    "text": "Frames per second decide how long each frame lasts in playback. 24, 25, 30 and 60 are common delivery rates.",
+    "see": ["bpy.types.RenderSettings.fps"]
+  }
+]
