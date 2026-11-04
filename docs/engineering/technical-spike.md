@@ -302,7 +302,8 @@ SpectraCut works the way a CGI studio makes a film entirely in Blender, from und
    - **Intake:** interview the user about goal, product, offer, deadline and where the video will run.
    - **Product understanding:** read the product's site and docs, and capture the live product.
    - **Audience research:** who exactly is watching (personas), what they already know, what they care about, what they distrust (e.g. developers distrust hype), and what each platform's viewers expect (pace, length, sound-off viewing, hook in the first seconds).
-   - **Reference analysis:** break down reference videos the user likes, or category examples, into structure, pacing, shot types and sound. This is used for the craft only; references are never copied, and real brands never appear.
+   - **Reference analysis:** break down reference videos the user likes, or category examples, into structure, pacing, shot types and sound.
+   - **Style references are briefs.** "Make it feel like Star Wars", "a Warhammer-style episode", "sound like a Nolan trailer": SpectraCut treats a named film, franchise or artist as a style direction, the way a director briefs a crew. The Director and department agents translate it into concrete attributes (e.g. a brass-led orchestral fanfare with leitmotifs, organic-mechanical sci-fi sound design, gothic grimdark production design, low-key lighting with a grit-heavy Look), then make original material with that feel. No lecturing and no refusing a reference.
    - **Output: the creative brief.** One core message, proof points with sources, tone, audience, success measure, constraints. Approved before anything else.
 2. **Development: the idea.**
    - Several concepts and treatments written in parallel, each with a logline, a structure and why it fits this audience.
@@ -428,7 +429,7 @@ So long-form productions:
 - spend Cycles time only on approved shots;
 - can rent extra GPUs through the same executor interface when a deadline needs it.
 
-**Third-party IP.** The brand guardrail applies to stories as well as logos. Franchise characters, factions and settings (e.g. Warhammer) are used only when the brief's owner holds the rights. For testing long-form, SpectraCut uses original settings and characters in the same genre.
+**Style references are welcome.** "An episode that feels like Warhammer" is a style brief: SpectraCut builds an original setting, characters and sound with that aura (see Discovery). What it makes is new material in the spirit of the reference, not copies of a franchise's actual characters, logos, melodies or recordings. Long-form test pieces and the cinematic universe use original worlds built this way.
 
 **Rationale**: long films fail on consistency and character performance more than on single-frame beauty. A versioned canon, hierarchical consolidation and a calibrated Critic target the first. Assets plus motion tools plus a human polish gate target the second until the tools close the gap. Climbing the ladder from product films keeps SpectraCut useful and ground-breaking on the work RapierCraft needs now, while building toward narrative film. Rejected:
 - promising narrative-film quality before the benchmarks show it;
@@ -513,12 +514,15 @@ A sound-design agent (with a sound-design skill pack and rubric) turns those eve
 
 The exact versions, and whether each tool's headless mode works as needed (especially Ardour's headless render from its Lua tool), are confirmed in the first audio issue before the design depends on them. Every tool runs as a separate program or library call. None of them is copied into SpectraCut's code, so their licences stay compatible with AGPL distribution.
 
-**Sound sources and licensing:**
-- **Procedural** (SuperCollider, Surge XT): owned outright, commercial-safe by default.
-- **Libraries the user has licensed** (e.g. the free Sonniss GDC bundles, or paid libraries): indexed locally, never redistributed in the repo.
-- **Freesound:** CC0 only for commercial work.
-- **Generative models** (ElevenLabs SFX, open audio models): used only where their licence allows commercial use, and recorded per asset.
-- **Not commercial-safe:** libraries such as BBC Sound Effects, whose licence is non-commercial, are allowed for previews but never in a commercial-safe master. Every sound carries a `LicenseRecord`; one non-commercial sound marks the whole master non-commercial-safe.
+**Where the sounds come from:**
+- **Generative audio is a main source, not a fallback.** AI audio models produce the bulk of designed sound and score: original, high-quality, and owned by the user under the model's commercial terms.
+  - **Sound effects and designed layers:** text-to-audio models (e.g. ElevenLabs SFX, open models) generate impacts, whooshes, textures and ambiences from each cue's description.
+  - **Foley:** video-to-audio models generate sound matched to the rendered picture.
+  - **Score:** music-generation models (hosted, or open models on a render-host GPU) generate music from a brief written by the sound-design agent, in stems where possible, then cut to picture.
+  - Generations are prompted from the cue (event type, size, duration, the Look's sonic palette), several candidates are generated in parallel, and the audio critic picks the best. The DAW then handles exact timing, layering and the mix, which generation alone can't do frame-accurately.
+- **Procedural** (SuperCollider, Surge XT) for precisely shaped elements: risers that must peak on an exact frame, UI tones, sub drops.
+- **Libraries** the user owns (e.g. the Sonniss GDC bundles, paid libraries), indexed locally and searchable.
+- **Bookkeeping, not friction:** every sound records where it came from (model and plan, library, procedural). That's automatic, so the user can show provenance for any master; it never interrupts the creative process. The one hard rule: material from sources marked non-commercial (e.g. BBC Sound Effects) doesn't end up in a master you publish.
 
 **Delivery specs** (per-platform loudness presets):
 - streaming and social: −14 LUFS integrated, ≤ −1 dBTP;
@@ -543,7 +547,7 @@ The exact versions, and whether each tool's headless mode works as needed (espec
 **Rationale**: a film-grade result needs a full mix environment, not a chain of ffmpeg filters. Generating an Ardour session keeps the mix inspectable and lets a human sound designer take over at any point, just as OpenTimelineIO does for the picture edit. Procedural design in SuperCollider gives a large range of owned, commercial-safe sounds from parameters, and suits cues driven by exact on-screen events. Rejected:
 - ffmpeg filter graphs as the mix engine: no plugin hosting, buses or automation, and no human hand-off;
 - a closed DAW such as Reaper (scriptable but not open source) as the required engine; it can be added later as an optional export target;
-- relying only on generative audio models: hard to control, licences vary, and they can't hit frame-exact events.
+- generative audio with no DAW behind it: models give great raw sound, but frame-exact timing, layering and a real mix need the session.
 
 ## Optional integrations: tokenbaton, computeshare, ForgeDock
 
