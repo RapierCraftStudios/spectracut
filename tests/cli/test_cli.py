@@ -157,7 +157,7 @@ def test_doctor_all_off_without_config(home: Path) -> None:
     lines = result.output.splitlines()
     assert lines[:3] == ["tokenbaton: off", "computeshare: off", "forgedock: off"]
     assert "components:" in lines
-    assert "  setup manifest: not installed (see spectracut setup)" in lines
+    assert "  blender 4.5.15: not installed" in lines
 
 
 def test_doctor_on_and_healthy_with_probes(
@@ -194,7 +194,8 @@ def test_doctor_on_and_healthy_with_probes(
     data = json.loads(as_json.output)
     states = {i["name"]: i["state"] for i in data["integrations"]}
     assert states == {"tokenbaton": "on", "computeshare": "healthy", "forgedock": "off"}
-    assert data["components"] == ["setup manifest: not installed (see spectracut setup)"]
+    assert data["components"][0] == "tested set 2026.11"
+    assert "blender 4.5.15: not installed" in data["components"]
 
 
 def test_integration_reports_probe_crash_is_unhealthy() -> None:

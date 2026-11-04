@@ -1,0 +1,121 @@
+# Every bundled component, pinned. `spectracut setup` installs exactly the
+# versions of the active tested set; `spectracut setup --upgrade` moves to the
+# next set listed under `sets`. Add a set only after the whole set has been
+# rendered end to end. Install snippets run on the target (sh on Linux,
+# PowerShell on Windows); {version} is the pin.
+components:
+  blender:
+    description: Blender 4.5 LTS (render hosts only; never the control plane)
+    roles: [host]
+    os: [linux, windows]
+    version_cmd: {linux: "blender --version", windows: "blender --version"}
+    install:
+      linux: >-
+        mkdir -p ~/.local/opt && curl -fsSL
+        https://download.blender.org/release/Blender4.5/blender-{version}-linux-x64.tar.xz
+        | tar -xJ -C ~/.local/opt
+      windows: >-
+        Invoke-WebRequest https://download.blender.org/release/Blender4.5/blender-{version}-windows-x64.zip
+        -OutFile $env:TEMP\blender.zip; Expand-Archive -Force $env:TEMP\blender.zip C:/spectracut
+  flamenco-manager:
+    description: Flamenco Manager on the control plane, listening on the Tailscale address only
+    roles: [control]
+    os: [linux]
+    version_cmd: {linux: "flamenco-manager -version"}
+    install:
+      linux: >-
+        mkdir -p ~/.local/opt/flamenco && curl -fsSL
+        https://flamenco.blender.org/downloads/flamenco-{version}-linux-amd64.tar.gz
+        | tar -xz --strip-components=1 -C ~/.local/opt/flamenco
+  flamenco-worker:
+    description: Flamenco Worker, native on every render host
+    roles: [host]
+    os: [linux, windows]
+    version_cmd: {linux: "flamenco-worker -version", windows: "flamenco-worker.exe -version"}
+    install:
+      linux: >-
+        mkdir -p ~/.local/opt/flamenco && curl -fsSL
+        https://flamenco.blender.org/downloads/flamenco-{version}-linux-amd64.tar.gz
+        | tar -xz --strip-components=1 -C ~/.local/opt/flamenco
+      windows: >-
+        Invoke-WebRequest https://flamenco.blender.org/downloads/flamenco-{version}-windows-amd64.zip
+        -OutFile $env:TEMP\flamenco.zip; Expand-Archive -Force $env:TEMP\flamenco.zip C:/spectracut
+  samba:
+    description: Samba share for Flamenco storage (only on a Linux storage host)
+    roles: [storage]
+    os: [linux]
+    version_cmd: {linux: "smbd --version"}
+    install:
+      linux: >-
+        if command -v pacman >/dev/null; then sudo pacman -S --needed --noconfirm samba;
+        else sudo apt-get install -y samba; fi
+  ardour:
+    description: Ardour DAW, driven headless from its Lua tool
+    roles: [control]
+    os: [linux]
+    version_cmd: {linux: "ardour8-lua --version"}
+    install:
+      linux: >-
+        if command -v pacman >/dev/null; then sudo pacman -S --needed --noconfirm ardour;
+        else sudo apt-get install -y ardour; fi
+  supercollider:
+    description: SuperCollider for non-realtime synthesis
+    roles: [control]
+    os: [linux]
+    version_cmd: {linux: "scsynth -v"}
+    install:
+      linux: >-
+        if command -v pacman >/dev/null; then sudo pacman -S --needed --noconfirm supercollider;
+        else sudo apt-get install -y supercollider; fi
+  audio-plugins:
+    description: LSP, x42, Airwindows, Dragonfly, Surge XT, IEM and the EBU ADM renderer
+    roles: [control]
+    os: [linux]
+    version_cmd: {linux: "spectracut-plugins --version"}
+    install:
+      linux: >-
+        if command -v pacman >/dev/null; then sudo pacman -S --needed --noconfirm lsp-plugins x42-plugins dragonfly-reverb surge-xt;
+        else sudo apt-get install -y lsp-plugins x42-plugins dragonfly-reverb surge-xt; fi
+  local-models:
+    description: Local speech, sound-effect, music and vision models
+    roles: [control]
+    os: [linux]
+    version_cmd: {linux: "spectracut-models --version"}
+    install:
+      linux: "spectracut-models fetch --set {version}"
+  polyhaven-assets:
+    description: Poly Haven CC0 HDRIs, materials and models
+    roles: [control]
+    os: [linux]
+    version_cmd: {linux: "spectracut-assets version polyhaven"}
+    install:
+      linux: "spectracut-assets fetch polyhaven --snapshot {version}"
+  ambientcg-assets:
+    description: ambientCG CC0 materials
+    roles: [control]
+    os: [linux]
+    version_cmd: {linux: "spectracut-assets version ambientcg"}
+    install:
+      linux: "spectracut-assets fetch ambientcg --snapshot {version}"
+  addons:
+    description: Bundled Blender add-ons (Camera Shakify, Rigify, MPFB2)
+    roles: [host]
+    os: [linux, windows]
+    version_cmd: {linux: "spectracut-addons version", windows: "spectracut-addons.exe version"}
+    install:
+      linux: "spectracut-addons install --set {version}"
+      windows: "spectracut-addons.exe install --set {version}"
+sets:
+  - id: "2026.11"
+    versions:
+      blender: "4.5.15"
+      flamenco-manager: "3.9.3"
+      flamenco-worker: "3.9.3"
+      samba: "4.21"
+      ardour: "8.12"
+      supercollider: "3.13.1"
+      audio-plugins: "2026.11"
+      local-models: "2026.11"
+      polyhaven-assets: "2026.11"
+      ambientcg-assets: "2026.11"
+      addons: "2026.11"

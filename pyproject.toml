@@ -11,6 +11,7 @@ dependencies = [
     "mcp>=1.30,<2",
     "opentimelineio>=0.17,<0.19",
     "pydantic>=2.9,<3",
+    "pyyaml>=6.0",
     "typer>=0.12",
 ]
 
@@ -24,6 +25,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/spectracut"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"scripts/flamenco_enable_gpu.py" = "spectracut/setup/flamenco_enable_gpu.py"
+
 [tool.uv.workspace]
 members = ["host"]
 
@@ -34,7 +38,6 @@ spectracut-host = { workspace = true }
 dev = [
     "mypy>=1.13",
     "pytest>=8.3",
-    "pyyaml>=6.0",
     "ruff>=0.8",
     "spectracut-host",
     "types-pyyaml>=6.0",
