@@ -186,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--job", help="job id for --once")
     parser.add_argument("--jobs-dir", help="shared-storage directory of signed jobs (--once)")
     parser.add_argument("--output", help="output directory (--once)")
-    parser.add_argument("--blender", help=f"Blender binary (default ${BLENDER_ENV} or blender)")
+    parser.add_argument("--blender", help=f"Blender binary (default ${{{BLENDER_ENV}}} or blender)")
     sub = parser.add_subparsers(dest="command")
 
     run = sub.add_parser("run", help="verify and render a signed job file")
