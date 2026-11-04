@@ -16,7 +16,9 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
+from spectracut.queue.profile import RenderProfile
 from spectracut.setup.manifest import HostFacts, Manifest, Os, Role, Shell, Step, StepRunner
 from spectracut.setup.storage import (
     CONTROL,
@@ -45,6 +47,7 @@ HOST_PSEUDO = "host-profile"
 WORKER_SCRIPT = "windows_worker.ps1"
 PROFILE_DIR = "profiles"
 LINUX_BIN = "$HOME/.local/bin"
+SSH_ERROR = 255
 
 
 class HostState(StrictModel):
@@ -263,6 +266,56 @@ def _windows_worker_files(
     return files
 
 
+def _install_steps(
+    manifest: Manifest,
+    pins: Mapping[str, str],
+    f: HostFacts,
+    have: Mapping[str, str],
+    roles: set[Role],
+) -> list[Step]:
+    """Install steps for every component this machine's roles need and does not yet have."""
+    steps: list[Step] = []
+    for cname, comp in manifest.components.items():
+        if not roles & set(comp.roles) or f.os not in comp.os:
+            continue
+        if have.get(cname) == pins[cname]:
+            continue
+        steps.append(
+            Step(
+                f.name,
+                f"install:{cname}:{f.name}",
+                f"install {cname} {pins[cname]}",
+                comp.install[f.os].format(version=pins[cname]),
+                "powershell" if f.os == "windows" else "sh",
+                component=cname,
+                version=pins[cname],
+            )
+        )
+    return steps
+
+
+def _worker_prep_steps(
+    f: HostFacts, have: Mapping[str, str], pins: Mapping[str, str], gpu_src: str, gpu_hash: str
+) -> list[Step]:
+    """The GPU startup script and the render profile read for a render host."""
+    steps: list[Step] = []
+    if have.get(GPU_PSEUDO) != gpu_hash:
+        tools = WINDOWS_TOOLS if f.os == "windows" else LINUX_TOOLS
+        step = write_file_step(
+            f.name,
+            f.os,
+            f"gpu-script:{f.name}",
+            "install the Cycles GPU and GPU-denoise startup script",
+            f"{tools}/{GPU_SCRIPT}",
+            gpu_src,
+        )
+        steps.append(Step(**{**step.__dict__, "component": GPU_PSEUDO, "version": gpu_hash}))
+    profile = f"{pins['spectracut-host']}+{pins['blender']}"
+    if have.get(HOST_PSEUDO) != profile:
+        steps.append(_profile_step(f, profile))
+    return steps
+
+
 def build_plan(
     manifest: Manifest,
     set_id: str,
@@ -289,41 +342,11 @@ def build_plan(
         f = facts[name]
         have = state.hosts.get(name, HostState()).components
         roles = _roles(name, storage_host)
-        for cname, comp in manifest.components.items():
-            if not roles & set(comp.roles) or f.os not in comp.os:
-                continue
-            if have.get(cname) == pins[cname]:
-                continue
-            steps.append(
-                Step(
-                    name,
-                    f"install:{cname}:{name}",
-                    f"install {cname} {pins[cname]}",
-                    comp.install[f.os].format(version=pins[cname]),
-                    "powershell" if f.os == "windows" else "sh",
-                    component=cname,
-                    version=pins[cname],
-                )
-            )
+        steps += _install_steps(manifest, pins, f, have, roles)
         if name == CONTROL:
             svc = _service_steps(f, manager_url, pins["flamenco-manager"])
         elif name in workers:
-            if have.get(GPU_PSEUDO) != gpu_hash:
-                tools = WINDOWS_TOOLS if f.os == "windows" else LINUX_TOOLS
-                step = write_file_step(
-                    name,
-                    f.os,
-                    f"gpu-script:{name}",
-                    "install the Cycles GPU and GPU-denoise startup script",
-                    f"{tools}/{GPU_SCRIPT}",
-                    gpu_src,
-                )
-                steps.append(
-                    Step(**{**step.__dict__, "component": GPU_PSEUDO, "version": gpu_hash})
-                )
-            profile = f"{pins['spectracut-host']}+{pins['blender']}"
-            if have.get(HOST_PSEUDO) != profile:
-                steps.append(_profile_step(f, profile))
+            steps += _worker_prep_steps(f, have, pins, gpu_src, gpu_hash)
             args = _worker_args(manager_url, target, facts, name, cred.user)
             digest = hashlib.sha256((worker_src + args).encode("utf-8")).hexdigest()[:12]
             svc = _service_steps(f, manager_url, pins["flamenco-worker"], args, digest)
@@ -349,11 +372,10 @@ def build_plan(
     )
 
 
-def apply_plan(
-    plan: Plan, runner: StepRunner, state: SetupState, home: Path | None = None
-) -> SetupState:
-    """Run the steps in order; record each success. A failure stops the run (state kept)."""
-    for step in plan.steps:
+def _run_steps(
+    steps: Sequence[Step], runner: StepRunner, state: SetupState, home: Path | None
+) -> None:
+    for step in steps:
         out = runner.run(step)
         if step.artifact and out:
             write_atomic(
@@ -366,9 +388,59 @@ def apply_plan(
             host = state.hosts.setdefault(step.host, HostState())
             host.components[step.component] = step.version
             save_state(state, home)
+
+
+def apply_plan(
+    plan: Plan, runner: StepRunner, state: SetupState, home: Path | None = None
+) -> SetupState:
+    """Run the steps in order; record each success. A failure stops the run (state kept)."""
+    _run_steps(plan.steps, runner, state, home)
     state = state.model_copy(update={"set_id": plan.set_id, "storage": plan.storage})
     save_state(state, home)
     return state
+
+
+class BootstrapRunner(StepRunner, Protocol):
+    def resources(self, host: str, os: Os) -> tuple[float, float]: ...
+
+
+@dataclass(frozen=True)
+class Bootstrapped:
+    """What bootstrapping an unregistered host learned: its profile and capacity."""
+
+    profile: RenderProfile
+    cpus: float
+    mem_gb: float
+
+
+def bootstrap_host(
+    manifest: Manifest, alias: str, runner: BootstrapRunner, home: Path | None = None
+) -> Bootstrapped:
+    """Probe ``alias`` over SSH, run the host install steps and read its render profile.
+
+    Components are recorded in the setup state, so a later ``spectracut setup`` finds
+    the host converged. Storage and the worker service are left to setup.
+    """
+    facts = runner.probe(alias)
+    state = load_state(home)
+    set_id = state.set_id or manifest.sets[0].id
+    pins = _pins(manifest, set_id)
+    have = state.hosts.get(alias, HostState()).components
+    gpu_src = gpu_script_source()
+    gpu_hash = hashlib.sha256(gpu_src.encode("utf-8")).hexdigest()[:12]
+    steps = _install_steps(manifest, pins, facts, have, {"host"})
+    steps += _worker_prep_steps(facts, have, pins, gpu_src, gpu_hash)
+    profile_step = _profile_step(facts, f"{pins['spectracut-host']}+{pins['blender']}")
+    if not any(s.id == profile_step.id for s in steps):
+        steps.append(profile_step)
+    _run_steps(steps, runner, state, home)
+    path = (Path(home) if home is not None else spectracut_home()) / PROFILE_DIR
+    try:
+        profile = RenderProfile.model_validate_json((path / f"{alias}.json").read_bytes())
+    except (OSError, ValueError) as exc:
+        raise SetupError(f"{alias}: cannot read the render profile: {exc}") from exc
+    cpus, mem_gb = runner.resources(alias, facts.os)
+    return Bootstrapped(profile, cpus, mem_gb)
 
 
 class SetupError(RuntimeError):
@@ -403,8 +475,14 @@ class CommandRunner:
 
     def probe(self, host: str) -> HostFacts:
         os: Os = "linux"
-        if host != CONTROL and self._exec(host, "uname -s", "sh", None).returncode != 0:
-            os = "windows"
+        if host != CONTROL:
+            first = self._exec(host, "uname -s", "sh", None)
+            if first.returncode == SSH_ERROR:
+                raise SetupError(
+                    f"cannot reach {host} over SSH: {first.stderr.strip()[-200:] or 'no output'}"
+                )
+            if first.returncode != 0:
+                os = "windows"
         if os == "windows":
             script = (
                 "(tailscale ip -4)[0]; (Get-NetAdapter -Physical | Where-Object Status -eq Up "
@@ -419,6 +497,24 @@ class CommandRunner:
         if proc.returncode != 0:
             raise SetupError(f"cannot probe {host}: {proc.stderr.strip()[-200:]}")
         return parse_probe(host, os, proc.stdout)
+
+    def resources(self, host: str, os: Os) -> tuple[float, float]:
+        """CPU count and memory in GB of ``host``."""
+        if os == "windows":
+            script = (
+                "[Environment]::ProcessorCount; "
+                "[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB, 1)"
+            )
+        else:
+            script = "nproc; awk '/MemTotal/{printf \"%.1f\\n\", $2/1048576}' /proc/meminfo"
+        proc = self._exec(host, script, "powershell" if os == "windows" else "sh", None)
+        try:
+            cpus, mem = (float(x) for x in proc.stdout.split()[:2])
+        except ValueError:
+            raise SetupError(
+                f"cannot read CPU and memory of {host}: {proc.stderr.strip()[-200:]}"
+            ) from None
+        return cpus, mem
 
 
 def parse_probe(name: str, os: Os, out: str) -> HostFacts:
