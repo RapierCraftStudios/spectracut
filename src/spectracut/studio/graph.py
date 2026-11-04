@@ -10,6 +10,9 @@
 - Each built node passes its gate (:mod:`spectracut.studio.gates`); a node
   awaiting a person, rejected or failed blocks its dependants.
 - Each department run appends one :class:`~spectracut.studio.ledger.LedgerEntry`.
+- ``run(..., max_workers=N)`` builds independent nodes in parallel on a thread
+  pool; resource limits (AI capacity, GPU leases) are enforced by the runner
+  (:class:`~spectracut.studio.runner.DepartmentRunner`).
 
 Departments and the Critic are injected callables: the engine itself is pure
 Python and never touches Blender, the network or AI services.
@@ -17,8 +20,10 @@ Python and never touches Blender, the network or AI services.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -105,6 +110,7 @@ class ProductionGraph:
         self._cache: dict[str, _Accepted] = {}
         self._pending: dict[str, tuple[str, _Accepted]] = {}
         self._decisions: dict[str, GateDecision] = {}
+        self._lock = threading.RLock()
 
     # ---- structure ---------------------------------------------------------
 
@@ -252,8 +258,19 @@ class ProductionGraph:
 
     # ---- running -----------------------------------------------------------
 
-    def run(self, runner: Runner, *, critic: Critic | None = None) -> RunReport:
-        """Build every pending or dirty node whose inputs are clean, in dependency order."""
+    def run(
+        self, runner: Runner, *, critic: Critic | None = None, max_workers: int = 1
+    ) -> RunReport:
+        """Build every pending or dirty node whose inputs are clean, in dependency order.
+
+        With ``max_workers`` above 1, nodes whose inputs are clean are built at the
+        same time on a thread pool, and dependants start as their inputs finish.
+        Report lists are in dependency order either way.
+        """
+        if max_workers < 1:
+            raise ValueError(f"max_workers must be at least 1, got {max_workers}")
+        if max_workers > 1:
+            return self._run_parallel(runner, critic, max_workers)
         report = RunReport()
         for nid, spec in self._specs.items():
             if self._states[nid].status not in NEEDS_BUILD:
@@ -281,6 +298,76 @@ class ProductionGraph:
                 report.failed.append(nid)
         return report
 
+    def _run_parallel(self, runner: Runner, critic: Critic | None, workers: int) -> RunReport:
+        report = RunReport()
+        waiting = [nid for nid in self._specs if self._states[nid].status in NEEDS_BUILD]
+        running: dict[Future[NodeStatus], str] = {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            while True:
+                with self._lock:
+                    self._dispatch(waiting, running, report, pool, runner, critic)
+                if not running:
+                    break
+                done, _ = wait(running, return_when=FIRST_COMPLETED)
+                for future in done:
+                    nid = running.pop(future)
+                    status = future.result()
+                    if status is NodeStatus.AWAITING_APPROVAL:
+                        report.awaiting_approval.append(nid)
+                    elif status is NodeStatus.REJECTED:
+                        report.rejected.append(nid)
+                    elif status is NodeStatus.FAILED:
+                        report.failed.append(nid)
+        rank = {nid: i for i, nid in enumerate(self._specs)}
+        for ids in (
+            report.executed,
+            report.reused,
+            report.awaiting_approval,
+            report.rejected,
+            report.failed,
+            report.blocked,
+        ):
+            ids.sort(key=rank.__getitem__)
+        return report
+
+    def _dispatch(
+        self,
+        waiting: list[str],
+        running: dict[Future[NodeStatus], str],
+        report: RunReport,
+        pool: ThreadPoolExecutor,
+        runner: Runner,
+        critic: Critic | None,
+    ) -> None:
+        """Start, reuse or block every waiting node whose inputs are settled."""
+        in_flight = set(running.values())
+        progressed = True
+        while progressed:
+            progressed = False
+            for nid in list(waiting):
+                spec = self._specs[nid]
+                if any(i in in_flight or i in waiting for i in spec.inputs):
+                    continue
+                waiting.remove(nid)
+                progressed = True
+                if any(self._states[i].status is not NodeStatus.CLEAN for i in spec.inputs):
+                    report.blocked.append(nid)
+                    continue
+                tier = self.tier_for(spec)
+                input_hashes = {i: self._require_hash(i) for i in spec.inputs}
+                key = node_key(spec, input_hashes, tier)
+                hit = self._cache.get(key)
+                if hit is not None:
+                    self._states[nid] = NodeState(
+                        status=NodeStatus.CLEAN, tier=tier, key=key, output_hash=hit.output_hash
+                    )
+                    report.reused.append(nid)
+                    continue
+                report.executed.append(nid)
+                self._states[nid] = NodeState(status=NodeStatus.RUNNING, tier=tier, key=key)
+                running[pool.submit(self._build, spec, tier, key, runner, critic)] = nid
+                in_flight.add(nid)
+
     def _require_hash(self, node_id: str) -> str:
         output_hash = self._states[node_id].output_hash
         assert output_hash is not None, node_id
@@ -292,12 +379,14 @@ class ProductionGraph:
         mode = self.gate_for(spec)
         reviewed = critic if mode is not GateMode.AUTO else None
         max_attempts = 1 + (self.revision_budget(spec) if reviewed is not None else 0)
-        inputs = {i: self._cache[self._states[i].key or ""].output for i in spec.inputs}
+        with self._lock:
+            inputs = {i: self._cache[self._states[i].key or ""].output for i in spec.inputs}
         feedback: CriticVerdict | None = None
         for attempt in range(1, max_attempts + 1):
-            self._states[spec.id] = NodeState(
-                status=NodeStatus.RUNNING, tier=tier, key=key, attempts=attempt
-            )
+            with self._lock:
+                self._states[spec.id] = NodeState(
+                    status=NodeStatus.RUNNING, tier=tier, key=key, attempts=attempt
+                )
             ctx = RunContext(
                 spec=spec, tier=tier, key=key, inputs=inputs, attempt=attempt, feedback=feedback
             )
@@ -305,34 +394,68 @@ class ProductionGraph:
             try:
                 result = runner(ctx)
             except Exception as exc:  # noqa: BLE001 - a department failure is recorded, not raised
-                self._record(spec, tier, key, attempt, started_at, start, Usage(), "failed")
-                self._set(spec.id, NodeStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
+                with self._lock:
+                    self._record(spec, tier, key, attempt, started_at, start, Usage(), "failed")
+                    self._set(spec.id, NodeStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
                 return NodeStatus.FAILED
             accepted = _Accepted(result.output, content_hash(result.output))
             verdict = reviewed(spec, result.output) if reviewed is not None else None
-            if verdict is not None and not verdict.passed:
-                last = attempt == max_attempts
-                outcome: Outcome = "rejected" if last else "revise"
-                self._record(spec, tier, key, attempt, started_at, start, result.usage, outcome)
-                feedback = verdict
-                if last:
-                    self._decisions[spec.id] = GateDecision(mode=mode, critic=verdict)
-                    self._set(spec.id, NodeStatus.REJECTED)
-                    return NodeStatus.REJECTED
-                continue
-            self._decisions[spec.id] = GateDecision(mode=mode, critic=verdict)
-            if mode is GateMode.HUMAN:
-                self._record(
-                    spec, tier, key, attempt, started_at, start, result.usage, "awaiting_approval"
+            with self._lock:
+                status = self._settle(
+                    spec,
+                    tier,
+                    key,
+                    attempt,
+                    max_attempts,
+                    mode,
+                    started_at,
+                    start,
+                    result,
+                    accepted,
+                    verdict,
                 )
-                self._pending[spec.id] = (key, accepted)
-                self._set(spec.id, NodeStatus.AWAITING_APPROVAL)
-                return NodeStatus.AWAITING_APPROVAL
-            self._record(spec, tier, key, attempt, started_at, start, result.usage, "accepted")
-            self._cache[key] = accepted
-            self._set(spec.id, NodeStatus.CLEAN, output_hash=accepted.output_hash)
-            return NodeStatus.CLEAN
+            if status is None:
+                feedback = verdict
+                continue
+            return status
         raise AssertionError("unreachable")  # pragma: no cover
+
+    def _settle(
+        self,
+        spec: NodeSpec,
+        tier: Tier,
+        key: str,
+        attempt: int,
+        max_attempts: int,
+        mode: GateMode,
+        started_at: datetime,
+        start: float,
+        result: RunResult,
+        accepted: _Accepted,
+        verdict: CriticVerdict | None,
+    ) -> NodeStatus | None:
+        """Record one attempt's gate outcome; ``None`` means revise and try again."""
+        if verdict is not None and not verdict.passed:
+            last = attempt == max_attempts
+            outcome: Outcome = "rejected" if last else "revise"
+            self._record(spec, tier, key, attempt, started_at, start, result.usage, outcome)
+            if not last:
+                return None
+            self._decisions[spec.id] = GateDecision(mode=mode, critic=verdict)
+            self._set(spec.id, NodeStatus.REJECTED)
+            return NodeStatus.REJECTED
+        self._decisions[spec.id] = GateDecision(mode=mode, critic=verdict)
+        if mode is GateMode.HUMAN:
+            self._record(
+                spec, tier, key, attempt, started_at, start, result.usage, "awaiting_approval"
+            )
+            self._pending[spec.id] = (key, accepted)
+            self._set(spec.id, NodeStatus.AWAITING_APPROVAL)
+            return NodeStatus.AWAITING_APPROVAL
+        self._record(spec, tier, key, attempt, started_at, start, result.usage, "accepted")
+        self._cache[key] = accepted
+        self._set(spec.id, NodeStatus.CLEAN, output_hash=accepted.output_hash)
+        return NodeStatus.CLEAN
 
     def _set(
         self,
