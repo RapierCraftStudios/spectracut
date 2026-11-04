@@ -7,7 +7,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 from pydantic import BaseModel, Field, JsonValue
@@ -162,7 +162,8 @@ def test_bad_declarations_are_rejected(attrs: dict[str, Any], match: str) -> Non
 
 def test_abstract_bases_are_not_validated() -> None:
     base = type("Shared", (Department,), {"abstract": True})
-    child = type("Child", (base,), {"name": "child", "produces": frozenset({"x"}), "output": Line})
+    attrs = {"name": "child", "produces": frozenset({"x"}), "output": Line}
+    child = cast(type[Department], type("Child", (base,), attrs))
     assert child.name == "child"
 
 
@@ -173,7 +174,9 @@ def test_missing_or_incomplete_skill_pack_is_rejected(tmp_path: Path) -> None:
         DepartmentRunner([ghost], MockTextProvider())
     (tmp_path / "half").mkdir()
     (tmp_path / "half" / "prompt.md").write_text("prompt\n")
-    half = type("Half", (Department,), {**attrs, "skill_pack": tmp_path / "half"})
+    half = cast(
+        type[Department], type("Half", (Department,), {**attrs, "skill_pack": tmp_path / "half"})
+    )
     with pytest.raises(ValueError, match="missing rubric.md"):
         half.pack()
 

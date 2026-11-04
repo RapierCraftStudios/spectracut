@@ -80,6 +80,16 @@ something it depends on produces different content.
     and returns `RunResult(output, usage)`. The output then passes the node's gate.
 - `RunReport` lists node ids as `executed`, `reused`, `awaiting_approval`,
   `rejected`, `failed` and `blocked`.
+- **Parallel run.** `run(runner, critic=None, max_workers=1)`. `max_workers < 1`
+  raises `ValueError`; the default `1` is the sequential loop above. With more,
+  nodes whose inputs are all `clean` are built at the same time on a thread
+  pool, and a dependant starts as soon as its inputs finish. A node whose input
+  does not end `clean` is `blocked`, and cache hits are resolved without a
+  worker. State, cache, pending approvals, decisions and the ledger are written
+  under one lock; the runner and the Critic are called outside it. Each
+  `RunReport` list is in `order()`, so reports are deterministic. Limits on AI
+  capacity and GPU leases are enforced by the department runner
+  (`departments.md`).
 
 ## Gate
 
@@ -158,6 +168,7 @@ quality). Critic scores before and after are carried on the `GateDecision`.
 
 ## Not in scope here
 
-Persistence, scheduling in parallel across GPU leases, and the Producer's
-estimates are built on this contract in later issues. Secrets never appear in
+Persistence and the Producer's estimates are built on this contract in later
+issues. Capacity limits for parallel runs (AI calls, GPU leases) live in the
+department runner: see `departments.md`. Secrets never appear in
 params, outputs or ledger entries.
