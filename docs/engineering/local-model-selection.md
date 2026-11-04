@@ -137,11 +137,43 @@ models are small enough that it will fit).
 | Image-to-3D | not measured | | | | | | | Pixal3D: MIT; Hunyuan3D-2.1: Tencent community |
 | Motion | not measured | | | | | | | Kimodo: Apache-2.0 code / NVIDIA Open Model weights |
 
+## Update after the owner decision (legion only)
+
+Owner decision on #49: all local models run on `legion` (RTX 3070 Laptop 8 GB, up to about 28 GB RAM); `mrdubey-1` is no longer a
+model host. Its model caches were deleted (the whole `spectracut-models` folder), and nothing was run there after the decision.
+Every 12 GB number above is informational only. What the follow-up pass achieved:
+
+| Item | Result |
+|---|---|
+| Stable Audio Open Small / 1.0 | No token at `~/.config/spectracut/hf-token` on the dev box, so recorded as an owner action (HF token + licence acceptance). Not measured. MOSS-SoundEffect stays the measured fallback, but it needs 11 GB and **does not fit 8 GB**, so there is currently **no SFX model measured that fits legion** |
+| Video-to-audio foley (HunyuanVideo-Foley XL with offload, ThinkSound) | Not measured. Environment and repo are ready on `legion` (`venvs\foley`, `repos\foley`, torch 2.11+cu128 sees the 3070), a test clip (`ball.mp4`, 6 s) and `measure_cmd.ps1` exist, but the weights (XL checkpoint 5.5 GB + VAE + Synchformer, plus SigLIP2 and CLAP encoders fetched on first run) could not be downloaded: legion's link fell from about 2 MB/s to a few KB/s during this pass. The README quotes 8 GB VRAM for XL with offload, so it is at the limit of this card |
+| Second TTS candidate (Qwen3-TTS-0.6B) | Not measured, same download problem (1.1 of 2.3 GB fetched before the link stalled). `tts_qwen3.py` and the `qtts` venv are ready |
+| Second omni critic (LFM3-Omni-2B, LFM Open License v1.0) | Not measured, 4.2 GB not downloaded. `omni_lfm.py` and the `omni` venv are ready |
+| Second image candidate (FLUX.2 klein 4B) | Not measured, about 15 GB needed. `image_diffusers.py flux2klein offload` is ready |
+| ACE-Step real run on the 8 GB card | Not measured. The 6.6 GB result remains the emulated one (8 GiB cap on the 12 GB card). Needs about 7 GB of checkpoints (`dl_ace.py`) and the `setup_ace.ps1` env |
+
+Downloads were stopped and partial files removed so nothing keeps running unattended. To finish the pass on `legion` once the link
+recovers: `push.sh legion`, then `run.ps1 tts dl_queue.py` (queue order: Qwen3-TTS, LFM3-Omni, Foley XL files, FLUX.2 klein),
+`setup_ace.ps1` + `run.ps1 tts dl_ace.py`, then the per-model scripts listed in the table. Remaining disk budget: about 56 GB free
+on `C:` (20 GB must stay free).
+
+### Picks that fit 8 GB on legion today
+
+| Job | Pick | VRAM | Fit | Status |
+|---|---|---|---|---|
+| Temp TTS | Kokoro-82M | 1.06 GB | real | measured on legion |
+| Music | ACE-Step 1.5 turbo (DiT + offload, optional LM 0.6B) | 5.9 GB / 6.6 GB | emulated | real legion run still to do |
+| Image | Z-Image-Turbo GGUF Q4_K_M | 8.0 GB (whole card) | real | measured on legion, 37 s per 1024^2 |
+| Omni critic | Qwen2.5-Omni-7B Q4_K_M (llama.cpp) | 7.25 GB | real | measured on legion |
+| ASR / CLAP | faster-whisper large-v3-turbo / larger_clap_general | 2.3 GB / 0.9 GB | expected | measured on the 12 GB card only; tiny, re-run on legion when convenient |
+| SFX | Stable Audio Open Small | unknown | unknown | owner action (token), then measure |
+| Foley | HunyuanVideo-Foley XL (offload) / ThinkSound | about 8 GB (vendor figure) | unknown | not measured |
+
 ## Owner actions
 
-1. Stable Audio Open 1.0 and Small: log in to Hugging Face, accept the licence on both model pages and create a read token;
+1. Stable Audio Open Small and 1.0: no token found at `~/.config/spectracut/hf-token`. Log in to Hugging Face, accept the licence on both model pages and create a read token;
    put it in the environment of `legion` (never in a repo). Then run `scripts/model_check/` SFX measurements for it.
-2. Decide the RAM policy for `mrdubey-1`. Under the 4 GB cap only the small models (Kokoro, Whisper, CLAP) run there;
+2. (Superseded by the owner decision above: all models run on `legion`.) RAM policy for `mrdubey-1`. Under the 4 GB cap only the small models (Kokoro, Whisper, CLAP) run there;
    ACE-Step, Z-Image-Turbo, MOSS and any offload model were killed at the limit during loading. Either keep GPU jobs on
    `legion` (8 GB; Z-Image fits with no headroom) or allow a higher cap for render jobs.
 3. `mrdubey-1` Windows quirks to remember when enrolling it: symlinks are untraversable for this user (HF cache is forced to
