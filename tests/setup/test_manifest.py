@@ -135,7 +135,7 @@ SYSTEM_TOOLS = {
 
 
 def test_first_command_token_of_every_install_and_version_cmd_resolves() -> None:
-    """The first token of each install/version_cmd is with a shipped script or a whitelisted tool."""
+    """The first token of each install/version_cmd is a shipped script or a whitelisted tool."""
     shipped: set[str] = set()
     for pyproject in (ROOT / "pyproject.toml", ROOT / "host" / "pyproject.toml"):
         shipped |= set(tomllib.loads(pyproject.read_text())["project"]["scripts"])

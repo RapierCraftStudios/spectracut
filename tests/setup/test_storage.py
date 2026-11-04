@@ -9,8 +9,8 @@ from pathlib import Path
 import spectracut
 from spectracut.cli.render import HostEntry
 from spectracut.queue.profile import RenderProfile
-from spectracut.setup.manifest import HostFacts, load_manifest
-from spectracut.setup.plan import SetupState, build_plan
+from spectracut.setup.manifest import HostFacts, Step, load_manifest
+from spectracut.setup.plan import Plan, SetupState, build_plan
 from spectracut.setup.storage import (
     CONTROL,
     Credential,
@@ -42,7 +42,7 @@ def _fake_wheels(payload: bytes = b"code") -> LocalWheels:
 WHEELS = _fake_wheels()
 
 
-def _plan():  # type: ignore[no-untyped-def]
+def _plan() -> Plan:
     return build_plan(
         load_manifest(), "2026.11", FACTS, ["legion", "rig"], SetupState(), CRED, TARGET,
         wheels=WHEELS,
@@ -110,7 +110,10 @@ class _SimulatedWindowsHost:
         self.share_ready = True
         self.password = None  # the script deletes the password file
 
-    def run(self, step):  # type: ignore[no-untyped-def]
+    def probe(self, host: str) -> HostFacts:
+        return FACTS[host]
+
+    def run(self, step: Step) -> str | None:
         from spectracut.setup.plan import SetupError
 
         self.ran.append(step.id)

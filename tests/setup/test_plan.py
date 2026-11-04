@@ -227,6 +227,11 @@ def test_spectracut_host_installed_and_profiled_on_every_worker(tmp_path: Path) 
     state = load_state(tmp_path)
     apply_plan(plan, runner, state, tmp_path)
     assert (tmp_path / "profiles" / "legion.json").read_text() == runner.out
+    recorded = load_state(tmp_path).hosts
+    for worker in WORKERS:
+        assert recorded[worker].components["spectracut-host"] == WHEELS.pin
+    copies = [s for s in runner.ran if s.id.startswith("wheel:")]
+    assert {s.host for s in copies} == set(WORKERS) and all(s.component is None for s in copies)
 
 
 def test_windows_worker_is_a_per_user_logon_task_under_the_profile() -> None:
