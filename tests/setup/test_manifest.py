@@ -125,3 +125,29 @@ def test_audio_image_install_runs_docker_build_of_the_dockerfile(tmp_path: Path)
     line = log.read_text()
     assert "build -f host/docker/audio.Dockerfile" in line
     assert f"spectracut-audio:{version}" in line and "spectracut-audio:current" in line
+
+
+SYSTEM_TOOLS = {
+    "curl", "tar", "sh", "docker", "uv", "blender", "smbd", "flamenco-manager", "flamenco-worker",
+    "powershell", "unzip", "sudo", "test", "set", "if", "cd", "command", "pacman", "apt-get",
+    "Invoke-WebRequest", "Expand-Archive", "$ErrorActionPreference", "$ProgressPreference",
+}  # fmt: skip
+
+
+def test_first_command_token_of_every_install_and_version_cmd_resolves() -> None:
+    """The first token of each install/version_cmd is with a shipped script or a whitelisted tool."""
+    shipped: set[str] = set()
+    for pyproject in (ROOT / "pyproject.toml", ROOT / "host" / "pyproject.toml"):
+        shipped |= set(tomllib.loads(pyproject.read_text())["project"]["scripts"])
+    allowed = {t.lower() for t in SYSTEM_TOOLS | shipped}
+    unresolved = []
+    for name, comp in load_manifest().components.items():
+        for field in (comp.version_cmd, comp.install):
+            for os_name, cmd in field.items():
+                words = [w for w in cmd.split() if w != "&"]
+                if words[0] == "(Join-Path":  # PowerShell call of a path: uv.exe tool install
+                    words = ["uv"]
+                tok = words[0].replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".exe").lower()
+                if tok not in allowed:
+                    unresolved.append((name, os_name, tok))
+    assert not unresolved, unresolved
