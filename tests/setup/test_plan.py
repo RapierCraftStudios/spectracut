@@ -106,9 +106,7 @@ def test_blender_only_on_render_hosts_never_control() -> None:
 def test_converged_state_gives_empty_plan() -> None:
     state = SetupState()
     plan = _plan(state)
-    apply_plan(plan, FakeRunner(), state, None) if False else None
     runner = FakeRunner()
-    # apply into a temp-less state by monkeying save: use a real tmp home below
     assert plan.steps  # a fresh farm has work to do
     assert runner.ran == []
 
@@ -125,7 +123,7 @@ def test_second_run_is_idempotent(tmp_path: Path) -> None:
 
 def test_storage_move_repoints_manager_and_all_workers(tmp_path: Path) -> None:
     state = load_state(tmp_path)
-    apply_plan(_plan(state), FakeRunner(), state, tmp_path)
+    state = apply_plan(_plan(state), FakeRunner(), state, tmp_path)
     assert state.storage == StorageTarget(kind="host", host="rig")
 
     move = _plan(load_state(tmp_path), StorageTarget(kind="host", host="legion"))

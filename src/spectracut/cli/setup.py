@@ -71,7 +71,9 @@ def setup_cmd(
             help="Where Flamenco storage lives: 'control', a registered host, or nas://server/share.",
         ),
     ] = None,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the plan; change nothing.")] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the plan; change nothing.")
+    ] = False,
     home: HomeOpt = None,
 ) -> None:
     """Install and configure every bundled component on the control plane and render hosts."""
@@ -87,9 +89,7 @@ def setup_cmd(
                 typer.echo(f"already on the latest tested set ({set_id})")
             else:
                 set_id = nxt.id
-        target = (
-            parse_storage_host(storage_host, [CONTROL, *workers]) if storage_host else None
-        )
+        target = parse_storage_host(storage_host, [CONTROL, *workers]) if storage_host else None
         runner: Runner = CommandRunner()
         facts: dict[str, HostFacts] = {n: runner.probe(n) for n in (CONTROL, *workers)}
         cred = share_credential(root, target or state.storage)

@@ -93,23 +93,32 @@ def _pins(manifest: Manifest, set_id: str) -> dict[str, str]:
     return dict(manifest.tested_set(set_id).versions)
 
 
-def _service_steps(
-    facts: HostFacts, manager_url: str, pin: str
-) -> list[Step]:
+def _service_steps(facts: HostFacts, manager_url: str, pin: str) -> list[Step]:
     """Run the Manager (control plane) or a Worker (render host) as a user service."""
     name = facts.name
     if name == CONTROL:
         unit = (
-            "[Unit]\nDescription=Flamenco Manager\n[Service]\nWorkingDirectory=%h/.local/opt/flamenco\n"
+            "[Unit]\nDescription=Flamenco Manager\n[Service]\nWorkingDirectory=%h/.local/opt/flamenco\n"  # noqa: E501
             "ExecStart=%h/.local/opt/flamenco/flamenco-manager\nRestart=on-failure\n"
             "[Install]\nWantedBy=default.target\n"
         )
         return [
-            write_file_step(name, "linux", "service:manager-unit", "write the Manager unit",
-                            "$HOME/.config/systemd/user/flamenco-manager.service", unit),
-            Step(name, "service:manager", "enable the Flamenco Manager",
-                 "systemctl --user daemon-reload && systemctl --user enable --now flamenco-manager",
-                 component=MANAGER_SERVICE, version=pin),
+            write_file_step(
+                name,
+                "linux",
+                "service:manager-unit",
+                "write the Manager unit",
+                "$HOME/.config/systemd/user/flamenco-manager.service",
+                unit,
+            ),
+            Step(
+                name,
+                "service:manager",
+                "enable the Flamenco Manager",
+                "systemctl --user daemon-reload && systemctl --user enable --now flamenco-manager",
+                component=MANAGER_SERVICE,
+                version=pin,
+            ),
         ]
     version = f"{pin}@{manager_url}"
     if facts.os == "windows":
@@ -120,19 +129,39 @@ def _service_steps(
             "-Trigger (New-ScheduledTaskTrigger -AtStartup) | Out-Null; "
             "Start-ScheduledTask -TaskName spectracut-worker"
         )
-        return [Step(name, f"service:worker:{name}", "register the Worker startup task", cmd,
-                     "powershell", component=SERVICE_PSEUDO, version=version)]
+        return [
+            Step(
+                name,
+                f"service:worker:{name}",
+                "register the Worker startup task",
+                cmd,
+                "powershell",
+                component=SERVICE_PSEUDO,
+                version=version,
+            )
+        ]
     unit = (
         "[Unit]\nDescription=Flamenco Worker\n[Service]\nWorkingDirectory=%h/.local/opt/flamenco\n"
         f"ExecStart=%h/.local/opt/flamenco/flamenco-worker -manager {manager_url}\n"
         "Restart=on-failure\n[Install]\nWantedBy=default.target\n"
     )
     return [
-        write_file_step(name, "linux", f"service:worker-unit:{name}", "write the Worker unit",
-                        "$HOME/.config/systemd/user/spectracut-worker.service", unit),
-        Step(name, f"service:worker:{name}", "enable the Flamenco Worker",
-             "systemctl --user daemon-reload && systemctl --user enable --now spectracut-worker",
-             component=SERVICE_PSEUDO, version=version),
+        write_file_step(
+            name,
+            "linux",
+            f"service:worker-unit:{name}",
+            "write the Worker unit",
+            "$HOME/.config/systemd/user/spectracut-worker.service",
+            unit,
+        ),
+        Step(
+            name,
+            f"service:worker:{name}",
+            "enable the Flamenco Worker",
+            "systemctl --user daemon-reload && systemctl --user enable --now spectracut-worker",
+            component=SERVICE_PSEUDO,
+            version=version,
+        ),
     ]
 
 
@@ -166,25 +195,41 @@ def build_plan(
                 continue
             if have.get(cname) == pins[cname]:
                 continue
-            steps.append(Step(
-                name, f"install:{cname}:{name}", f"install {cname} {pins[cname]}",
-                comp.install[f.os].format(version=pins[cname]),
-                "powershell" if f.os == "windows" else "sh",
-                component=cname, version=pins[cname]))
+            steps.append(
+                Step(
+                    name,
+                    f"install:{cname}:{name}",
+                    f"install {cname} {pins[cname]}",
+                    comp.install[f.os].format(version=pins[cname]),
+                    "powershell" if f.os == "windows" else "sh",
+                    component=cname,
+                    version=pins[cname],
+                )
+            )
         if name == CONTROL:
             svc = _service_steps(f, manager_url, pins["flamenco-manager"])
         elif name in workers:
             if have.get(GPU_PSEUDO) != gpu_hash:
                 tools = WINDOWS_TOOLS if f.os == "windows" else LINUX_TOOLS
-                step = write_file_step(name, f.os, f"gpu-script:{name}",
-                                       "install the Cycles GPU and GPU-denoise startup script",
-                                       f"{tools}/{GPU_SCRIPT}", gpu_src)
-                steps.append(Step(**{**step.__dict__, "component": GPU_PSEUDO, "version": gpu_hash}))
+                step = write_file_step(
+                    name,
+                    f.os,
+                    f"gpu-script:{name}",
+                    "install the Cycles GPU and GPU-denoise startup script",
+                    f"{tools}/{GPU_SCRIPT}",
+                    gpu_src,
+                )
+                steps.append(
+                    Step(**{**step.__dict__, "component": GPU_PSEUDO, "version": gpu_hash})
+                )
             svc = _service_steps(f, manager_url, pins["flamenco-worker"])
         else:
             svc = []
-        want = {MANAGER_SERVICE: pins["flamenco-manager"]} if name == CONTROL else {
-            SERVICE_PSEUDO: f"{pins['flamenco-worker']}@{manager_url}"}
+        want = (
+            {MANAGER_SERVICE: pins["flamenco-manager"]}
+            if name == CONTROL
+            else {SERVICE_PSEUDO: f"{pins['flamenco-worker']}@{manager_url}"}
+        )
         if any(have.get(k) != v for k, v in want.items()):
             steps += svc
     steps += plan_storage(target, state.storage, facts, workers, cred)
@@ -201,8 +246,7 @@ def apply_plan(
             host = state.hosts.setdefault(step.host, HostState())
             host.components[step.component] = step.version
             save_state(state, home)
-    state.set_id = plan.set_id
-    state.storage = plan.storage
+    state = state.model_copy(update={"set_id": plan.set_id, "storage": plan.storage})
     save_state(state, home)
     return state
 
@@ -217,15 +261,18 @@ class CommandRunner:
     def __init__(self, timeout: float = 1800.0) -> None:
         self.timeout = timeout
 
-    def _exec(self, host: str, cmd: str, shell: str, stdin: str | None) -> subprocess.CompletedProcess[str]:
+    def _exec(
+        self, host: str, cmd: str, shell: str, stdin: str | None
+    ) -> subprocess.CompletedProcess[str]:
         if shell == "powershell":
             enc = base64.b64encode(cmd.encode("utf-16-le")).decode("ascii")
             remote = f"powershell -NoProfile -NonInteractive -EncodedCommand {enc}"
         else:
             remote = f"sh -c {shlex.quote(cmd)}"
         argv = ["sh", "-c", cmd] if host == CONTROL else ["ssh", host, remote]
-        return subprocess.run(argv, input=stdin, capture_output=True, text=True,
-                              timeout=self.timeout, check=False)
+        return subprocess.run(
+            argv, input=stdin, capture_output=True, text=True, timeout=self.timeout, check=False
+        )
 
     def run(self, step: Step) -> None:
         proc = self._exec(step.host, step.command, step.shell, step.stdin)
@@ -245,7 +292,7 @@ class CommandRunner:
         else:
             script = (
                 "tailscale ip -4 | head -1; ip route get 1.1.1.1 | awk '{for(i=1;i<NF;i++) "
-                "if($i==\"dev\"){print $(i+1);exit}}'; df -Pk \"$HOME\" | awk 'NR==2{print $4*1024}'"
+                'if($i=="dev"){print $(i+1);exit}}\'; df -Pk "$HOME" | awk \'NR==2{print $4*1024}\''
             )
         proc = self._exec(host, script, "powershell" if os == "windows" else "sh", None)
         if proc.returncode != 0:
@@ -261,4 +308,3 @@ def parse_probe(name: str, os: Os, out: str) -> HostFacts:
     wired = "802.11" not in link if os == "windows" else not link.startswith("wl")
     gb = float(free) / 1e9 if free.replace(".", "", 1).isdigit() else 0.0
     return HostFacts(name=name, os=os, address=address or name, wired=wired, free_gb=gb)
-

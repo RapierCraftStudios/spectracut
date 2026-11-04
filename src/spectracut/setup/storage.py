@@ -153,7 +153,9 @@ def _smb_server(target: StorageTarget, facts: Mapping[str, HostFacts]) -> str:
     return facts[target.host].address if target.kind == "host" else target.host
 
 
-def _serve_steps(target: StorageTarget, facts: Mapping[str, HostFacts], cred: Credential) -> list[Step]:
+def _serve_steps(
+    target: StorageTarget, facts: Mapping[str, HostFacts], cred: Credential
+) -> list[Step]:
     """Set up the share on the chosen machine (Tailscale-only, dedicated account)."""
     host = facts[target.host]
     if host.os == "windows":
@@ -161,20 +163,26 @@ def _serve_steps(target: StorageTarget, facts: Mapping[str, HostFacts], cred: Cr
             "$p = [Console]::In.ReadLine(); $sec = ConvertTo-SecureString $p -AsPlainText -Force; "
             f"if (Get-LocalUser -Name '{cred.user}' -EA SilentlyContinue) "
             f"{{ Set-LocalUser -Name '{cred.user}' -Password $sec }} else "
-            f"{{ New-LocalUser -Name '{cred.user}' -Password $sec -PasswordNeverExpires | Out-Null }}; "
-            "reg add 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\SpecialAccounts\\UserList' "
+            f"{{ New-LocalUser -Name '{cred.user}' -Password $sec -PasswordNeverExpires | Out-Null }}; "  # noqa: E501
+            "reg add 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\SpecialAccounts\\UserList' "  # noqa: E501
             f"/v {cred.user} /t REG_DWORD /d 0 /f | Out-Null; "
             f"New-Item -ItemType Directory -Force '{WINDOWS_LOCAL_PATH}' | Out-Null; "
             f"if (-not (Get-SmbShare -Name {SHARE} -EA SilentlyContinue)) "
-            f"{{ New-SmbShare -Name {SHARE} -Path '{WINDOWS_LOCAL_PATH}' -FullAccess '{cred.user}' | Out-Null }}; "
+            f"{{ New-SmbShare -Name {SHARE} -Path '{WINDOWS_LOCAL_PATH}' -FullAccess '{cred.user}' | Out-Null }}; "  # noqa: E501
             "if (-not (Get-NetFirewallRule -Name spectracut-smb -EA SilentlyContinue)) "
-            "{ New-NetFirewallRule -Name spectracut-smb -DisplayName 'SpectraCut storage (Tailscale only)' "
+            "{ New-NetFirewallRule -Name spectracut-smb -DisplayName 'SpectraCut storage (Tailscale only)' "  # noqa: E501
             f"-Direction Inbound -Protocol TCP -LocalPort 445 -RemoteAddress {TAILSCALE_RANGE} "
             "-Action Allow | Out-Null }"
         )
         return [
-            Step(target.host, "storage:serve", "serve the SMB share (Tailscale-only)", script,
-                 "powershell", stdin=cred.password + "\n")
+            Step(
+                target.host,
+                "storage:serve",
+                "serve the SMB share (Tailscale-only)",
+                script,
+                "powershell",
+                stdin=cred.password + "\n",
+            )
         ]
     smb_conf = (
         f"[{SHARE}]\n   path = {LINUX_PATH}\n   read only = no\n   valid users = {cred.user}\n"
@@ -182,42 +190,66 @@ def _serve_steps(target: StorageTarget, facts: Mapping[str, HostFacts], cred: Cr
         "   server min protocol = SMB3\n"
     )
     return [
-        write_file_step(target.host, "linux", "storage:smb-conf", "write the Samba share config",
-                        f"/etc/samba/spectracut.d/{SHARE}.conf", smb_conf),
+        write_file_step(
+            target.host,
+            "linux",
+            "storage:smb-conf",
+            "write the Samba share config",
+            f"/etc/samba/spectracut.d/{SHARE}.conf",
+            smb_conf,
+        ),
         Step(
-            target.host, "storage:serve", "serve the Samba share (Tailscale-only)",
+            target.host,
+            "storage:serve",
+            "serve the Samba share (Tailscale-only)",
             f"sudo mkdir -p {LINUX_PATH} && id -u {cred.user} >/dev/null 2>&1 "
             f"|| sudo useradd --system --no-create-home --shell /usr/bin/nologin {cred.user}; "
             f"sudo chown {cred.user} {LINUX_PATH}; "
             "grep -q 'spectracut.d' /etc/samba/smb.conf "
-            "|| echo 'include = /etc/samba/spectracut.d/flamenco.conf' | sudo tee -a /etc/samba/smb.conf >/dev/null; "
-            f"read -r pw; printf '%s\\n%s\\n' \"$pw\" \"$pw\" | sudo smbpasswd -s -a {cred.user}; "
+            "|| echo 'include = /etc/samba/spectracut.d/flamenco.conf' | sudo tee -a /etc/samba/smb.conf >/dev/null; "  # noqa: E501
+            f'read -r pw; printf \'%s\\n%s\\n\' "$pw" "$pw" | sudo smbpasswd -s -a {cred.user}; '
             "sudo systemctl enable --now smb && sudo systemctl restart smb",
-            "sh", stdin=cred.password + "\n",
+            "sh",
+            stdin=cred.password + "\n",
         ),
     ]
 
 
-def _attach_steps(
-    name: str, os: str, server: str, share: str, cred: Credential
-) -> list[Step]:
+def _attach_steps(name: str, os: str, server: str, share: str, cred: Credential) -> list[Step]:
     """Mount (Linux) or map (Windows) the share on one machine, replacing any old attachment."""
     if os == "windows":
         script = (
             "$p = [Console]::In.ReadLine(); "
-            f"if (Test-Path {WINDOWS_DRIVE}) {{ Remove-SmbMapping -LocalPath {WINDOWS_DRIVE} -Force "
+            f"if (Test-Path {WINDOWS_DRIVE}) {{ Remove-SmbMapping -LocalPath {WINDOWS_DRIVE} -Force "  # noqa: E501
             "-UpdateProfile -EA SilentlyContinue }; "
             f"New-SmbMapping -LocalPath {WINDOWS_DRIVE} -RemotePath '\\\\{server}\\{share}' "
             f"-UserName '{cred.user}' -Password $p -Persistent $true | Out-Null"
         )
-        return [Step(name, f"storage:attach:{name}", f"map {WINDOWS_DRIVE} to the share", script,
-                     "powershell", stdin=cred.password + "\n")]
+        return [
+            Step(
+                name,
+                f"storage:attach:{name}",
+                f"map {WINDOWS_DRIVE} to the share",
+                script,
+                "powershell",
+                stdin=cred.password + "\n",
+            )
+        ]
     cred_body = f"username={cred.user}\npassword={cred.password}\n"
     return [
-        write_file_step(name, "linux", f"storage:cred:{name}", "store the share credential (0600)",
-                        CRED_FILE, cred_body, mode="600"),
+        write_file_step(
+            name,
+            "linux",
+            f"storage:cred:{name}",
+            "store the share credential (0600)",
+            CRED_FILE,
+            cred_body,
+            mode="600",
+        ),
         Step(
-            name, f"storage:attach:{name}", f"mount the share at {LINUX_PATH}",
+            name,
+            f"storage:attach:{name}",
+            f"mount the share at {LINUX_PATH}",
             f"sudo mkdir -p {LINUX_PATH}; mountpoint -q {LINUX_PATH} && sudo umount {LINUX_PATH}; "
             f"sudo mount -t cifs '//{server}/{share}' {LINUX_PATH} "
             f"-o credentials={CRED_FILE},vers=3.0,uid=$(id -u),gid=$(id -g)",
@@ -260,27 +292,49 @@ def plan_storage(
             continue
         steps += _attach_steps(name, facts[name].os, server, target.share, cred)
     listen = f"{facts[CONTROL].address}:{MANAGER_PORT}"
-    steps.append(write_file_step(
-        CONTROL, "linux", "storage:variables",
-        "write the Manager config with the two-way storage variables",
-        "$HOME/.local/opt/flamenco/flamenco-manager.yaml", manager_config(listen)))
-    steps.append(Step(CONTROL, "storage:restart-manager", "restart the Flamenco Manager",
-                      "systemctl --user restart flamenco-manager"))
+    steps.append(
+        write_file_step(
+            CONTROL,
+            "linux",
+            "storage:variables",
+            "write the Manager config with the two-way storage variables",
+            "$HOME/.local/opt/flamenco/flamenco-manager.yaml",
+            manager_config(listen),
+        )
+    )
+    steps.append(
+        Step(
+            CONTROL,
+            "storage:restart-manager",
+            "restart the Flamenco Manager",
+            "systemctl --user restart flamenco-manager",
+        )
+    )
     for name in workers:
-        steps.append(Step(name, f"storage:restart-worker:{name}", "restart the Flamenco Worker",
-                          "Restart-ScheduledTask -TaskName spectracut-worker"
-                          if facts[name].os == "windows" else
-                          "systemctl --user restart spectracut-worker",
-                          "powershell" if facts[name].os == "windows" else "sh"))
-    seen: set[str] = set()
-    return [s for s in steps if not (s.id in seen or seen.add(s.id))]
+        steps.append(
+            Step(
+                name,
+                f"storage:restart-worker:{name}",
+                "restart the Flamenco Worker",
+                "Restart-ScheduledTask -TaskName spectracut-worker"
+                if facts[name].os == "windows"
+                else "systemctl --user restart spectracut-worker",
+                "powershell" if facts[name].os == "windows" else "sh",
+            )
+        )
+    unique: dict[str, Step] = {}
+    for step in steps:
+        unique.setdefault(step.id, step)
+    return list(unique.values())
 
 
 def _migrate_steps(server: str, share: str, cred: Credential) -> list[Step]:
     """Copy the control plane's current share contents into the new share before re-pointing."""
     return [
         Step(
-            CONTROL, "storage:migrate", "copy existing files to the new storage",
+            CONTROL,
+            "storage:migrate",
+            "copy existing files to the new storage",
             f"sudo mkdir -p {MIGRATE_MOUNT} && sudo mount -t cifs '//{server}/{share}' "
             f"{MIGRATE_MOUNT} -o credentials={CRED_FILE},vers=3.0,uid=$(id -u),gid=$(id -g) "
             f"&& rsync -a {LINUX_PATH}/ {MIGRATE_MOUNT}/; rc=$?; "
