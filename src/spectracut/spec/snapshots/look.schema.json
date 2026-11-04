@@ -1,0 +1,234 @@
+{
+  "$defs": {
+    "CDL": {
+      "additionalProperties": false,
+      "description": "ASC CDL grade.",
+      "properties": {
+        "offset": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Offset",
+          "type": "array"
+        },
+        "power": {
+          "default": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Power",
+          "type": "array"
+        },
+        "saturation": {
+          "default": 1.0,
+          "minimum": 0.0,
+          "title": "Saturation",
+          "type": "number"
+        },
+        "slope": {
+          "default": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Slope",
+          "type": "array"
+        }
+      },
+      "title": "CDL",
+      "type": "object"
+    },
+    "Grade": {
+      "additionalProperties": false,
+      "description": "A CDL or a LUT per look; neither means a neutral grade.",
+      "properties": {
+        "cdl": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CDL"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lut": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lut"
+        }
+      },
+      "title": "Grade",
+      "type": "object"
+    },
+    "Lens": {
+      "additionalProperties": false,
+      "properties": {
+        "chromatic_aberration": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Chromatic Aberration",
+          "type": "number"
+        },
+        "distortion": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Distortion",
+          "type": "number"
+        },
+        "halation": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Halation",
+          "type": "number"
+        },
+        "vignette": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Vignette",
+          "type": "number"
+        }
+      },
+      "title": "Lens",
+      "type": "object"
+    },
+    "QAThresholds": {
+      "additionalProperties": false,
+      "description": "Per-look QA limits; QA reads these instead of one global limit.",
+      "properties": {
+        "bloom_max": {
+          "default": 0.1,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Bloom Max",
+          "type": "number"
+        },
+        "grain_max": {
+          "default": 0.1,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Grain Max",
+          "type": "number"
+        },
+        "haze_max": {
+          "default": 0.05,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Haze Max",
+          "type": "number"
+        }
+      },
+      "title": "QAThresholds",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A versioned finishing preset: grade, lens, bloom, grain, motion blur and DoF.",
+  "properties": {
+    "bloom": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Bloom",
+      "type": "number"
+    },
+    "depth_of_field": {
+      "default": true,
+      "title": "Depth Of Field",
+      "type": "boolean"
+    },
+    "grade": {
+      "$ref": "#/$defs/Grade"
+    },
+    "grain": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Grain",
+      "type": "number"
+    },
+    "id": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "lens": {
+      "$ref": "#/$defs/Lens"
+    },
+    "motion_blur": {
+      "default": true,
+      "title": "Motion Blur",
+      "type": "boolean"
+    },
+    "qa_thresholds": {
+      "$ref": "#/$defs/QAThresholds"
+    },
+    "version": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "Look",
+  "type": "object"
+}
