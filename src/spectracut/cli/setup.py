@@ -68,7 +68,10 @@ def setup_cmd(
         str | None,
         typer.Option(
             "--storage-host",
-            help="Where Flamenco storage lives: 'control', a registered host, or nas://server/share.",
+            help=(
+                "Where Flamenco storage lives: 'control', a registered host (a Windows host "
+                "needs a one-time admin script, printed by setup), or nas://server/share."
+            ),
         ),
     ] = None,
     dry_run: Annotated[

@@ -428,3 +428,18 @@ def test_job_validates_ids_and_hash() -> None:
         Job(id="Bad Id", kind="cpu")
     with pytest.raises(ValueError):
         Job(id="ok", kind="cpu", recipe_hash="md5:x")
+
+
+def test_gpu_only_host_gets_no_build_lanes_and_capped_allowance() -> None:
+    from spectracut.queue.executors.hostpool import computeshare_allowance
+
+    gpu_only = HostSlot(
+        name="main-pc", profile=PROFILE, cpus=8, mem_gb=4, gpus=(CARD_12,), build_lanes=False
+    )
+    ex = HostPoolExecutor([gpu_only], lambda _h, job: JobResult(output=job.id))
+    assert ex.pick(Resources(), build=True) is None
+    with pytest.raises(ExecutorBusy):
+        ex.run(Job(id="b1", kind="build"))
+    assert ex.run(Job(id="r1", kind="blender", resources=Resources(gpus=1))).output == "r1"
+    assert computeshare_allowance(gpu_only)["build_lanes"] is False
+    assert computeshare_allowance(gpu_only)["mem_gb"] == 4

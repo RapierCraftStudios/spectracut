@@ -30,6 +30,7 @@ from spectracut.setup.storage import (
     storage_variables,
     to_flamenco_path,
     wifi_warnings,
+    windows_storage_source,
 )
 
 CRED = Credential("spectracut-share", "pw-secret-value")
@@ -140,8 +141,9 @@ def test_storage_move_repoints_manager_and_all_workers(tmp_path: Path) -> None:
     assert {"storage:restart-worker:legion", "storage:restart-worker:rig"} <= set(ids)
     serve = next(s for s in move.steps if s.id == "storage:serve")
     assert serve.shell == "powershell"
-    assert "New-SmbShare" in serve.command and "UserList" in serve.command
-    assert "100.64.0.0/10" in serve.command
+    assert "Test-Path" in serve.command and "Administrator" in serve.command  # admin handoff
+    assert "New-SmbShare" in windows_storage_source() and "UserList" in windows_storage_source()
+    assert "100.64.0.0/10" in windows_storage_source()
 
     nas = _plan(load_state(tmp_path), StorageTarget(kind="nas", host="nas.lan", share="films"))
     assert "storage:serve" not in [s.id for s in nas.steps]
