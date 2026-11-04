@@ -34,7 +34,7 @@ from bpy_runtime.ops.material import material_apply_preset
 from bpy_runtime.ops.props import render_set_property
 from bpy_runtime.ops.scene import object_import_gltf
 
-__all__ = ["TOOL_NAMES", "TOOLS", "ToolError", "run_step"]
+__all__ = ["TOOL_NAMES", "TOOLS", "run_step"]
 
 TOOL_NAMES = frozenset(
     {
