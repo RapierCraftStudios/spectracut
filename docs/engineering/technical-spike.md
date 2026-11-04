@@ -155,7 +155,9 @@ spectracut/
 
 ## Runtime topology
 
-**Self-hosted (day one):**
+**Self-hosted (day one).** Blender jobs are dispatched by Flamenco (see Built on proven open source); the rest of this section describes SpectraCut's own pieces around it.
+
+**Self-hosted, components:**
 - `spectracut serve` on a workstation runs the API, the MCP server, the queue (SQLite) and the review UI on localhost.
 - One or more render hosts run `spectracut-host`, registered by SSH key, and pull jobs one GPU job at a time.
 - Media lives on local disk, with a content-addressed frame cache keyed by recipe hash.
@@ -585,6 +587,47 @@ Rules:
 - paid APIs per capability (music licensing, stock sound, hosted image or audio models): each adds a bill per film and a dependency;
 - ElevenLabs for sound effects and temp VO: it would spend paid characters on work that local models do well enough.
 
+## Built on proven open source, folded into one install
+
+SpectraCut starts where the best open-source Blender work ends instead of rebuilding it. Everything below is **folded into SpectraCut**: `spectracut setup` installs, configures, versions and updates each piece on the control plane and render hosts, so the user installs one product and never configures Flamenco, Ardour, models or asset packs by hand. Components run as separate processes or bundled add-ons, pinned to tested versions. SpectraCut writes its own code only where nothing good exists or where it's the core of the product: the production graph, recipes, departments, the Critic, device mockups, motion typography and finishing node groups.
+
+**Infrastructure:**
+
+| Component | What it gives SpectraCut | How it's folded in |
+|---|---|---|
+| **Flamenco** (Blender's render farm manager, GPL) | proven Manager/Worker job dispatch, native Windows and Linux workers, worker tags per GPU, REST API | replaces our own host agent and Blender queue. SpectraCut runs the Manager on the control plane and installs native Workers on render hosts, so Eevee gets full GPU access on Windows. A custom `spectracut-shot` job type compiles recipes into tasks; workers run our recipe runner. Needs shared storage: a Samba share on the control plane, mapped on each host over Tailscale, to be proven first. No warm sessions in Flamenco, so preview sessions stay our own service. |
+| **OpenTimelineIO** | the industry timeline model and adapters | the `Edit` *is* an OTIO Timeline, with our shot hashes in metadata; no custom timeline format |
+| **OpenColorIO** (ships in Blender) | AgX and ACES configs, looks and transforms | Looks are OCIO looks plus CDL/LUTs; review playback uses the same config |
+| **Kitsu / Zou data model** (AGPL) | the studio-standard model of episodes, sequences, shots, assets, tasks, casting, versions and review states | SpectraCut mirrors this model in its own tables (no extra server to run). An optional Kitsu sync lets a human team track and review in Kitsu |
+| **OpenAssetIO, AYON, Blender Studio tools** | asset references, publish and version handling | design reference for the asset library and publishing |
+
+**Agents driving Blender:**
+
+| Project | What SpectraCut takes |
+|---|---|
+| **Blender Lab MCP** (official, GPL) | fork as the base of the harness: one module per tool, a headless `_for_cli` path, and **API and manual docs-search tools**, so agents look up exact bpy signatures instead of guessing. SpectraCut adds its typed scene, camera, light, material, screen and preview tools and recipe logging on top, plus a real sandbox (hosts run recipes, not arbitrary code) |
+| **VIGA** (MIT) | the Critic loop: a mandatory plan first, generate → render → separate verifier → revise, a sliding window of recent plans, diffs and renders with the recipe as the full state, undo, and best-of-N candidates |
+| **BlenderGym** (research) | the verifier-agreement protocol for calibrating the Critic against people, and the budget rule: with few iterations, spend more on generating candidates; with many, spend more on verifying |
+| **BlenderAlchemy** (research) | pairwise comparison: the Critic picks between two candidates rather than only scoring each, which judges more reliably |
+| **Frugal Blender MCP, ahujasid/blender-mcp** (MIT) | keep tool context small (a `discover` tool instead of loading every schema), a multi-view `look` tool (solid, material, rendered, wireframe, auto-framed angles) |
+| **SceneActBench, 3DCodeBench, BlenderWorld** (MIT/Apache) | harnesses to seed SpectraCut's benchmark runner: headless Blender tasks scored against hidden ground truth |
+
+**Craft building blocks:**
+
+| Area | Adopted | Role |
+|---|---|---|
+| Environments | **Infinigen** (BSD) | procedural terrain, nature, weather, creatures and materials, seeded and headless, wrapped as typed tools (`world.generate(biome, seed)`) |
+| Assets and lighting | **Poly Haven** (CC0) and its API, **ambientCG** (CC0), **Kenney** (CC0), **BlenderKit** (per-asset tracking) | seed the asset library: HDRIs, PBR materials, models |
+| Camera | **Camera Shakify** (CC0 shake data) | real handheld camera motion, baked to keyframes in recipes |
+| Characters | **MPFB2** (MakeHuman), **Rigify** | generated humans with standard rigs, as the base for look-dev |
+| Motion | **Rokoko retargeting**, **CMU mocap**, Rokoko's free library, own capture | retarget motion to any rig; motion models trained only on data usable for commercial output |
+| Lip sync and faces | **Rhubarb Lip Sync** now, **NVIDIA Audio2Face-3D** next | visemes from VO on CPU today; higher-quality local facial animation via a Blender port |
+| Liquids | **FLIP Fluids** (optional paid licence) | hero liquid simulations when a production needs them; Mantaflow otherwise |
+
+**Built by SpectraCut, because nothing good exists:** the device mockup rig (screen node group with a moire-free pixel grid, glass and bezel layers, live UI as a video texture), motion typography (typed presets on drivers and shader nodes), finishing node groups (glare, lens distortion, halation, grain, chromatic aberration), and agent cinematography (no open work does camera direction or animation timing well; the skill packs and Critic carry it).
+
+**Rationale**: these projects are maintained by Blender's own developers, the ASWF and serious research groups, and they already solved hard problems (job dispatch on mixed Windows/Linux GPUs, timelines, color, procedural worlds, agent-Blender loops). Folding them into one install keeps SpectraCut simple to run while starting far above zero. Rejected: writing our own render farm, timeline, color pipeline or procedural nature; and requiring users to install and wire up each tool themselves.
+
 ## Optional integrations: tokenbaton, computeshare, ForgeDock
 
 SpectraCut works fully without these three. Each is off by default, turned on by one config block, and detected at startup; `spectracut doctor` reports which are on and whether they're healthy. None of them changes a spec, a recipe or a render: they only change where work runs, which account pays for AI calls, and who gets told about failures.
@@ -633,12 +676,8 @@ computeshare already places Docker sandboxes on enrolled hosts by reserved CPU a
 The target fleet today: `archlinux` (control plane and computeshare router, no GPU), `legion` (RTX 3070 Laptop, 8 GB) and `mrdubey-1` (RTX 4070 Ti, 12 GB), both Windows. The goal is that SpectraCut can use both cards fully, through computeshare, for final renders, fast previews and mockups, and other GPU work.
 
 - **Whole-GPU leases.** A GPU is reserved as a unit, never sliced: Blender, NVENC and local models all expect the whole card. Agents advertise each card (model, VRAM, driver, capabilities: `cuda`, `optix`, `opengl`, `vulkan`, `nvenc`), detected with `nvidia-smi` on the Windows side. The router places a GPU job only on a free card that meets its `vram_gb` and capabilities, and prefers the bigger card for heavy jobs.
-- **Native Windows GPU runner (expected), decided by measurement.** computeshare lanes run in Docker inside WSL2. CUDA and OptiX (Cycles) work there; Eevee and Workbench need full OpenGL/Vulkan on the NVIDIA driver, which WSL2 doesn't reliably give. Eevee and Workbench are what make previews and mockups fast. So the first task is a benchmark on `legion`: the same shot in Cycles, Eevee and Workbench plus an NVENC encode, in WSL Docker and natively on Windows. Expected result, and the plan unless the numbers say otherwise:
-  - computeshare's Windows installer adds a small native **GPU runner** service next to the WSL distro;
-  - it runs as a dedicated low-privilege local user, and starts only allow-listed executables at fixed paths (Blender 4.5 LTS, `spectracut-host`, ffmpeg), never arbitrary commands;
-  - a Windows Firewall rule blocks outbound network for Blender, matching the "no network during renders" guardrail;
-  - the router talks to it the same way it talks to a WSL agent, so SpectraCut sees one kind of GPU sandbox either way.
-- **Warm GPU sessions for speed.** Start-up dominates short preview renders: launching Blender and loading the scene often takes longer than rendering a preview frame. SpectraCut can hold a **session lease** on a card. Blender stays running with the scene loaded, and each preview or mockup only applies recipe changes and renders. The lease ends after an idle timeout (default 10 min) or when the session ends. Final renders use fresh one-shot jobs so they stay reproducible.
+- **Blender runs natively through Flamenco; computeshare manages the fleet.** Eevee and Workbench (fast previews and mockups) need full OpenGL/Vulkan on the NVIDIA driver, which WSL2 doesn't reliably give, so Blender runs as a **native Flamenco Worker** on each Windows host. computeshare installs and updates that worker, tags it per GPU (model, VRAM, capabilities), and applies the host's lending mode by putting the worker to sleep or waking it through Flamenco's API. computeshare's own Docker sandboxes keep running CPU jobs, local models and ForgeDock lanes. A benchmark on `legion` (Cycles, Eevee, Workbench and NVENC, WSL vs native) confirms the split before it's relied on.
+- **Warm GPU sessions for speed** (SpectraCut's own preview service; Flamenco starts a fresh Blender per task). Start-up dominates short preview renders: launching Blender and loading the scene often takes longer than rendering a preview frame. SpectraCut can hold a **session lease** on a card. Blender stays running with the scene loaded, and each preview or mockup only applies recipe changes and renders. The lease ends after an idle timeout (default 10 min) or when the session ends. Final renders use fresh one-shot jobs so they stay reproducible.
 - **Using both cards at once:**
   - finals are split **by shot** across cards, so every frame of one shot comes from one machine;
   - previews may be split **by frame** across cards for speed;
