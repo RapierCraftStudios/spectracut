@@ -51,15 +51,25 @@ components:
         if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $want) {{ throw 'uv {version} SHA-256 mismatch' }};
         Expand-Archive -Force $z $bin
   spectracut-host:
-    description: spectracut-host, the agent every `spectracut-shot` task runs (uv tool, pinned wheel)
+    description: >-
+      spectracut-host, the agent every `spectracut-shot` task runs (uv tool, installed from
+      the spectracut and spectracut-host wheels built on the control plane and copied over SSH)
     roles: [host]
     os: [linux, windows]
-    version_cmd: {linux: "spectracut-host --help", windows: "spectracut-host.exe --help"}
+    version_cmd: {linux: "spectracut-host --version", windows: "spectracut-host.exe --version"}
     install:
       linux: >-
-        $HOME/.local/bin/uv tool install --force --python 3.12 spectracut-host=={version}
+        set -e; "$HOME/.local/bin/uv" tool install --force --reinstall --python 3.12
+        --find-links "{wheel_dir}" --with "{spectracut_wheel}" "{host_wheel}";
+        v=$("$HOME/.local/bin/spectracut-host" --version);
+        test "$v" = "{public_version}" || {{ echo "spectracut-host is $v, want {public_version}" >&2; exit 1; }}
       windows: >-
-        & (Join-Path $env:USERPROFILE '.local/bin/uv.exe') tool install --force --python 3.12 spectracut-host=={version}
+        $ErrorActionPreference = 'Stop'; $bin = Join-Path $env:USERPROFILE '.local/bin';
+        & (Join-Path $bin 'uv.exe') tool install --force --reinstall --python 3.12
+        --find-links "{wheel_dir}" --with "{spectracut_wheel}" "{host_wheel}";
+        if ($LASTEXITCODE -ne 0) {{ throw "uv tool install of spectracut-host failed ($LASTEXITCODE)" }};
+        $v = (& (Join-Path $bin 'spectracut-host.exe') --version | Out-String).Trim();
+        if ($v -ne '{public_version}') {{ throw "spectracut-host version mismatch: $v, want {public_version}" }}
   flamenco-manager:
     description: Flamenco Manager on the control plane, listening on the Tailscale address only
     roles: [control]
@@ -115,7 +125,7 @@ sets:
     versions:
       blender: "4.5.15"
       uv: "0.9.5"
-      spectracut-host: "0.1.0"
+      spectracut-host: "control-plane"  # built from the control plane's code (setup/wheels.py)
       flamenco-manager: "3.9.3"
       flamenco-worker: "3.9.3"
       samba: "4.21"
