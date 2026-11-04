@@ -16,7 +16,9 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+from pydantic import JsonValue
 
 log = logging.getLogger(__name__)
 
@@ -114,6 +116,23 @@ class VisionJudge(Protocol):
 
     def score(self, frame_path: Path, rubric: str) -> VisionScore:
         """Score ``frame_path`` against ``rubric``."""
+        ...
+
+
+@dataclass(frozen=True)
+class Completion:
+    """One structured text call: the JSON output and what it used, by metric slug."""
+
+    output: JsonValue
+    usage: dict[str, int]
+
+
+@runtime_checkable
+class TextProvider(Protocol):
+    name: str
+
+    def complete(self, system: str, prompt: str, *, schema: dict[str, Any]) -> Completion:
+        """Answer ``prompt`` under ``system`` with JSON that conforms to ``schema``."""
         ...
 
 
