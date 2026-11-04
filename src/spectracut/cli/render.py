@@ -28,6 +28,8 @@ from spectracut.queue.signing import (
     parse_signed_job,
     sign_job,
 )
+from spectracut.setup.manifest import load_manifest
+from spectracut.setup.plan import CommandRunner, SetupError, bootstrap_host
 from spectracut.spec._base import Slug, StrictModel, canonical_json
 from spectracut.spec.recipe import Recipe
 from spectracut.studio.store import ProductionError, ProductionStore, spectracut_home, write_atomic
@@ -265,12 +267,24 @@ def hosts_list(home: HomeOpt = None) -> None:
 
 @hosts_app.command("add")
 def hosts_add(
-    name: Annotated[str, typer.Option("--name", help="Host name (slug).")],
-    cpus: Annotated[float, typer.Option("--cpus", help="CPUs lent to the pool.")],
-    mem_gb: Annotated[float, typer.Option("--mem-gb", help="Memory lent, in GB.")],
+    alias: Annotated[
+        str | None,
+        typer.Argument(metavar="[SSH_ALIAS]", help="Host name; the SSH alias setup uses."),
+    ] = None,
+    name: Annotated[str | None, typer.Option("--name", help="Host name (slug).")] = None,
+    cpus: Annotated[
+        float | None, typer.Option("--cpus", help="CPUs lent to the pool (probed if omitted).")
+    ] = None,
+    mem_gb: Annotated[
+        float | None, typer.Option("--mem-gb", help="Memory lent, in GB (probed if omitted).")
+    ] = None,
     profile_file: Annotated[
-        Path, typer.Option("--profile-file", help="JSON from `spectracut-host profile`.")
-    ],
+        Path | None,
+        typer.Option(
+            "--profile-file",
+            help="JSON from `spectracut-host profile`; omit to bootstrap the host over SSH.",
+        ),
+    ] = None,
     gpu: Annotated[
         list[str] | None, typer.Option("--gpu", help="Whole GPU as MODEL:VRAM_GB (repeatable).")
     ] = None,
@@ -287,24 +301,43 @@ def hosts_add(
     ] = False,
     home: HomeOpt = None,
 ) -> None:
-    """Register a render host."""
-    profile = _read_model(profile_file, RenderProfile, "render profile")
+    """Register a render host; with no --profile-file, install spectracut-host over SSH first."""
+    if alias and name and alias != name:
+        raise _fail(f"host given twice: {alias!r} and --name {name!r}")
+    name = alias or name
+    if not name:
+        raise _fail("give the host's SSH alias (or --name)")
+    reg = _registry(home)
+    others = tuple(h for h in reg.hosts if h.name != name)
+    if len(others) != len(reg.hosts) and not replace:
+        raise _fail(f"host {name!r} is already registered (use --replace)")
+    gpus = tuple(_gpu(g) for g in gpu or ())
+    if profile_file is not None:
+        if cpus is None or mem_gb is None:
+            raise _fail("--cpus and --mem-gb are required with --profile-file")
+        profile = _read_model(profile_file, RenderProfile, "render profile")
+    else:
+        try:
+            found = bootstrap_host(load_manifest(), name, CommandRunner(), _home(home))
+        except (SetupError, ValueError, OSError) as exc:
+            raise _fail(str(exc)) from exc
+        profile = found.profile
+        cpus = cpus if cpus is not None else found.cpus
+        mem_gb = mem_gb if mem_gb is not None else found.mem_gb
+        if not gpus and profile.gpu_model != "unknown" and profile.vram_gb:
+            gpus = (GpuCard(name=profile.gpu_model, vram_gb=profile.vram_gb),)
     try:
         entry = HostEntry(
             name=name,
             cpus=cpus,
             mem_gb=mem_gb,
-            gpus=tuple(_gpu(g) for g in gpu or ()),
+            gpus=gpus,
             profile=profile,
             role=role,
             ram_cap_gb=ram_cap_gb,
         )
     except ValidationError as exc:
         raise _fail(f"invalid host: {exc.errors()[0]['loc']}: {exc.errors()[0]['msg']}") from exc
-    reg = _registry(home)
-    others = tuple(h for h in reg.hosts if h.name != name)
-    if len(others) != len(reg.hosts) and not replace:
-        raise _fail(f"host {name!r} is already registered (use --replace)")
     write_atomic(hosts_path(home), canonical_json(HostRegistry(hosts=(*others, entry))))
     typer.echo(f"registered {name}")
 
