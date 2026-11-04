@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 import yaml
@@ -32,6 +33,8 @@ TAILSCALE_RANGE = "100.64.0.0/10"
 CRED_FILE = "/etc/spectracut-storage.cred"
 MIGRATE_MOUNT = "/mnt/spectracut-migrate"
 MANAGER_PORT = 8085
+ADMIN_SCRIPT = "windows_storage.ps1"
+WINDOWS_MARKER = f"{WINDOWS_LOCAL_PATH}/.spectracut-share"
 
 
 class StorageTarget(StrictModel):
@@ -153,37 +156,85 @@ def _smb_server(target: StorageTarget, facts: Mapping[str, HostFacts]) -> str:
     return facts[target.host].address if target.kind == "host" else target.host
 
 
+def windows_storage_source() -> str:
+    """``windows_storage.ps1``: the one-time admin script that creates the SMB share."""
+    return Path(__file__).with_name(ADMIN_SCRIPT).read_text(encoding="utf-8")
+
+
+_PROFILE_DIR = (
+    "$d = Join-Path $env:USERPROFILE 'spectracut'; "
+    "New-Item -ItemType Directory -Force $d | Out-Null; "
+)
+
+
+def _windows_admin_steps(host: str, cred: Credential) -> list[Step]:
+    """Write the admin script and its ACL'd password file, then wait for an admin to run it.
+
+    Creating an SMB share and a local account needs admin, which the SSH account lacks.
+    The gate step fails until the script has run; re-running ``spectracut setup`` continues.
+    """
+    write_script = (
+        _PROFILE_DIR + f"[IO.File]::WriteAllText((Join-Path $d '{ADMIN_SCRIPT}'), "
+        "[Console]::In.ReadToEnd())"
+    )
+    write_pw = (
+        _PROFILE_DIR
+        + "$f = Join-Path $d 'storage.pw'; New-Item -ItemType File -Force $f | Out-Null; "
+        "icacls $f /inheritance:r /grant:r ($env:USERNAME + ':F') '*S-1-5-32-544:F' | Out-Null; "
+        "[IO.File]::WriteAllText($f, [Console]::In.ReadLine())"
+    )
+    gate = (
+        _PROFILE_DIR + f"if (-not (Test-Path '{WINDOWS_MARKER}')) {{ "
+        f"$s = Join-Path $d '{ADMIN_SCRIPT}'; $f = Join-Path $d 'storage.pw'; "
+        "[Console]::Error.WriteLine('run once as Administrator: powershell -ExecutionPolicy Bypass "
+        f"-File ' + $s + ' -PasswordFile ' + $f + ' -User {cred.user} -Share {SHARE}"
+        "; then re-run spectracut setup'); exit 1 }"
+    )
+    return [
+        Step(
+            host,
+            "storage:admin-script",
+            "write the one-time admin script",
+            write_script,
+            "powershell",
+            stdin=windows_storage_source(),
+        ),  # fmt: skip
+        Step(
+            host,
+            "storage:admin-password",
+            "store the share password (ACL'd file)",
+            write_pw,
+            "powershell",
+            stdin=cred.password + "\n",
+        ),  # fmt: skip
+        Step(
+            host,
+            "storage:serve",
+            "wait for the admin script to have created the share",
+            gate,
+            "powershell",
+        ),  # fmt: skip
+    ]
+
+
+def storage_notes(target: StorageTarget, facts: Mapping[str, HostFacts]) -> list[str]:
+    """Heads-up for a Windows storage host: an administrator must run the script once."""
+    if target.kind == "host" and facts[target.host].os == "windows":
+        return [
+            f"{target.host} needs a one-time admin step: setup writes {ADMIN_SCRIPT} and an "
+            "ACL'd password file under its profile's spectracut folder and stops until the "
+            "script has been run as Administrator; then re-run setup to mount and map the share"
+        ]
+    return []
+
+
 def _serve_steps(
     target: StorageTarget, facts: Mapping[str, HostFacts], cred: Credential
 ) -> list[Step]:
     """Set up the share on the chosen machine (Tailscale-only, dedicated account)."""
     host = facts[target.host]
     if host.os == "windows":
-        script = (
-            "$p = [Console]::In.ReadLine(); $sec = ConvertTo-SecureString $p -AsPlainText -Force; "
-            f"if (Get-LocalUser -Name '{cred.user}' -EA SilentlyContinue) "
-            f"{{ Set-LocalUser -Name '{cred.user}' -Password $sec }} else "
-            f"{{ New-LocalUser -Name '{cred.user}' -Password $sec -PasswordNeverExpires | Out-Null }}; "  # noqa: E501
-            "reg add 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\SpecialAccounts\\UserList' "  # noqa: E501
-            f"/v {cred.user} /t REG_DWORD /d 0 /f | Out-Null; "
-            f"New-Item -ItemType Directory -Force '{WINDOWS_LOCAL_PATH}' | Out-Null; "
-            f"if (-not (Get-SmbShare -Name {SHARE} -EA SilentlyContinue)) "
-            f"{{ New-SmbShare -Name {SHARE} -Path '{WINDOWS_LOCAL_PATH}' -FullAccess '{cred.user}' | Out-Null }}; "  # noqa: E501
-            "if (-not (Get-NetFirewallRule -Name spectracut-smb -EA SilentlyContinue)) "
-            "{ New-NetFirewallRule -Name spectracut-smb -DisplayName 'SpectraCut storage (Tailscale only)' "  # noqa: E501
-            f"-Direction Inbound -Protocol TCP -LocalPort 445 -RemoteAddress {TAILSCALE_RANGE} "
-            "-Action Allow | Out-Null }"
-        )
-        return [
-            Step(
-                target.host,
-                "storage:serve",
-                "serve the SMB share (Tailscale-only)",
-                script,
-                "powershell",
-                stdin=cred.password + "\n",
-            )
-        ]
+        return _windows_admin_steps(target.host, cred)
     smb_conf = (
         f"[{SHARE}]\n   path = {LINUX_PATH}\n   read only = no\n   valid users = {cred.user}\n"
         f"   hosts allow = {TAILSCALE_RANGE} 127.0.0.1\n   hosts deny = 0.0.0.0/0\n"

@@ -36,6 +36,22 @@ class HostSlot:
     cpus: float
     mem_gb: float
     gpus: tuple[GpuCard, ...] = field(default=())
+    build_lanes: bool = True
+    """False on a gpu-only host: render and GPU work only, never build lanes."""
+
+
+BUILD_KIND = "build"
+
+
+def computeshare_allowance(slot: HostSlot) -> dict[str, object]:
+    """What this host lends computeshare: capped memory, whole GPUs, and whether build lanes run."""
+    return {
+        "host": slot.name,
+        "cpus": slot.cpus,
+        "mem_gb": slot.mem_gb,
+        "gpus": [g.model_dump() for g in slot.gpus],
+        "build_lanes": slot.build_lanes,
+    }
 
 
 Dispatch = Callable[[HostSlot, "Job"], JobResult]
@@ -67,9 +83,16 @@ class HostPoolExecutor:
     def can_run_now(self, req: Resources) -> bool:
         return any(p.can_run_now(req) for p in self._pools.values())
 
-    def pick(self, req: Resources) -> HostSlot | None:
-        """First registered host that fits now; for GPU jobs, the one with the biggest card."""
-        fits = [h for h in self.hosts if self._pools[h.name].can_run_now(req)]
+    def pick(self, req: Resources, *, build: bool = False) -> HostSlot | None:
+        """First registered host that fits now; for GPU jobs, the one with the biggest card.
+
+        A ``build`` job skips hosts without build lanes (gpu-only hosts).
+        """
+        fits = [
+            h
+            for h in self.hosts
+            if self._pools[h.name].can_run_now(req) and (h.build_lanes or not build)
+        ]
         if not fits:
             return None
         if req.gpus:
@@ -77,7 +100,7 @@ class HostPoolExecutor:
         return fits[0]
 
     def run(self, job: Job) -> JobResult:
-        host = self.pick(job.resources)
+        host = self.pick(job.resources, build=job.kind == BUILD_KIND)
         if host is None:
             raise ExecutorBusy(f"{self.name}: no host fits {job.resources.model_dump()} now")
         result = metered_run(

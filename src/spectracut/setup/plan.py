@@ -30,6 +30,7 @@ from spectracut.setup.storage import (
     StorageTarget,
     choose_default_host,
     plan_storage,
+    storage_notes,
     wifi_warnings,
     write_file_step,
 )
@@ -340,7 +341,12 @@ def build_plan(
         if any(have.get(k) != v for k, v in want.items()):
             steps += svc
     steps += plan_storage(target, state.storage, facts, workers, cred)
-    return Plan(set_id, tuple(steps), target, tuple(wifi_warnings(facts, target)))
+    return Plan(
+        set_id,
+        tuple(steps),
+        target,
+        tuple(storage_notes(target, facts) + wifi_warnings(facts, target)),
+    )
 
 
 def apply_plan(

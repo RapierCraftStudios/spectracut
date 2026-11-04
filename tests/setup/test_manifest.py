@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -13,8 +15,7 @@ from spectracut.setup.manifest import Manifest, load_manifest
 from spectracut.setup.plan import HostState, SetupState, save_state
 
 EXPECTED = {
-    "blender", "flamenco-manager", "flamenco-worker", "samba", "ardour", "supercollider",
-    "audio-plugins", "local-models", "polyhaven-assets", "ambientcg-assets", "addons",
+    "blender", "flamenco-manager", "flamenco-worker", "samba", "audio-image",
     "uv", "spectracut-host",
 }  # fmt: skip
 
@@ -37,8 +38,8 @@ def test_manifest_pins_every_component() -> None:
 
 def test_unpinned_component_is_rejected() -> None:
     raw = load_manifest().model_dump()
-    del raw["sets"][0]["versions"]["ardour"]
-    with pytest.raises(ValidationError, match="ardour"):
+    del raw["sets"][0]["versions"]["audio-image"]
+    with pytest.raises(ValidationError, match="audio-image"):
         Manifest.model_validate(raw)
 
 
@@ -59,15 +60,15 @@ def test_doctor_lists_version_and_health(tmp_path: Path) -> None:
         SetupState(
             set_id="2026.11",
             hosts={
-                "legion": HostState(components={"blender": "4.5.15", "addons": "2026.10"}),
+                "legion": HostState(components={"blender": "4.5.15", "audio-image": "2026.10"}),
             },
         ),
         tmp_path,
     )
     lines = component_lines(tmp_path, m)
     assert "blender 4.5.15 on legion: healthy" in lines
-    assert "addons 2026.10 on legion: drift (pinned 2026.11)" in lines
-    assert "ardour 8.12: not installed" in lines
+    assert "audio-image 2026.10 on legion: drift (pinned 2026.11)" in lines
+    assert "samba 4.21: not installed" in lines
 
 
 def test_every_download_is_checked_against_its_published_sha256() -> None:
@@ -76,3 +77,28 @@ def test_every_download_is_checked_against_its_published_sha256() -> None:
         for os_name, cmd in m.components[name].install.items():
             assert "sha256" in cmd.lower(), (name, os_name)
             assert ("sha256sum -c" in cmd) if os_name == "linux" else ("Get-FileHash" in cmd), name
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_every_spectracut_command_in_the_manifest_is_shipped() -> None:
+    shipped: set[str] = set()
+    for pyproject in (ROOT / "pyproject.toml", ROOT / "host" / "pyproject.toml"):
+        shipped |= set(tomllib.loads(pyproject.read_text())["project"]["scripts"])
+    text = (ROOT / "src/spectracut/setup/manifest.yaml").read_text()
+    commands = {
+        m.removesuffix(".exe")
+        for m in re.findall(r"(?<![\w/.-])(spectracut-[a-z]+(?:\.exe)?)(?=[ \"'])", text)
+    }
+    pins = set(load_manifest().components)
+    unresolved = commands - shipped - pins
+    assert not unresolved, f"commands not shipped by any package: {sorted(unresolved)}"
+    assert "spectracut-host" in shipped
+
+
+def test_audio_tools_install_from_the_pinned_image() -> None:
+    comp = load_manifest().components["audio-image"]
+    assert "host/docker/audio.Dockerfile" in comp.install["linux"]
+    assert (ROOT / "host/docker/audio.Dockerfile").is_file()
+    assert "pacman" not in comp.install["linux"] and "apt-get" not in comp.install["linux"]

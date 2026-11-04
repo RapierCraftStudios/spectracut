@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 from pydantic import BaseModel, Field, ValidationError
@@ -178,6 +178,10 @@ def status_cmd(home: HomeOpt = None) -> None:
 # ---- hosts -----------------------------------------------------------------
 
 
+HostRole = Literal["general", "gpu-only"]
+GPU_ONLY_RAM_GB = 4.0
+
+
 class HostEntry(StrictModel):
     """One registered render host, as stored in ``<home>/hosts.json``."""
 
@@ -186,14 +190,19 @@ class HostEntry(StrictModel):
     mem_gb: float = Field(gt=0)
     gpus: tuple[GpuCard, ...] = ()
     profile: RenderProfile
+    role: HostRole = "general"
+    ram_cap_gb: float | None = Field(default=None, gt=0)
 
     def slot(self) -> HostSlot:
+        gpu_only = self.role == "gpu-only"
+        cap = (self.ram_cap_gb or GPU_ONLY_RAM_GB) if gpu_only else self.mem_gb
         return HostSlot(
             name=self.name,
             profile=self.profile,
             cpus=self.cpus,
-            mem_gb=self.mem_gb,
+            mem_gb=min(self.mem_gb, cap),
             gpus=self.gpus,
+            build_lanes=not gpu_only,
         )
 
 
@@ -265,6 +274,14 @@ def hosts_add(
     gpu: Annotated[
         list[str] | None, typer.Option("--gpu", help="Whole GPU as MODEL:VRAM_GB (repeatable).")
     ] = None,
+    role: Annotated[
+        HostRole,
+        typer.Option("--role", help="general, or gpu-only (GPU work only, no build lanes)."),
+    ] = "general",
+    ram_cap_gb: Annotated[
+        float | None,
+        typer.Option("--ram-cap-gb", help="Memory cap in GB (gpu-only defaults to 4)."),
+    ] = None,
     replace: Annotated[
         bool, typer.Option("--replace", help="Replace a host of that name.")
     ] = False,
@@ -279,6 +296,8 @@ def hosts_add(
             mem_gb=mem_gb,
             gpus=tuple(_gpu(g) for g in gpu or ()),
             profile=profile,
+            role=role,
+            ram_cap_gb=ram_cap_gb,
         )
     except ValidationError as exc:
         raise _fail(f"invalid host: {exc.errors()[0]['loc']}: {exc.errors()[0]['msg']}") from exc

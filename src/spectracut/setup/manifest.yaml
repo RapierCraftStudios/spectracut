@@ -95,62 +95,15 @@ components:
       linux: >-
         if command -v pacman >/dev/null; then sudo pacman -S --needed --noconfirm samba;
         else sudo apt-get install -y samba; fi
-  ardour:
-    description: Ardour DAW, driven headless from its Lua tool
+  audio-image:
+    description: Audio tools (Ardour, SuperCollider, LSP, x42, Dragonfly, Surge XT, IEM) in the pinned Debian image of host/docker/audio.Dockerfile
     roles: [control]
     os: [linux]
-    version_cmd: {linux: "ardour8-lua --version"}
+    version_cmd: {linux: "docker image inspect spectracut-audio:current --format '{{.Id}}'"}
     install:
       linux: >-
-        if command -v pacman >/dev/null; then sudo pacman -S --needed --noconfirm ardour;
-        else sudo apt-get install -y ardour; fi
-  supercollider:
-    description: SuperCollider for non-realtime synthesis
-    roles: [control]
-    os: [linux]
-    version_cmd: {linux: "scsynth -v"}
-    install:
-      linux: >-
-        if command -v pacman >/dev/null; then sudo pacman -S --needed --noconfirm supercollider;
-        else sudo apt-get install -y supercollider; fi
-  audio-plugins:
-    description: LSP, x42, Airwindows, Dragonfly, Surge XT, IEM and the EBU ADM renderer
-    roles: [control]
-    os: [linux]
-    version_cmd: {linux: "spectracut-plugins --version"}
-    install:
-      linux: >-
-        if command -v pacman >/dev/null; then sudo pacman -S --needed --noconfirm lsp-plugins x42-plugins dragonfly-reverb surge-xt;
-        else sudo apt-get install -y lsp-plugins x42-plugins dragonfly-reverb surge-xt; fi
-  local-models:
-    description: Local speech, sound-effect, music and vision models
-    roles: [control]
-    os: [linux]
-    version_cmd: {linux: "spectracut-models --version"}
-    install:
-      linux: "spectracut-models fetch --set {version}"
-  polyhaven-assets:
-    description: Poly Haven CC0 HDRIs, materials and models
-    roles: [control]
-    os: [linux]
-    version_cmd: {linux: "spectracut-assets version polyhaven"}
-    install:
-      linux: "spectracut-assets fetch polyhaven --snapshot {version}"
-  ambientcg-assets:
-    description: ambientCG CC0 materials
-    roles: [control]
-    os: [linux]
-    version_cmd: {linux: "spectracut-assets version ambientcg"}
-    install:
-      linux: "spectracut-assets fetch ambientcg --snapshot {version}"
-  addons:
-    description: Bundled Blender add-ons (Camera Shakify, Rigify, MPFB2)
-    roles: [host]
-    os: [linux, windows]
-    version_cmd: {linux: "spectracut-addons version", windows: "spectracut-addons.exe version"}
-    install:
-      linux: "spectracut-addons install --set {version}"
-      windows: "spectracut-addons.exe install --set {version}"
+        set -e; cd "${{SPECTRACUT_REPO:-.}}"; test -f host/docker/audio.Dockerfile;
+        docker build -f host/docker/audio.Dockerfile -t spectracut-audio:{version} -t spectracut-audio:current host/docker
 sets:
   - id: "2026.11"
     versions:
@@ -160,10 +113,4 @@ sets:
       flamenco-manager: "3.9.3"
       flamenco-worker: "3.9.3"
       samba: "4.21"
-      ardour: "8.12"
-      supercollider: "3.13.1"
-      audio-plugins: "2026.11"
-      local-models: "2026.11"
-      polyhaven-assets: "2026.11"
-      ambientcg-assets: "2026.11"
-      addons: "2026.11"
+      audio-image: "2026.11"
