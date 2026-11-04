@@ -113,8 +113,27 @@ def test_workflow_runs_image_and_script() -> None:
     paths = triggers["pull_request"]["paths"]
     assert "host/docker/audio.Dockerfile" in paths
     assert "scripts/audio_tool_check.sh" in paths
-    runs = "\n".join(
-        step.get("run", "") for job in data["jobs"].values() for step in job["steps"]
-    )
+    runs = "\n".join(step.get("run", "") for job in data["jobs"].values() for step in job["steps"])
     assert "host/docker/audio.Dockerfile" in runs
     assert "audio_tool_check.sh" in runs
+
+
+def test_script_avoids_headless_dead_ends() -> None:
+    """Regressions from the lane's real runs (see the report's 'What did not work')."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    # ardourN-lua has no file import and simple_export() hangs headless
+    assert "ARDOUR.SourceFactory." not in text
+    assert "s:simple_export(" not in text
+    assert '"${bin%-lua}-export"' in text
+    assert "load_session(" in text
+    # ARDOUR.Location has no Lua constructor
+    assert "ARDOUR.Location(" not in text
+    # sclang's QtWebEngine aborts as root unless its sandbox is off
+    assert "QTWEBENGINE_CHROMIUM_FLAGS" in text
+
+
+def test_dockerfile_keeps_pkg_resources_for_ear() -> None:
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    match = re.search(r"setuptools==(\d+)\.", text)
+    assert match, "ear imports pkg_resources; setuptools must be pinned"
+    assert int(match.group(1)) < 81, "setuptools 81 removed pkg_resources"

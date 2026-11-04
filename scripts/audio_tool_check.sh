@@ -73,44 +73,13 @@ ardour_lua_bin() {
   return 1
 }
 
-# Writes an export format with dither, normalisation and BWF metadata off, so the
-# rendered bytes depend only on the session.
-write_export_format() {
-  cat > "$1" <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<ExportFormatSpecification name="SpectraCut WAV 24 deterministic" id="6a1e7c90-5c1e-4a5b-9d0e-48a0d10c4e48" with-cue="false" with-toc="false" upload="false" command="" analyse="false" soundcloud-upload="false">
-  <Encoding id="F_WAV" type="T_Sndfile" extension="wav" name="WAV" has-sample-format="true" channel-limit="256"/>
-  <SampleRate rate="48000"/>
-  <SRCQuality quality="SRC_SincBest"/>
-  <EncodingOptions>
-    <Option name="sample-format" value="SF_24"/>
-    <Option name="dithering" value="D_None"/>
-    <Option name="tag-metadata" value="false"/>
-    <Option name="tag-support" value="false"/>
-    <Option name="broadcast-info" value="false"/>
-  </EncodingOptions>
-  <Processing>
-    <Normalize enabled="false" policy="1" target="0" use-lufs="false" target-lufs="-23" use-tp="false" target-tp="-1"/>
-    <Silence>
-      <Start>
-        <Trim enabled="false"/>
-        <Add enabled="false"><Duration format="Timecode" hours="0" minutes="0" seconds="0" frames="0"/></Add>
-      </Start>
-      <End>
-        <Trim enabled="false"/>
-        <Add enabled="false"><Duration format="Timecode" hours="0" minutes="0" seconds="0" frames="0"/></Add>
-      </End>
-    </Silence>
-  </Processing>
-</ExportFormatSpecification>
-EOF
-}
-
-# The Lua program run by ardourN-lua: build the session, save, close, reload,
-# then export the session range to WAV.
-write_ardour_lua() { # write_ardour_lua FILE SESSION_DIR SOURCE_WAV EXPORT_DIR
+# The Lua programs run by ardourN-lua: FILE builds the session, saves and closes
+# it; FILE_reload.lua reloads it and checks the routing and plugin survived.
+# Export is done by ardourN-export (the Lua tool's simple_export() hangs headless
+# with the Dummy backend).
+write_ardour_lua() { # write_ardour_lua FILE SESSION_DIR
   cat > "$1" <<EOF
-local dir, name, src, outdir = "$2", "check", "$3", "$4"
+local dir, name = "$2", "check"
 local rate = $RATE
 local len = 4 * rate
 
@@ -137,20 +106,27 @@ for t in tracks:iter() do
   for c = 0, 1 do
     tr:output():audio(c):connect(bus:input():audio(c):name())
   end
-  -- region from the imported file
-  local pl = tr:playlist()
-  local fs = ARDOUR.SourceFactory.createExternal(ARDOUR.DataType("audio"), s, src, 0,
-    ARDOUR.Source.Flag(0), true, true)
-  assert(fs, "import failed")
-  local plist = ARDOUR.SourceList()
-  plist:push_back(fs)
-  local r = ARDOUR.RegionFactory.create(plist, ARDOUR.PropertyList(), true, nil)
-  pl:add_region(r, Temporal.timepos_t(i * rate / 2), 1, false)
-  -- gain automation: ramp in, dip, ramp out
+  -- source audio: bounce a sine from Ardour's bundled SinGen Lua DSP into a new
+  -- region. The headless Lua API has no file import (SourceFactory and
+  -- Editor:do_import are GUI-only), so the source is generated inside the session.
+  local gen = ARDOUR.LuaAPI.new_luaproc(s, "SinGen")
+  assert(not gen:isnil(), "SinGen Lua DSP not found")
+  assert(tr:add_processor_by_index(gen, 0, nil, true), "add SinGen failed")
+  ARDOUR.LuaAPI.set_processor_param(gen, 0, 220 * (i + 1))
+  ARDOUR.LuaAPI.set_processor_param(gen, 1, -12)
+  local r = tr:bounce_range(0, len, ARDOUR.InterThreadInfo(), gen, true, "src" .. i, false)
+  assert(not r:isnil(), "bounce of the source failed")
+  tr:remove_processor(gen, nil, true)
+  tr:playlist():add_region(r, Temporal.timepos_t(i * rate / 2), 1, false, 0, 0, false)
+  -- gain automation: hold, dip, recover, fade out. The curve starts at the
+  -- fader's static value (unity): starting elsewhere makes the first block's gain
+  -- ramp depend on whether a stopped-transport cycle ran before the export
+  -- started, which gave two different exports of the same session.
   local ac = tr:amp():gain_control()
+  ac:set_value(1.0, PBD.GroupControlDisposition.NoGroup)
   local al = ac:alist()
   al:clear_list()
-  al:add(Temporal.timepos_t(0), 0.0, false, true)
+  al:add(Temporal.timepos_t(0), 1.0, false, true)
   al:add(Temporal.timepos_t(rate), 1.0, false, true)
   al:add(Temporal.timepos_t(2 * rate), 0.5, false, true)
   al:add(Temporal.timepos_t(len), 0.0, false, true)
@@ -164,27 +140,33 @@ assert(not eq:isnil(), "a-eq LV2 plugin not found")
 assert(bus:add_processor_by_index(eq, 0, nil, true), "add a-eq failed")
 ARDOUR.LuaAPI.set_processor_param(eq, 1, 6.0)
 
-s:locations():add(ARDOUR.Location(s, Temporal.timepos_t(0), Temporal.timepos_t(len),
-  "session", ARDOUR.LocationFlags.IsSessionRange, 0), false)
+-- session range = the export range (Location has no Lua constructor)
+s:set_session_extents(Temporal.timepos_t(0), Temporal.timepos_t(len))
 s:save_state("", false, false, false, false, false)
 close_session()
-
--- reload and export
-s = load_session(dir, name)
+print("ARDOUR_BUILD_OK")
+EOF
+  # Reload runs in a fresh ardourN-lua process: load_session() after close_session()
+  # in the same process hangs on close in Ardour 8.12.
+  cat > "${1%.lua}_reload.lua" <<EOF
+AudioEngine:set_backend("None (Dummy)", "", "")
+local dir, name = "$2", "check"
+-- reload: the saved session must load headless with the same routing and plugin
+local s = load_session(dir, name)
 assert(s, "load_session failed")
-local e = s:simple_export()
-e:set_name("mix")
-e:set_folder(outdir)
-e:set_range(Temporal.timepos_t(0), Temporal.timepos_t(len))
-assert(e:set_preset("6a1e7c90-5c1e-4a5b-9d0e-48a0d10c4e48"), "export format not found")
-assert(e:run_export(), "export failed")
+local n = 0
+for _ in s:get_routes():iter() do n = n + 1 end
+assert(n == 4, "expected master + 2 tracks + bus after reload, got " .. n)
+local rb = s:route_by_name("FX Bus")
+assert(not rb:isnil(), "bus missing after reload")
+assert(not rb:nth_plugin(0):isnil(), "bus plugin missing after reload")
 close_session()
-print("ARDOUR_EXPORT_OK")
+print("ARDOUR_RELOAD_OK")
 EOF
 }
 
 check_ardour() {
-  local t0 bin ver run lua out hashes=() files=() detail
+  local t0 bin exp ver run lua out hashes=() files=() detail
   t0="$(now)"
   if ! bin="$(ardour_lua_bin)"; then
     record Ardour "not installed" GPL-2.0-or-later "-" FAIL "$(elapsed "$t0")" \
@@ -192,26 +174,27 @@ check_ardour() {
     return 1
   fi
   ver="$(deb_version ardour)"
-  # deterministic source: 4 s stereo chord, 24-bit
-  ffmpeg -nostdin -v error -f lavfi -i "sine=frequency=220:sample_rate=$RATE:duration=4" \
-    -f lavfi -i "sine=frequency=330:sample_rate=$RATE:duration=4" \
-    -filter_complex "[0][1]amerge=inputs=2,volume=0.5" -c:a pcm_s24le -bitexact \
-    "$WORK/ardour_src.wav"
-  # user export formats are read from the Ardour config dir
-  local cfg="$WORK/ardour_config"
-  local major="${bin//[!0-9]/}"
-  mkdir -p "$cfg/ardour$major/export"
-  write_export_format "$cfg/ardour$major/export/spectracut-wav24.format"
+  exp="${bin%-lua}-export"
+  if ! command -v "$exp" > /dev/null; then
+    record Ardour "$ver" GPL-2.0-or-later "$bin" FAIL "$(elapsed "$t0")" "$exp not on PATH"
+    return 1
+  fi
   for run in 1 2; do
     lua="$WORK/ardour_$run.lua"
     out="$OUT/ardour_run$run"
     rm -rf "$WORK/ardour_session_$run" "$out"
     mkdir -p "$out"
-    write_ardour_lua "$lua" "$WORK/ardour_session_$run" "$WORK/ardour_src.wav" "$out"
-    if ! XDG_CONFIG_HOME="$cfg" timeout 600 "$bin" "$lua" > "$LOGS/ardour_run$run.log" 2>&1 \
-       || ! grep -q ARDOUR_EXPORT_OK "$LOGS/ardour_run$run.log"; then
+    write_ardour_lua "$lua" "$WORK/ardour_session_$run"
+    # export: 24-bit, session rate, no normalise, no BWF header (ardourN-export
+    # applies no dither); output is the master bus over the session range
+    if ! timeout 600 "$bin" "$lua" > "$LOGS/ardour_run$run.log" 2>&1 \
+       || ! grep -q ARDOUR_BUILD_OK "$LOGS/ardour_run$run.log" \
+       || ! timeout 600 "$bin" "${lua%.lua}_reload.lua" >> "$LOGS/ardour_run$run.log" 2>&1 \
+       || ! grep -q ARDOUR_RELOAD_OK "$LOGS/ardour_run$run.log" \
+       || ! timeout 600 "$exp" -b 24 -s "$RATE" -o "$out/mix.wav" \
+            "$WORK/ardour_session_$run" check >> "$LOGS/ardour_run$run.log" 2>&1; then
       record Ardour "$ver" GPL-2.0-or-later "$bin" FAIL "$(elapsed "$t0")" \
-        "run $run failed: $(grep -v '^$' "$LOGS/ardour_run$run.log" | tail -n 3)"
+        "run $run failed: $(grep -v '^$' "$LOGS/ardour_run$run.log" | grep -v 'encoder is not available' | tail -n 3)"
       return 1
     fi
     files+=("$(find "$out" -name '*.wav' | head -n1)")
@@ -283,7 +266,10 @@ check_supercollider() {
     wav="$OUT/riser_run$run.wav"
     rm -f "$wav"
     write_riser_scd "$scd" "$wav"
-    if ! QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" timeout 300 "$bin" "$scd" \
+    # sclang links QtWebEngine (Chromium), which refuses to start as root with its
+    # sandbox on; containers run as root, so the sandbox is disabled for sclang only.
+    if ! QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" QTWEBENGINE_DISABLE_SANDBOX=1 \
+         QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox" timeout 300 "$bin" "$scd" \
          > "$LOGS/sc_run$run.log" 2>&1 || [[ ! -s "$wav" ]]; then
       record SuperCollider "$ver" GPL-3.0-or-later "$bin" FAIL "$(elapsed "$t0")" \
         "run $run failed: $(grep -v '^$' "$LOGS/sc_run$run.log" | tail -n 3)"
@@ -312,7 +298,9 @@ check_pedalboard() {
     record Pedalboard "$ver" GPL-3.0-only "-" FAIL "$(elapsed "$t0")" "python cannot import pedalboard"
     return 1
   fi
-  if ! vst3="$(find_vst3 'DragonflyRoomReverb.vst3')" && ! vst3="$(find_vst3 'lsp-plugins.vst3')"; then
+  # LSP (a deterministic compressor) first; Surge XT Effects, then Dragonfly as fallbacks
+  if ! vst3="$(find_vst3 'lsp-plugins.vst3')" && ! vst3="$(find_vst3 'Surge XT Effects.vst3')" \
+     && ! vst3="$(find_vst3 'DragonflyRoomReverb.vst3')"; then
     record Pedalboard "$ver" GPL-3.0-only "-" FAIL "$(elapsed "$t0")" "no VST3 plugin found"
     return 1
   fi
@@ -328,7 +316,8 @@ from pedalboard.io import AudioFile
 
 path, out = sys.argv[1], sys.argv[2]
 names = pedalboard.VST3Plugin.get_plugin_names_for_file(path)
-name = names[0]
+preferred = [n for n in names if n == "Compressor Stereo"]
+name = (preferred or names)[0]
 rate = 48000
 t = np.arange(int(rate * 2.0)) / rate
 clip = (0.3 * np.sin(2 * np.pi * 440 * t) * (t < 0.5)).astype(np.float32)
@@ -423,7 +412,7 @@ check_inventory() {
   inventory_lv2 "Dragonfly Reverb" "$(deb_version dragonfly-reverb-lv2)" GPL-3.0-or-later \
     '^urn:dragonfly:' 'DragonflyRoomReverb.vst3'
   inventory_lv2 "Surge XT" "$(cat /usr/lib/vst3/surge-xt.version 2>/dev/null || echo unknown)" \
-    GPL-3.0-or-later 'surge' 'Surge XT.vst3'
+    GPL-3.0-or-later '^https?://surge-synth' 'Surge XT.vst3'
   inventory_vst3 "IEM Plugin Suite" "$(deb_version iem-plugin-suite-vst3)" GPL-3.0-or-later \
     'IEM*.vst3'
   t0="$(now)"

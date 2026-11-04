@@ -83,6 +83,7 @@ RUN mkdir -p /usr/lib/vst3 /opt/airwindows \
 # Step 8: Python venv with Pedalboard (VST3 host) and the EBU ADM Renderer (ear).
 # ear 2.1.0 needs numpy 1.x, which has no wheel for trixie's Python 3.13, so the venv
 # uses a uv-managed CPython 3.12 (the repo's Python, pyproject.toml) instead.
+# ear imports pkg_resources at run time; setuptools 81+ removed it, so it is pinned.
 ENV UV_PYTHON_INSTALL_DIR=/opt/python UV_NO_CACHE=1
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3=3.13.5-1 python3-venv=3.13.5-1 \
@@ -91,6 +92,7 @@ RUN apt-get update \
  && /opt/uv/bin/pip install uv==0.12.5 \
  && /opt/uv/bin/uv venv --python 3.12 /opt/venv \
  && /opt/uv/bin/uv pip install --python /opt/venv/bin/python pedalboard==0.9.26 ear==2.1.0 \
+      setuptools==80.9.0 \
  && /opt/uv/bin/uv pip freeze --python /opt/venv/bin/python > /opt/venv/pip-freeze.txt
 ENV PATH=/opt/venv/bin:$PATH
 
