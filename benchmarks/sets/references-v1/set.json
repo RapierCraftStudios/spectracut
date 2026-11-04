@@ -1,0 +1,18 @@
+{
+  "id": "references-v1",
+  "title": "Owner reference films: the quality bar for AlterLab launch and product films",
+  "pieces": [
+    {"id": "base44-launch", "capability": "launch-film", "rubric": "ad-30s",
+     "outputs": "outputs/base44-launch", "pattern": "*.png",
+     "reference": "references/base44-launch.png", "fixture": false, "target": 0.8, "tolerance": 0.05},
+    {"id": "elevenagents-architect", "capability": "app-walkthrough", "rubric": "app-walkthrough",
+     "outputs": "outputs/elevenagents-architect", "pattern": "*.png",
+     "reference": "references/elevenagents-architect.png", "fixture": false, "target": 0.8, "tolerance": 0.05},
+    {"id": "nothing-headphone-xray", "capability": "device-cgi", "rubric": "device-launch",
+     "outputs": "outputs/nothing-headphone-xray", "pattern": "*.png",
+     "reference": "references/nothing-headphone-xray.png", "fixture": false, "target": 0.8, "tolerance": 0.05},
+    {"id": "apple-macbook-pro", "capability": "device-launch", "rubric": "device-launch",
+     "outputs": "outputs/apple-macbook-pro", "pattern": "*.png",
+     "reference": "references/apple-macbook-pro.png", "fixture": false, "target": 0.8, "tolerance": 0.05}
+  ]
+}
