@@ -29,9 +29,7 @@ def inspect_bounds(session: Session, args: Bounds) -> Output:
 
 def inspect_framing(session: Session, args: Framing) -> Output:
     """Subject coverage as a percentage (0-100) of the active camera's frame."""
-    result = session.dispatcher.render(
-        session.recorder.recipe(), [("inspect.framing", dump(args))]
-    )
+    result = session.dispatcher.render(session.recorder.recipe(), [("inspect.framing", dump(args))])
     report = dict(result.report("inspect.framing"))
     coverage = float(report["coverage_pct"])
     report["unit"] = "percent_of_frame"

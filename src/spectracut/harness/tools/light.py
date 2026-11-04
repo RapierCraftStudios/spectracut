@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, model_validator
 
-from spectracut.harness.tools import Output, Session, Step, ToolArgs, Vec3, dump, HarnessTool
+from spectracut.harness.tools import HarnessTool, Output, Session, Step, ToolArgs, Vec3, dump
 
 Energy = Annotated[float, Field(ge=0, le=1e7)]
 

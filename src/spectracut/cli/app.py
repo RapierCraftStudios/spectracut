@@ -23,6 +23,14 @@ app.command("status")(status_cmd)
 app.command("doctor")(doctor)
 
 
+@app.command("mcp")
+def mcp_cmd() -> None:
+    """Serve the agent harness (MCP over stdio): typed scene, camera, light and preview tools."""
+    from spectracut.harness.server import run_stdio
+
+    run_stdio()
+
+
 def _installed_version() -> str:
     try:
         return version("spectracut")

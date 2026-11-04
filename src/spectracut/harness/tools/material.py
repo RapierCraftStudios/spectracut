@@ -28,7 +28,5 @@ class ApplyPreset(ToolArgs):
 
 
 TOOLS = [
-    build_tool(
-        "material.apply_preset", "Give a mesh a material preset and colour.", ApplyPreset
-    ),
+    build_tool("material.apply_preset", "Give a mesh a material preset and colour.", ApplyPreset),
 ]

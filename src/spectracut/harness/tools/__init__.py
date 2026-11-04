@@ -138,3 +138,12 @@ def get_tool(name: str) -> HarnessTool:
         raise HarnessError("tool.unknown", f"unknown tool {name!r}: call discover to list tools")
     return tool
 
+
+def build_tools() -> list[HarnessTool]:
+    """Every tool that records recipe steps."""
+    return [t for t in registry().values() if t.kind == "build"]
+
+
+def schema_for(name: str) -> dict[str, Any]:
+    """The full JSON input schema of a harness tool."""
+    return get_tool(name).schema()
