@@ -70,3 +70,35 @@ python3 scripts/flamenco_storage_check.py --manager http://100.105.62.23:8085 \
   --blend /srv/flamenco/jobs/storage-check/cycles.blend --name cycles-4k \
   --manager-storage ~/.local/opt/flamenco-3.9.3-linux-amd64/flamenco-manager-storage
 ```
+
+## Update: storage on the wired main PC (2026-11-04)
+
+The owner's main PC (`mrdubey`, RTX 4070 Ti, wired) now hosts the shared storage:
+`\\MRDUBEY\flamenco` → `D:\SpectraCut\flamenco` (205 GB free), a dedicated hidden local account
+`flamenco`, and a firewall rule allowing SMB only from `100.64.0.0/10`. The control plane mounts it
+with CIFS at `/srv/flamenco` (credentials in `/etc/spectracut/flamenco.cred`, root-only), so the
+Manager's Linux paths did not change. The Samba share on the control plane was retired.
+
+Windows workers now use drive **`S:`** (the main PC already has a physical `F:`). On the storage
+host itself `S:` is a `subst` of the local folder, so its frames never touch the network. Both
+Windows workers run `scripts/flamenco_windows_worker.ps1`.
+
+| 8 frames, 4K | Legion only, storage on control plane (Wi-Fi) | Both GPUs, storage on main PC |
+|---|---|---|
+| Cycles OptiX + GPU denoise | 370 s | **98 s** |
+| Eevee | 115 s | **64 s** |
+
+Throughput to the share: control plane → main PC 11.3 MB/s; legion → main PC 2.3 MB/s read,
+3.6 MB/s write (legion's Wi-Fi is the limit). The main PC takes most final frames because it
+writes locally; legion contributes but uploads slowly, so render-local-then-upload in the
+`spectracut-shot` job type still matters for Wi-Fi workers.
+
+More findings from adding the second worker:
+- **Workers must find Blender via PATH.** With no desktop session, the worker's Blender detection
+  (through Windows "Open With") fails; with the Manager's Windows `blender` value set to the
+  special value `blender`, the worker resolves it on PATH. The worker script puts its own Blender
+  folder first on PATH, so each machine keeps Blender wherever it likes (e.g. under the SSH
+  account's profile, which differs per machine).
+- **The first render on a new GPU compiles shaders and kernels** (about 2 minutes for Eevee on
+  the 4070 Ti); later jobs run at full speed. Setup should warm each worker once.
+- **The storage drive letter must be free on every Windows worker**; setup picks one.
