@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "RecipeStep": {
+      "additionalProperties": false,
+      "description": "One tool call, e.g. ``camera.set_lens`` with ``{\"mm\": 35}``.",
+      "properties": {
+        "args": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Args",
+          "type": "object"
+        },
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "tool": {
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "tool"
+      ],
+      "title": "RecipeStep",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Replayable tool-call log for a scene, identified by its content hash.",
+  "properties": {
+    "blender_version": {
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+      "title": "Blender Version",
+      "type": "string"
+    },
+    "id": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "parent_hash": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Hash"
+    },
+    "shot_id": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "title": "Shot Id",
+      "type": "string"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/RecipeStep"
+      },
+      "title": "Steps",
+      "type": "array"
+    },
+    "version": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "shot_id",
+    "blender_version"
+  ],
+  "title": "Recipe",
+  "type": "object"
+}

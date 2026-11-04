@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "Persona": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "title": "Persona",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Personas, prior knowledge, objections and platform expectations.",
+  "properties": {
+    "objections": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Objections",
+      "type": "array"
+    },
+    "personas": {
+      "items": {
+        "$ref": "#/$defs/Persona"
+      },
+      "minItems": 1,
+      "title": "Personas",
+      "type": "array"
+    },
+    "platform_expectations": {
+      "patternProperties": {
+        "^[a-z0-9][a-z0-9_-]*$": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "propertyNames": {
+        "maxLength": 128
+      },
+      "title": "Platform Expectations",
+      "type": "object"
+    },
+    "prior_knowledge": {
+      "default": "",
+      "title": "Prior Knowledge",
+      "type": "string"
+    }
+  },
+  "required": [
+    "personas"
+  ],
+  "title": "AudienceProfile",
+  "type": "object"
+}

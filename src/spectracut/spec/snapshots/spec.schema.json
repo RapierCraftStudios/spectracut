@@ -1,0 +1,187 @@
+{
+  "$defs": {
+    "CameraSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "lens_mm": {
+          "default": 50.0,
+          "exclusiveMinimum": 0,
+          "title": "Lens Mm",
+          "type": "number"
+        },
+        "move": {
+          "default": "static",
+          "enum": [
+            "static",
+            "push",
+            "pull",
+            "pan",
+            "tilt",
+            "orbit",
+            "dolly",
+            "crane",
+            "handheld"
+          ],
+          "title": "Move",
+          "type": "string"
+        }
+      },
+      "title": "CameraSpec",
+      "type": "object"
+    },
+    "Shot": {
+      "additionalProperties": false,
+      "description": "Template id, slots, camera, duration in beats and notes; 1\u2013n recipe versions.",
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/CameraSpec"
+        },
+        "dirty": {
+          "default": false,
+          "title": "Dirty",
+          "type": "boolean"
+        },
+        "duration_beats": {
+          "exclusiveMinimum": 0,
+          "title": "Duration Beats",
+          "type": "number"
+        },
+        "id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        },
+        "recipe_ids": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9_-]*$",
+            "type": "string"
+          },
+          "title": "Recipe Ids",
+          "type": "array"
+        },
+        "slots": {
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9_-]*$": {
+              "type": "string"
+            }
+          },
+          "propertyNames": {
+            "maxLength": 128
+          },
+          "title": "Slots",
+          "type": "object"
+        },
+        "template_id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Template Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "template_id",
+        "duration_beats"
+      ],
+      "title": "Shot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Format, length, aspects, shots, VO, captions, music, CTA and variant id.",
+  "properties": {
+    "aspects": {
+      "items": {
+        "enum": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "4:5"
+        ],
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Aspects",
+      "type": "array"
+    },
+    "captions": {
+      "default": true,
+      "title": "Captions",
+      "type": "boolean"
+    },
+    "cta": {
+      "default": "",
+      "title": "Cta",
+      "type": "string"
+    },
+    "format": {
+      "enum": [
+        "tutorial",
+        "explainer",
+        "ad",
+        "trailer"
+      ],
+      "title": "Format",
+      "type": "string"
+    },
+    "id": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "length_s": {
+      "exclusiveMinimum": 0,
+      "title": "Length S",
+      "type": "number"
+    },
+    "music": {
+      "default": "",
+      "title": "Music",
+      "type": "string"
+    },
+    "shots": {
+      "items": {
+        "$ref": "#/$defs/Shot"
+      },
+      "minItems": 1,
+      "title": "Shots",
+      "type": "array"
+    },
+    "variant_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Variant Id"
+    },
+    "vo": {
+      "default": "",
+      "title": "Vo",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "format",
+    "length_s",
+    "aspects",
+    "shots"
+  ],
+  "title": "Spec",
+  "type": "object"
+}

@@ -41,6 +41,7 @@ def test_runs_on_every_pull_request() -> None:
     [
         "uv sync --locked",
         "scripts/check_spdx.py",
+        "scripts/check_schema_compat.py",
         "ruff check",
         "ruff format --check",
         "mypy",
