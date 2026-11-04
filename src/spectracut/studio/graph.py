@@ -196,9 +196,7 @@ class ProductionGraph:
             if unknown:
                 raise ValueError(f"snapshot {what} name unknown nodes {unknown}")
         graph._states.update(snap.states)
-        graph._cache = {
-            key: _Accepted(a.output, a.output_hash) for key, a in snap.cache.items()
-        }
+        graph._cache = {key: _Accepted(a.output, a.output_hash) for key, a in snap.cache.items()}
         graph._pending = {
             nid: (p.key, _Accepted(p.output, p.output_hash)) for nid, p in snap.pending.items()
         }

@@ -82,7 +82,9 @@ def render(
         typer.Option("--profile", help="Render profile JSON (from `spectracut-host profile`)."),
     ],
     frames: Annotated[str, typer.Option("--frames", help="Frame range A-B.")] = "1-1",
-    job_id: Annotated[str | None, typer.Option("--job-id", help="Job id (default derived).")] = None,
+    job_id: Annotated[
+        str | None, typer.Option("--job-id", help="Job id (default derived).")
+    ] = None,
     tag: Annotated[
         str | None, typer.Option("--tag", help="Flamenco worker tag the job requires.")
     ] = None,
@@ -263,7 +265,9 @@ def hosts_add(
     gpu: Annotated[
         list[str] | None, typer.Option("--gpu", help="Whole GPU as MODEL:VRAM_GB (repeatable).")
     ] = None,
-    replace: Annotated[bool, typer.Option("--replace", help="Replace a host of that name.")] = False,
+    replace: Annotated[
+        bool, typer.Option("--replace", help="Replace a host of that name.")
+    ] = False,
     home: HomeOpt = None,
 ) -> None:
     """Register a render host."""

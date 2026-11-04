@@ -9,8 +9,8 @@ from spectracut.studio.department import (
     DepartmentOutputError,
     SkillPack,
 )
-from spectracut.studio.gates import Critic, CriticVerdict, GateDecision, GateMode, GatePolicy
 from spectracut.studio.estimate import ProductionEstimate, StageEstimate, breakdown, estimate
+from spectracut.studio.gates import Critic, CriticVerdict, GateDecision, GateMode, GatePolicy
 from spectracut.studio.graph import (
     AcceptedOutput,
     GraphSnapshot,

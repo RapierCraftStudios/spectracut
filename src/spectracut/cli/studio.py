@@ -221,12 +221,16 @@ CommentOpt = Annotated[str, typer.Option("--comment", help="Reviewer's note.")]
 
 
 @studio_app.command("approve")
-def approve(production_id: IdArg, node: NodeArg, comment: CommentOpt = "", home: HomeOpt = None) -> None:
+def approve(
+    production_id: IdArg, node: NodeArg, comment: CommentOpt = "", home: HomeOpt = None
+) -> None:
     """Pass a node's human gate; its dependants build on the next ``studio run``."""
     _decide(production_id, node, comment, home, approve=True)
 
 
 @studio_app.command("reject")
-def reject(production_id: IdArg, node: NodeArg, comment: CommentOpt = "", home: HomeOpt = None) -> None:
+def reject(
+    production_id: IdArg, node: NodeArg, comment: CommentOpt = "", home: HomeOpt = None
+) -> None:
     """Reject a node at its human gate; its dependants do not build."""
     _decide(production_id, node, comment, home, approve=False)

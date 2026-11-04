@@ -129,14 +129,17 @@ class ProductionStore:
 
     def brief(self, production_id: str) -> Brief | CreativeBrief:
         meta = self.meta(production_id)
-        model = CreativeBrief if meta.brief_kind == "creative_brief" else Brief
-        return self._read(production_id, "brief.json", model)
+        if meta.brief_kind == "creative_brief":
+            return self._read(production_id, "brief.json", CreativeBrief)
+        return self._read(production_id, "brief.json", Brief)
 
     def list(self) -> list[str]:
         if not self.root.is_dir():
             return []
         return sorted(
-            p.name for p in self.root.iterdir() if _SLUG.match(p.name) and (p / "graph.json").is_file()
+            p.name
+            for p in self.root.iterdir()
+            if _SLUG.match(p.name) and (p / "graph.json").is_file()
         )
 
     def _read[M: StrictModel](self, production_id: str, name: str, model: type[M]) -> M:
