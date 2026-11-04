@@ -258,6 +258,8 @@ def test_fixed_context_under_budget_and_discover_gives_schemas(session: Session)
     assert [t["name"] for t in listed] == sorted(registry())
     cams = call(session, "discover", {"prefix": "camera."}).data["tools"]
     assert cams and all(t["name"].startswith("camera.") for t in cams)
+    docs = call(session, "discover", {"prefix": "docs."}).data["tools"]
+    assert [t["name"] for t in docs] == ["docs.search_api", "docs.search_manual"]
     schemas = call(session, "discover", {"names": ["camera.move", "light.add"]}).data["schemas"]
     assert schemas["camera.move"] == schema_for("camera.move")
     assert "keys" in schemas["camera.move"]["properties"]
