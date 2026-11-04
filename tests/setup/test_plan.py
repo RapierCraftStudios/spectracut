@@ -48,8 +48,11 @@ class FakeRunner:
     def probe(self, host: str) -> HostFacts:
         return FACTS[host]
 
-    def run(self, step: Step) -> None:
+    out: str | None = None
+
+    def run(self, step: Step) -> str | None:
         self.ran.append(step)
+        return self.out if step.artifact else None
 
 
 def _plan(state: SetupState, storage: StorageTarget | None = None):  # type: ignore[no-untyped-def]
@@ -181,3 +184,57 @@ def test_cli_setup_dry_run_and_idempotent_rerun(
     assert dry.exit_code == 0, dry.output
     assert runner.ran == []
     assert (home / "setup-state.json").exists() is False
+
+
+def test_every_download_step_verifies_sha256() -> None:
+    for step in _plan(SetupState()).steps:
+        if step.id.split(":")[0] == "install" and (
+            "curl" in step.command or "Invoke-Web" in step.command
+        ):  # noqa: E501
+            assert "sha256" in step.command.lower(), step.id
+
+
+def test_spectracut_host_installed_and_profiled_on_every_worker(tmp_path: Path) -> None:
+    plan = _plan(SetupState())
+    hosts = {s.host for s in plan.steps if s.id.startswith("install:spectracut-host:")}
+    assert hosts == set(WORKERS)
+    assert CONTROL not in {s.host for s in plan.steps if s.id.startswith("install:uv:")}
+    profiles = {s.host: s for s in plan.steps if s.id.startswith("host:profile:")}
+    assert set(profiles) == set(WORKERS)
+    runner = FakeRunner()
+    runner.out = '{"os": "windows"}'
+    state = load_state(tmp_path)
+    apply_plan(plan, runner, state, tmp_path)
+    assert (tmp_path / "profiles" / "legion.json").read_text() == runner.out
+
+
+def test_windows_worker_is_a_per_user_logon_task_under_the_profile() -> None:
+    plan = _plan(SetupState())
+    task = next(s for s in plan.steps if s.id == "service:worker:legion")
+    assert "-AtLogOn" in task.command and "AtStartup" not in task.command
+    assert "windows_worker.ps1" in task.command and '-Drive "F:"' in task.command
+    for step in plan.steps:
+        if step.host == "legion" and step.id.startswith(
+            ("install:blender", "install:flamenco", "install:uv", "install:spectracut-host")
+        ):
+            assert "C:/spectracut" not in step.command, step.id
+            assert "USERPROFILE" in step.command, step.id
+    script = next(s for s in plan.steps if s.id == "worker-script:legion")
+    assert "PATH" in (script.stdin or "") and "subst" in (script.stdin or "")
+    cred = next(s for s in plan.steps if s.id == "worker-cred:legion")
+    assert CRED.password not in cred.command and CRED.password in (cred.stdin or "")
+
+
+def test_local_storage_host_substs_instead_of_mapping() -> None:
+    plan = _plan(SetupState(), StorageTarget(kind="host", host="legion"))
+    task = next(s for s in plan.steps if s.id == "service:worker:legion")
+    assert '-LocalPath "C:/spectracut/storage"' in task.command
+    assert "worker-cred:legion" not in [s.id for s in plan.steps]
+
+
+def test_linux_worker_finds_blender_on_path() -> None:
+    plan = _plan(SetupState())
+    install = next(s for s in plan.steps if s.id == "install:blender:rig")
+    assert ".local/bin/blender" in install.command
+    unit = next(s for s in plan.steps if s.id == "service:worker-unit:rig")
+    assert "Environment=PATH=%h/.local/bin" in (unit.stdin or "")

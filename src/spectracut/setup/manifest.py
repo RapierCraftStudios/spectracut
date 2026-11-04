@@ -105,9 +105,10 @@ class Step:
     stdin: str | None = field(default=None, repr=False)
     component: str | None = None
     version: str | None = None
+    artifact: str | None = None  # file under <home>/profiles that receives the step's stdout
 
 
 class StepRunner(Protocol):
     def probe(self, host: str) -> HostFacts: ...
 
-    def run(self, step: Step) -> None: ...
+    def run(self, step: Step) -> str | None: ...

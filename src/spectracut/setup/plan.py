@@ -17,12 +17,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from spectracut.setup.manifest import HostFacts, Manifest, Os, Role, Step, StepRunner
+from spectracut.setup.manifest import HostFacts, Manifest, Os, Role, Shell, Step, StepRunner
 from spectracut.setup.storage import (
     CONTROL,
     GPU_SCRIPT,
     LINUX_TOOLS,
     MANAGER_PORT,
+    WINDOWS_DRIVE,
+    WINDOWS_LOCAL_PATH,
     WINDOWS_TOOLS,
     Credential,
     StorageTarget,
@@ -38,6 +40,10 @@ STATE_NAME = "setup-state.json"
 GPU_PSEUDO = "gpu-script"
 SERVICE_PSEUDO = "worker-service"
 MANAGER_SERVICE = "manager-service"
+HOST_PSEUDO = "host-profile"
+WORKER_SCRIPT = "windows_worker.ps1"
+PROFILE_DIR = "profiles"
+LINUX_BIN = "$HOME/.local/bin"
 
 
 class HostState(StrictModel):
@@ -82,6 +88,21 @@ def gpu_script_source() -> str:
     raise FileNotFoundError(GPU_SCRIPT)
 
 
+def worker_script_source() -> str:
+    """``windows_worker.ps1``: the per-user logon script every Windows worker runs."""
+    return Path(__file__).with_name(WORKER_SCRIPT).read_text(encoding="utf-8")
+
+
+def profile_write_step(host: str, step_id: str, summary: str, rel: str, content: str) -> Step:
+    """Write ``content`` (stdin) to ``rel`` under the Windows account's profile."""
+    cmd = (
+        f"$p = Join-Path $env:USERPROFILE '{rel}'; "
+        "New-Item -ItemType Directory -Force (Split-Path $p) | Out-Null; "
+        "[IO.File]::WriteAllText($p, [Console]::In.ReadToEnd())"
+    )
+    return Step(host, step_id, summary, cmd, "powershell", stdin=content)
+
+
 def _roles(name: str, storage_host: str | None) -> set[Role]:
     roles: set[Role] = {"control"} if name == CONTROL else {"host"}
     if name == storage_host:
@@ -93,7 +114,24 @@ def _pins(manifest: Manifest, set_id: str) -> dict[str, str]:
     return dict(manifest.tested_set(set_id).versions)
 
 
-def _service_steps(facts: HostFacts, manager_url: str, pin: str) -> list[Step]:
+def _worker_args(
+    manager_url: str, target: StorageTarget, facts: Mapping[str, HostFacts], name: str, user: str
+) -> str:
+    """Arguments of ``windows_worker.ps1``: storage drive, share and the account that maps it."""
+    server = facts[target.host].address if target.kind == "host" else target.host
+    args = f'-Manager "{manager_url}" -Drive "{WINDOWS_DRIVE}" -Share "{target.share}"'
+    if target.kind == "host" and target.host == name:
+        return f'{args} -LocalPath "{WINDOWS_LOCAL_PATH}"'
+    return f'{args} -Server "{server}" -User "{user}"'
+
+
+def _service_steps(
+    facts: HostFacts,
+    manager_url: str,
+    pin: str,
+    worker_args: str = "",
+    script_hash: str = "",
+) -> list[Step]:
     """Run the Manager (control plane) or a Worker (render host) as a user service."""
     name = facts.name
     if name == CONTROL:
@@ -120,28 +158,36 @@ def _service_steps(facts: HostFacts, manager_url: str, pin: str) -> list[Step]:
                 version=pin,
             ),
         ]
-    version = f"{pin}@{manager_url}"
     if facts.os == "windows":
+        # A per-user logon task needs no admin; at-startup tasks do.
         cmd = (
+            f"$s = Join-Path $env:USERPROFILE 'spectracut/{WORKER_SCRIPT}'; "
+            "Unregister-ScheduledTask -TaskName spectracut-worker -Confirm:$false "
+            "-ErrorAction SilentlyContinue; "
             "Register-ScheduledTask -TaskName spectracut-worker -Force "
-            "-Action (New-ScheduledTaskAction -Execute 'C:/spectracut/flamenco-worker.exe' "
-            f"-Argument '-manager {manager_url}' -WorkingDirectory 'C:/spectracut') "
-            "-Trigger (New-ScheduledTaskTrigger -AtStartup) | Out-Null; "
-            "Start-ScheduledTask -TaskName spectracut-worker"
+            "-Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "
+            "('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $s + '\" "
+            f"{worker_args}')) "
+            '-Trigger (New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\\$env:USERNAME") '
+            "-Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
+            "-DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0)) "
+            "| Out-Null; Start-ScheduledTask -TaskName spectracut-worker"
         )
         return [
             Step(
                 name,
                 f"service:worker:{name}",
-                "register the Worker startup task",
+                "register the Worker logon task",
                 cmd,
                 "powershell",
                 component=SERVICE_PSEUDO,
-                version=version,
+                version=f"{pin}@{manager_url}#{script_hash}",
             )
         ]
+    version = f"{pin}@{manager_url}#path"
     unit = (
         "[Unit]\nDescription=Flamenco Worker\n[Service]\nWorkingDirectory=%h/.local/opt/flamenco\n"
+        "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin\n"
         f"ExecStart=%h/.local/opt/flamenco/flamenco-worker -manager {manager_url}\n"
         "Restart=on-failure\n[Install]\nWantedBy=default.target\n"
     )
@@ -165,6 +211,57 @@ def _service_steps(facts: HostFacts, manager_url: str, pin: str) -> list[Step]:
     ]
 
 
+def _profile_step(facts: HostFacts, version: str) -> Step:
+    """Run ``spectracut-host profile`` on the host; the JSON is what ``hosts add`` takes."""
+    if facts.os == "windows":
+        cmd = (
+            "$b = Get-ChildItem (Join-Path $env:USERPROFILE 'spectracut') -Directory "
+            "-Filter 'blender-*-windows-x64' | Sort-Object Name | Select-Object -Last 1; "
+            "$env:PATH = $b.FullName + ';' + $env:PATH; "
+            "& (Join-Path $env:USERPROFILE '.local/bin/spectracut-host.exe') profile"
+        )
+        shell: Shell = "powershell"
+    else:
+        cmd = f'PATH="{LINUX_BIN}:$PATH" "{LINUX_BIN}/spectracut-host" profile'
+        shell = "sh"
+    return Step(
+        facts.name,
+        f"host:profile:{facts.name}",
+        "read the render profile (for `spectracut hosts add`)",
+        cmd,
+        shell,
+        component=HOST_PSEUDO,
+        version=version,
+        artifact=f"{facts.name}.json",
+    )
+
+
+def _windows_worker_files(
+    name: str, script: str, target: StorageTarget, cred: Credential, host: str
+) -> list[Step]:
+    """The logon script and, when this host maps a remote share, its credential (stdin only)."""
+    files = [
+        profile_write_step(
+            name,
+            f"worker-script:{name}",
+            "install the Worker logon script",
+            f"spectracut/{WORKER_SCRIPT}",
+            script,
+        )  # fmt: skip
+    ]
+    if not (target.kind == "host" and target.host == host):
+        files.append(
+            profile_write_step(
+                name,
+                f"worker-cred:{name}",
+                "store the share credential for the logon task",
+                "spectracut/smb.pw",
+                cred.password + "\n",
+            )  # fmt: skip
+        )
+    return files
+
+
 def build_plan(
     manifest: Manifest,
     set_id: str,
@@ -185,6 +282,7 @@ def build_plan(
     manager_url = f"http://{facts[CONTROL].address}:{MANAGER_PORT}"
     gpu_src = gpu_script_source()
     gpu_hash = hashlib.sha256(gpu_src.encode("utf-8")).hexdigest()[:12]
+    worker_src = worker_script_source()
     steps: list[Step] = []
     for name in [CONTROL, *workers]:
         f = facts[name]
@@ -222,13 +320,22 @@ def build_plan(
                 steps.append(
                     Step(**{**step.__dict__, "component": GPU_PSEUDO, "version": gpu_hash})
                 )
-            svc = _service_steps(f, manager_url, pins["flamenco-worker"])
+            profile = f"{pins['spectracut-host']}+{pins['blender']}"
+            if have.get(HOST_PSEUDO) != profile:
+                steps.append(_profile_step(f, profile))
+            args = _worker_args(manager_url, target, facts, name, cred.user)
+            digest = hashlib.sha256((worker_src + args).encode("utf-8")).hexdigest()[:12]
+            svc = _service_steps(f, manager_url, pins["flamenco-worker"], args, digest)
+            if f.os == "windows":
+                svc = _windows_worker_files(name, worker_src, target, cred, name) + svc
         else:
             svc = []
         want = (
             {MANAGER_SERVICE: pins["flamenco-manager"]}
             if name == CONTROL
-            else {SERVICE_PSEUDO: f"{pins['flamenco-worker']}@{manager_url}"}
+            else {SERVICE_PSEUDO: svc[-1].version}
+            if svc
+            else {}
         )
         if any(have.get(k) != v for k, v in want.items()):
             steps += svc
@@ -241,7 +348,14 @@ def apply_plan(
 ) -> SetupState:
     """Run the steps in order; record each success. A failure stops the run (state kept)."""
     for step in plan.steps:
-        runner.run(step)
+        out = runner.run(step)
+        if step.artifact and out:
+            write_atomic(
+                (Path(home) if home is not None else spectracut_home())
+                / PROFILE_DIR
+                / step.artifact,
+                out.encode("utf-8"),
+            )
         if step.component and step.version:
             host = state.hosts.setdefault(step.host, HostState())
             host.components[step.component] = step.version
@@ -274,11 +388,12 @@ class CommandRunner:
             argv, input=stdin, capture_output=True, text=True, timeout=self.timeout, check=False
         )
 
-    def run(self, step: Step) -> None:
+    def run(self, step: Step) -> str | None:
         proc = self._exec(step.host, step.command, step.shell, step.stdin)
         if proc.returncode != 0:
             tail = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or [""]
             raise SetupError(f"{step.host}: {step.summary} failed ({proc.returncode}): {tail[0]}")
+        return proc.stdout if step.artifact else None
 
     def probe(self, host: str) -> HostFacts:
         os: Os = "linux"

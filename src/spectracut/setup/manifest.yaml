@@ -11,12 +11,51 @@ components:
     version_cmd: {linux: "blender --version", windows: "blender --version"}
     install:
       linux: >-
-        mkdir -p ~/.local/opt && curl -fsSL
-        https://download.blender.org/release/Blender4.5/blender-{version}-linux-x64.tar.xz
-        | tar -xJ -C ~/.local/opt
+        set -e; mkdir -p ~/.local/opt ~/.local/bin; f=$(mktemp);
+        curl -fsSL https://download.blender.org/release/Blender4.5/blender-{version}-linux-x64.tar.xz -o "$f";
+        want=$(curl -fsSL https://download.blender.org/release/Blender4.5/blender-{version}.sha256
+        | grep 'blender-{version}-linux-x64.tar.xz$' | cut -d' ' -f1);
+        echo "$want  $f" | sha256sum -c - && tar -xJ -C ~/.local/opt -f "$f" && rm -f "$f"
+        && ln -sfn ~/.local/opt/blender-{version}-linux-x64/blender ~/.local/bin/blender
       windows: >-
-        Invoke-WebRequest https://download.blender.org/release/Blender4.5/blender-{version}-windows-x64.zip
-        -OutFile $env:TEMP\blender.zip; Expand-Archive -Force $env:TEMP\blender.zip C:/spectracut
+        $ErrorActionPreference = 'Stop'; $d = Join-Path $env:USERPROFILE 'spectracut';
+        New-Item -ItemType Directory -Force $d | Out-Null; $z = Join-Path $env:TEMP 'blender.zip';
+        Invoke-WebRequest https://download.blender.org/release/Blender4.5/blender-{version}-windows-x64.zip -OutFile $z;
+        $want = ((Invoke-WebRequest https://download.blender.org/release/Blender4.5/blender-{version}.sha256 -UseBasicParsing).Content
+        -split "\r?\n" | Select-String -SimpleMatch 'blender-{version}-windows-x64.zip' | Select-Object -First 1).Line.Split(' ')[0];
+        if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $want) {{ throw 'Blender SHA-256 mismatch' }};
+        Expand-Archive -Force $z $d; $b = Join-Path $d 'blender-{version}-windows-x64';
+        $u = [Environment]::GetEnvironmentVariable('Path', 'User');
+        if ($u -notlike "*$b*") {{ [Environment]::SetEnvironmentVariable('Path', "$b;$u", 'User') }}
+  uv:
+    description: uv, the Python tool installer that puts spectracut-host on a render host
+    roles: [host]
+    os: [linux, windows]
+    version_cmd: {linux: "uv --version", windows: "uv.exe --version"}
+    install:
+      linux: >-
+        set -e; mkdir -p ~/.local/bin; f=$(mktemp); u=https://github.com/astral-sh/uv/releases/download/{version};
+        curl -fsSL $u/uv-x86_64-unknown-linux-gnu.tar.gz -o "$f";
+        want=$(curl -fsSL $u/uv-x86_64-unknown-linux-gnu.tar.gz.sha256 | cut -d' ' -f1);
+        echo "$want  $f" | sha256sum -c - && tar -xz --strip-components=1 -C ~/.local/bin -f "$f" && rm -f "$f"
+      windows: >-
+        $ErrorActionPreference = 'Stop'; $bin = Join-Path $env:USERPROFILE '.local/bin';
+        New-Item -ItemType Directory -Force $bin | Out-Null; $z = Join-Path $env:TEMP 'uv.zip';
+        $u = 'https://github.com/astral-sh/uv/releases/download/{version}';
+        Invoke-WebRequest "$u/uv-x86_64-pc-windows-msvc.zip" -OutFile $z;
+        $want = (Invoke-WebRequest "$u/uv-x86_64-pc-windows-msvc.zip.sha256" -UseBasicParsing).Content.Trim().Split(' ')[0];
+        if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $want) {{ throw 'uv SHA-256 mismatch' }};
+        Expand-Archive -Force $z $bin
+  spectracut-host:
+    description: spectracut-host, the agent every `spectracut-shot` task runs (uv tool, pinned wheel)
+    roles: [host]
+    os: [linux, windows]
+    version_cmd: {linux: "spectracut-host --help", windows: "spectracut-host.exe --help"}
+    install:
+      linux: >-
+        $HOME/.local/bin/uv tool install --force --python 3.12 spectracut-host=={version}
+      windows: >-
+        & (Join-Path $env:USERPROFILE '.local/bin/uv.exe') tool install --force --python 3.12 spectracut-host=={version}
   flamenco-manager:
     description: Flamenco Manager on the control plane, listening on the Tailscale address only
     roles: [control]
@@ -24,9 +63,10 @@ components:
     version_cmd: {linux: "flamenco-manager -version"}
     install:
       linux: >-
-        mkdir -p ~/.local/opt/flamenco && curl -fsSL
-        https://flamenco.blender.org/downloads/flamenco-{version}-linux-amd64.tar.gz
-        | tar -xz --strip-components=1 -C ~/.local/opt/flamenco
+        set -e; mkdir -p ~/.local/opt/flamenco; f=$(mktemp);
+        u=https://flamenco.blender.org/downloads/flamenco-{version}-linux-amd64.tar.gz;
+        curl -fsSL $u -o "$f"; want=$(curl -fsSL $u.sha256 | cut -d' ' -f1);
+        echo "$want  $f" | sha256sum -c - && tar -xz --strip-components=1 -C ~/.local/opt/flamenco -f "$f" && rm -f "$f"
   flamenco-worker:
     description: Flamenco Worker, native on every render host
     roles: [host]
@@ -34,12 +74,18 @@ components:
     version_cmd: {linux: "flamenco-worker -version", windows: "flamenco-worker.exe -version"}
     install:
       linux: >-
-        mkdir -p ~/.local/opt/flamenco && curl -fsSL
-        https://flamenco.blender.org/downloads/flamenco-{version}-linux-amd64.tar.gz
-        | tar -xz --strip-components=1 -C ~/.local/opt/flamenco
+        set -e; mkdir -p ~/.local/opt/flamenco; f=$(mktemp);
+        u=https://flamenco.blender.org/downloads/flamenco-{version}-linux-amd64.tar.gz;
+        curl -fsSL $u -o "$f"; want=$(curl -fsSL $u.sha256 | cut -d' ' -f1);
+        echo "$want  $f" | sha256sum -c - && tar -xz --strip-components=1 -C ~/.local/opt/flamenco -f "$f" && rm -f "$f"
       windows: >-
-        Invoke-WebRequest https://flamenco.blender.org/downloads/flamenco-{version}-windows-amd64.zip
-        -OutFile $env:TEMP\flamenco.zip; Expand-Archive -Force $env:TEMP\flamenco.zip C:/spectracut
+        $ErrorActionPreference = 'Stop'; $d = Join-Path $env:USERPROFILE 'spectracut';
+        New-Item -ItemType Directory -Force $d | Out-Null; $z = Join-Path $env:TEMP 'flamenco.zip';
+        $u = 'https://flamenco.blender.org/downloads/flamenco-{version}-windows-amd64.zip';
+        Invoke-WebRequest $u -OutFile $z;
+        $want = (Invoke-WebRequest "$u.sha256" -UseBasicParsing).Content.Trim().Split(' ')[0];
+        if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $want) {{ throw 'Flamenco SHA-256 mismatch' }};
+        Expand-Archive -Force $z $d
   samba:
     description: Samba share for Flamenco storage (only on a Linux storage host)
     roles: [storage]
@@ -109,6 +155,8 @@ sets:
   - id: "2026.11"
     versions:
       blender: "4.5.15"
+      uv: "0.9.5"
+      spectracut-host: "0.1.0"
       flamenco-manager: "3.9.3"
       flamenco-worker: "3.9.3"
       samba: "4.21"

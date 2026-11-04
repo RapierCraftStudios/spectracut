@@ -15,6 +15,7 @@ from spectracut.setup.plan import HostState, SetupState, save_state
 EXPECTED = {
     "blender", "flamenco-manager", "flamenco-worker", "samba", "ardour", "supercollider",
     "audio-plugins", "local-models", "polyhaven-assets", "ambientcg-assets", "addons",
+    "uv", "spectracut-host",
 }  # fmt: skip
 
 
@@ -67,3 +68,11 @@ def test_doctor_lists_version_and_health(tmp_path: Path) -> None:
     assert "blender 4.5.15 on legion: healthy" in lines
     assert "addons 2026.10 on legion: drift (pinned 2026.11)" in lines
     assert "ardour 8.12: not installed" in lines
+
+
+def test_every_download_is_checked_against_its_published_sha256() -> None:
+    m = load_manifest()
+    for name in ("blender", "uv", "flamenco-manager", "flamenco-worker"):
+        for os_name, cmd in m.components[name].install.items():
+            assert "sha256" in cmd.lower(), (name, os_name)
+            assert ("sha256sum -c" in cmd) if os_name == "linux" else ("Get-FileHash" in cmd), name
