@@ -1,0 +1,13 @@
+{
+  "name": "@spectracut/capture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Live-UI capture on a virtual clock (TypeScript, Playwright).",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  }
+}
