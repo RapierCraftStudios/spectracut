@@ -1,0 +1,80 @@
+{
+  "id": "place-product-on-plinth",
+  "source": "sceneactbench",
+  "instruction": "Move the product onto the plinth at frame centre and scale it so it fills a third of the frame height.",
+  "threshold": 0.97,
+  "start": {
+    "background": [
+      20,
+      22,
+      30
+    ],
+    "objects": [
+      {
+        "id": "plinth",
+        "shape": "rect",
+        "center": [
+          0.5,
+          0.8
+        ],
+        "size": 0.3,
+        "color": [
+          90,
+          90,
+          100
+        ]
+      },
+      {
+        "id": "product",
+        "shape": "rect",
+        "center": [
+          0.15,
+          0.25
+        ],
+        "size": 0.12,
+        "color": [
+          220,
+          220,
+          230
+        ]
+      }
+    ]
+  },
+  "ground_truth": {
+    "background": [
+      20,
+      22,
+      30
+    ],
+    "objects": [
+      {
+        "id": "plinth",
+        "shape": "rect",
+        "center": [
+          0.5,
+          0.8
+        ],
+        "size": 0.3,
+        "color": [
+          90,
+          90,
+          100
+        ]
+      },
+      {
+        "id": "product",
+        "shape": "rect",
+        "center": [
+          0.5,
+          0.48
+        ],
+        "size": 0.33,
+        "color": [
+          220,
+          220,
+          230
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "id": "fixtures",
+  "title": "Fixture benchmark films (stand-ins until the owner's reference videos exist, #47)",
+  "pieces": [
+    {
+      "id": "device-launch",
+      "capability": "product-launch",
+      "rubric": "device-launch",
+      "outputs": "outputs/device-launch",
+      "pattern": "*.png",
+      "reference": "references/device-launch.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "app-walkthrough",
+      "capability": "product-demo",
+      "rubric": "app-walkthrough",
+      "outputs": "outputs/app-walkthrough",
+      "pattern": "*.png",
+      "reference": "references/app-walkthrough.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "ad-30s",
+      "capability": "short-ad",
+      "rubric": "ad-30s",
+      "outputs": "outputs/ad-30s",
+      "pattern": "*.png",
+      "reference": "references/ad-30s.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "title-sequence",
+      "capability": "titles",
+      "rubric": "title-sequence",
+      "outputs": "outputs/title-sequence",
+      "pattern": "*.png",
+      "reference": "references/title-sequence.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    }
+  ]
+}

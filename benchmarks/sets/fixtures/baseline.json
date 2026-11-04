@@ -1,0 +1,9 @@
+{
+  "set_id": "fixtures",
+  "scores": {
+    "device-launch": 0.5707,
+    "app-walkthrough": 0.4792,
+    "ad-30s": 0.6252,
+    "title-sequence": 0.543
+  }
+}

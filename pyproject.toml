@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 dependencies = [
+    "cryptography>=43",
     "opentimelineio>=0.17,<0.19",
     "pydantic>=2.9,<3",
     "typer>=0.12",
@@ -25,12 +26,16 @@ packages = ["src/spectracut"]
 [tool.uv.workspace]
 members = ["host"]
 
+[tool.uv.sources]
+spectracut-host = { workspace = true }
+
 [dependency-groups]
 dev = [
     "mypy>=1.13",
     "pytest>=8.3",
     "pyyaml>=6.0",
     "ruff>=0.8",
+    "spectracut-host",
     "types-pyyaml>=6.0",
 ]
 
