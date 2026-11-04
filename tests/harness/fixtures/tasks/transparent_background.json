@@ -1,0 +1,18 @@
+{
+  "id": "transparent_background",
+  "goal": "Render the product shot with a transparent background so it can be composited over other footage.",
+  "query": "transparent background",
+  "value": true,
+  "base": [
+    ["scene.clear", {}],
+    ["object.add_primitive", {"kind": "plane", "name": "Floor", "scale": [4, 4, 1]}],
+    ["object.add_primitive", {"kind": "cube", "name": "Product", "location": [0, 0, 1]}],
+    ["light.add", {"rig": "three_point", "name": "Studio", "target": [0, 0, 1]}],
+    ["camera.add", {"name": "Cam", "location": [0, -7, 1], "rotation": [1.5707963, 0, 0]}],
+    ["render.set_resolution", {"width": 640, "height": 360}]
+  ],
+  "expect": {
+    "tool": "render.set_property",
+    "args": {"property": "render.film_transparent", "value": true}
+  }
+}

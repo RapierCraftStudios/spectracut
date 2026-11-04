@@ -1,0 +1,122 @@
+[
+  {
+    "path": "bpy.types.RenderSettings.film_transparent",
+    "title": "Transparent film (alpha background)",
+    "signature": "film_transparent: bool, default False",
+    "text": "When on, the world background is left out of the final image and those pixels get zero alpha, so the render has a transparent background for compositing over other footage."
+  },
+  {
+    "path": "bpy.types.RenderSettings.fps",
+    "title": "Frame rate",
+    "signature": "fps: int in [1, 32767], default 24",
+    "text": "Frames per second used for playback and animation timing of the scene."
+  },
+  {
+    "path": "bpy.types.RenderSettings.use_motion_blur",
+    "title": "Motion blur",
+    "signature": "use_motion_blur: bool, default False",
+    "text": "Turns on blur of moving objects and cameras across the shutter interval of each frame."
+  },
+  {
+    "path": "bpy.types.RenderSettings.motion_blur_shutter",
+    "title": "Motion blur shutter",
+    "signature": "motion_blur_shutter: float in [0, inf], default 0.5",
+    "text": "How long the virtual shutter stays open, in frames. Longer values give stronger motion blur."
+  },
+  {
+    "path": "bpy.types.CyclesRenderSettings.samples",
+    "title": "Cycles render samples",
+    "signature": "samples: int in [1, 16777216], default 4096",
+    "text": "Number of path tracing samples per pixel for final Cycles renders. More samples mean less noise and longer render times."
+  },
+  {
+    "path": "bpy.types.SceneEEVEE.taa_render_samples",
+    "title": "EEVEE render samples",
+    "signature": "taa_render_samples: int in [0, inf], default 64",
+    "text": "Number of temporal anti-aliasing samples EEVEE accumulates per pixel for final renders. More samples smooth edges, soft shadows and noise."
+  },
+  {
+    "path": "bpy.types.ColorManagedViewSettings.view_transform",
+    "title": "View transform (colour management)",
+    "signature": "view_transform: enum, e.g. 'AgX', 'Standard', 'Filmic', 'Khronos PBR Neutral'",
+    "text": "Maps scene-linear light to display colour. AgX handles bright highlights gracefully; Standard applies no tone mapping."
+  },
+  {
+    "path": "bpy.types.ColorManagedViewSettings.look",
+    "title": "Look (contrast preset)",
+    "signature": "look: enum, e.g. 'None', 'AgX - Punchy', 'AgX - High Contrast'",
+    "text": "A contrast or grading preset applied on top of the view transform."
+  },
+  {
+    "path": "bpy.types.ColorManagedViewSettings.exposure",
+    "title": "Exposure",
+    "signature": "exposure: float in [-32, 32], default 0.0",
+    "text": "Brightens or darkens the whole image in stops before the view transform, like changing camera exposure."
+  },
+  {
+    "path": "bpy.types.ColorManagedViewSettings.gamma",
+    "title": "Gamma",
+    "signature": "gamma: float in [0, 5], default 1.0",
+    "text": "Extra gamma correction applied after the view transform."
+  },
+  {
+    "path": "bpy.types.RenderSettings.resolution_x",
+    "title": "Output width",
+    "signature": "resolution_x: int in [4, 65536], default 1920",
+    "text": "Horizontal pixel count of the rendered image. Set with render.set_resolution."
+  },
+  {
+    "path": "bpy.types.RenderSettings.resolution_y",
+    "title": "Output height",
+    "signature": "resolution_y: int in [4, 65536], default 1080",
+    "text": "Vertical pixel count of the rendered image. Set with render.set_resolution."
+  },
+  {
+    "path": "bpy.types.RenderSettings.engine",
+    "title": "Render engine",
+    "signature": "engine: enum, e.g. 'BLENDER_EEVEE_NEXT', 'CYCLES', 'BLENDER_WORKBENCH'",
+    "text": "Which renderer produces the image. Set with render.set_engine."
+  },
+  {
+    "path": "bpy.types.Camera.lens",
+    "title": "Camera focal length",
+    "signature": "lens: float in [1, inf], millimetres, default 50",
+    "text": "Focal length of a perspective camera. Longer lenses narrow the field of view and flatten perspective. Set with camera.set_lens."
+  },
+  {
+    "path": "bpy.types.CameraDOFSettings.use_dof",
+    "title": "Depth of field",
+    "signature": "use_dof: bool, default False",
+    "text": "Turns on focus blur for objects nearer or farther than the focus distance. Configure through the camera tools (discover camera.)."
+  },
+  {
+    "path": "bpy.types.CameraDOFSettings.aperture_fstop",
+    "title": "Aperture f-stop",
+    "signature": "aperture_fstop: float in [0, inf], default 2.8",
+    "text": "Lower f-stop values give a shallower depth of field and stronger background blur."
+  },
+  {
+    "path": "bpy.types.Light.energy",
+    "title": "Light power",
+    "signature": "energy: float, watts for point, spot and area lights",
+    "text": "Brightness of a light. Use the light tools (light.add with a rig) rather than setting it directly."
+  },
+  {
+    "path": "bpy.types.Object.location",
+    "title": "Object location",
+    "signature": "location: float array of 3, metres",
+    "text": "Position of an object in world space for unparented objects. Set when adding objects or cameras."
+  },
+  {
+    "path": "bpy.types.Object.scale",
+    "title": "Object scale",
+    "signature": "scale: float array of 3, default (1, 1, 1)",
+    "text": "Per-axis size multiplier of an object."
+  },
+  {
+    "path": "bpy.types.World.color",
+    "title": "World background colour",
+    "signature": "color: float array of 3",
+    "text": "Flat background colour of the world when it has no node tree. For an image with no background at all, use film transparency instead."
+  }
+]
