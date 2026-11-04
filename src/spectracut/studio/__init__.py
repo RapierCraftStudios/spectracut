@@ -1,47 +1,35 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Production graph, departments (subagents), Producer, gates, quality profiles and step ledger.
-
-The public names are resolved lazily from their defining modules, so each name
-has exactly one definition site and importing the package stays cheap.
-"""
+"""Production graph, departments (subagents), Producer, gates, quality profiles and step ledger."""
 
 from __future__ import annotations
 
-from importlib import import_module
-from typing import Any
+from spectracut.studio.gates import Critic, CriticVerdict, GateDecision, GateMode, GatePolicy
+from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
+from spectracut.studio.ledger import Ledger, LedgerEntry, LedgerTotals, Usage
+from spectracut.studio.node import NodeSpec, NodeState, NodeStatus, Tier, node_key
+from spectracut.studio.profiles import QualityProfile, available_profiles, load_profile
 
-_EXPORTS: dict[str, str] = {
-    "Critic": "gates",
-    "CriticVerdict": "gates",
-    "GateDecision": "gates",
-    "GateMode": "gates",
-    "GatePolicy": "gates",
-    "ProductionGraph": "graph",
-    "RunContext": "graph",
-    "RunReport": "graph",
-    "RunResult": "graph",
-    "Runner": "graph",
-    "Ledger": "ledger",
-    "LedgerEntry": "ledger",
-    "LedgerTotals": "ledger",
-    "Usage": "ledger",
-    "NodeSpec": "node",
-    "NodeState": "node",
-    "NodeStatus": "node",
-    "Tier": "node",
-    "node_key": "node",
-    "QualityProfile": "profiles",
-    "available_profiles": "profiles",
-    "load_profile": "profiles",
-}
-
-
-def __getattr__(name: str) -> Any:
-    module = _EXPORTS.get(name)
-    if module is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return getattr(import_module(f"spectracut.studio.{module}"), name)
-
-
-def __dir__() -> list[str]:
-    return sorted(_EXPORTS)
+__all__ = [
+    "Critic",
+    "CriticVerdict",
+    "GateDecision",
+    "GateMode",
+    "GatePolicy",
+    "Ledger",
+    "LedgerEntry",
+    "LedgerTotals",
+    "NodeSpec",
+    "NodeState",
+    "NodeStatus",
+    "ProductionGraph",
+    "QualityProfile",
+    "RunContext",
+    "RunReport",
+    "RunResult",
+    "Runner",
+    "Tier",
+    "Usage",
+    "available_profiles",
+    "load_profile",
+    "node_key",
+]
