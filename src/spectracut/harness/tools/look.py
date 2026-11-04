@@ -12,10 +12,14 @@ from spectracut.harness.tools import HarnessTool, Output, Session, ToolArgs
 Mode = Literal["solid", "material", "rendered"]
 
 
+def _all_modes() -> list[Mode]:
+    return ["solid", "material", "rendered"]
+
+
 class Look(ToolArgs):
     angle: Literal["front", "three_quarter", "top"] = "three_quarter"
     modes: Annotated[list[Mode], Field(min_length=1, max_length=3)] = Field(
-        default_factory=lambda: ["solid", "material", "rendered"]
+        default_factory=_all_modes
     )
 
 

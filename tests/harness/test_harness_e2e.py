@@ -13,7 +13,11 @@ import os
 import shutil
 
 import pytest
-from test_server_stdio import check_product_shot, product_shot, run_client
+from test_server_stdio import (  # type: ignore[import-not-found]
+    check_product_shot,
+    product_shot,
+    run_client,
+)
 
 pytestmark = [
     pytest.mark.e2e,

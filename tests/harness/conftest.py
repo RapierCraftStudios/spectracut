@@ -74,7 +74,8 @@ class _Obj:
         else:
             self.type = "MESH"
         self.parent = None
-        self.location, self.rotation_euler, self.scale = (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
+        self.location, self.rotation_euler = (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+        self.scale = (1.0, 1.0, 1.0)
         self._props = {}
         self._extra = {}
 
@@ -185,10 +186,12 @@ _scene.display.shading.color_type = "MATERIAL"
 
 def _png(width, height, pixels):
     def chunk(kind, body):
-        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+        crc = struct.pack(">I", zlib.crc32(kind + body))
+        return struct.pack(">I", len(body)) + kind + body + crc
     stride = width * 3
     raw = b"".join(b"\x00" + bytes(pixels[y * stride:(y + 1) * stride]) for y in range(height))
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
             + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
