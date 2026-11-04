@@ -4,7 +4,15 @@ version = "0.0.0"
 description = "SpectraCut render host agent (runs next to Blender on GPU hosts)."
 requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
-dependencies = []
+dependencies = [
+    "spectracut",
+]
+
+[project.scripts]
+spectracut-host = "spectracut_host.agent:main"
+
+[tool.uv.sources]
+spectracut = { workspace = true }
 
 [build-system]
 requires = ["hatchling>=1.27"]
