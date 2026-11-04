@@ -21,9 +21,11 @@ components:
         $ErrorActionPreference = 'Stop'; $d = Join-Path $env:USERPROFILE 'spectracut';
         New-Item -ItemType Directory -Force $d | Out-Null; $z = Join-Path $env:TEMP 'blender.zip';
         Invoke-WebRequest https://download.blender.org/release/Blender4.5/blender-{version}-windows-x64.zip -OutFile $z;
-        $want = ((Invoke-WebRequest https://download.blender.org/release/Blender4.5/blender-{version}.sha256 -UseBasicParsing).Content
+        $r = (Invoke-WebRequest https://download.blender.org/release/Blender4.5/blender-{version}.sha256 -UseBasicParsing).Content;
+        $t = if ($r -is [byte[]]) {{ [Text.Encoding]::UTF8.GetString($r) }} else {{ [string]$r }};
+        $want = ($t
         -split "\r?\n" | Select-String -SimpleMatch 'blender-{version}-windows-x64.zip' | Select-Object -First 1).Line.Split(' ')[0];
-        if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $want) {{ throw 'Blender SHA-256 mismatch' }};
+        if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $want) {{ throw 'Blender {version} SHA-256 mismatch' }};
         Expand-Archive -Force $z $d; $b = Join-Path $d 'blender-{version}-windows-x64';
         $u = [Environment]::GetEnvironmentVariable('Path', 'User');
         if ($u -notlike "*$b*") {{ [Environment]::SetEnvironmentVariable('Path', "$b;$u", 'User') }}
@@ -43,8 +45,10 @@ components:
         New-Item -ItemType Directory -Force $bin | Out-Null; $z = Join-Path $env:TEMP 'uv.zip';
         $u = 'https://github.com/astral-sh/uv/releases/download/{version}';
         Invoke-WebRequest "$u/uv-x86_64-pc-windows-msvc.zip" -OutFile $z;
-        $want = (Invoke-WebRequest "$u/uv-x86_64-pc-windows-msvc.zip.sha256" -UseBasicParsing).Content.Trim().Split(' ')[0];
-        if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $want) {{ throw 'uv SHA-256 mismatch' }};
+        $r = (Invoke-WebRequest "$u/uv-x86_64-pc-windows-msvc.zip.sha256" -UseBasicParsing).Content;
+        $t = if ($r -is [byte[]]) {{ [Text.Encoding]::UTF8.GetString($r) }} else {{ [string]$r }};
+        $want = $t.Trim().Split(' ')[0];
+        if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $want) {{ throw 'uv {version} SHA-256 mismatch' }};
         Expand-Archive -Force $z $bin
   spectracut-host:
     description: spectracut-host, the agent every `spectracut-shot` task runs (uv tool, pinned wheel)
@@ -83,8 +87,10 @@ components:
         New-Item -ItemType Directory -Force $d | Out-Null; $z = Join-Path $env:TEMP 'flamenco.zip';
         $u = 'https://flamenco.blender.org/downloads/flamenco-{version}-windows-amd64.zip';
         Invoke-WebRequest $u -OutFile $z;
-        $want = (Invoke-WebRequest "$u.sha256" -UseBasicParsing).Content.Trim().Split(' ')[0];
-        if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $want) {{ throw 'Flamenco SHA-256 mismatch' }};
+        $r = (Invoke-WebRequest "$u.sha256" -UseBasicParsing).Content;
+        $t = if ($r -is [byte[]]) {{ [Text.Encoding]::UTF8.GetString($r) }} else {{ [string]$r }};
+        $want = $t.Trim().Split(' ')[0];
+        if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $want) {{ throw 'Flamenco {version} SHA-256 mismatch' }};
         Expand-Archive -Force $z $d
   samba:
     description: Samba share for Flamenco storage (only on a Linux storage host)
