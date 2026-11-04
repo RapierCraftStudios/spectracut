@@ -121,10 +121,8 @@ def test_workflow_runs_image_and_script() -> None:
 def test_script_avoids_headless_dead_ends() -> None:
     """Regressions from the lane's real runs (see the report's 'What did not work')."""
     text = SCRIPT.read_text(encoding="utf-8")
-    # ardourN-lua has no file import and simple_export() hangs headless
+    # ardourN-lua has no file import
     assert "ARDOUR.SourceFactory." not in text
-    assert "s:simple_export(" not in text
-    assert '"${bin%-lua}-export"' in text
     assert "load_session(" in text
     # ARDOUR.Location has no Lua constructor
     assert "ARDOUR.Location(" not in text
@@ -137,3 +135,25 @@ def test_dockerfile_keeps_pkg_resources_for_ear() -> None:
     match = re.search(r"setuptools==(\d+)\.", text)
     assert match, "ear imports pkg_resources; setuptools must be pinned"
     assert int(match.group(1)) < 81, "setuptools 81 removed pkg_resources"
+
+
+def test_ardour_export_is_deterministic_path() -> None:
+    """ardourN-export raced at export start (about 1 in 10-15 exports differed).
+
+    The check must export from the reload Lua process with an explicit preset that
+    turns off dither, normalise, BWF and tags, read from a private config dir.
+    """
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert '-export"' not in text and " -b 24 -s " not in text, "ardourN-export is racy"
+    assert "s:simple_export()" in text
+    assert "e:set_preset(" in text and "e:run_export()" in text
+    assert "ARDOUR_EXPORT_OK" in text
+    assert 'XDG_CONFIG_HOME="$WORK/xdg"' in text
+    for option, value in (
+        ("sample-format", "SF_24"),
+        ("dithering", "D_None"),
+        ("tag-metadata", "false"),
+        ("broadcast-info", "false"),
+    ):
+        assert f'<Option name="{option}" value="{value}"/>' in text, option
+    assert '<Normalize enabled="false"' in text

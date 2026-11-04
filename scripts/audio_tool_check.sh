@@ -74,10 +74,13 @@ ardour_lua_bin() {
 }
 
 # The Lua programs run by ardourN-lua: FILE builds the session, saves and closes
-# it; FILE_reload.lua reloads it and checks the routing and plugin survived.
-# Export is done by ardourN-export (the Lua tool's simple_export() hangs headless
-# with the Dummy backend).
-write_ardour_lua() { # write_ardour_lua FILE SESSION_DIR
+# it; FILE_reload.lua reloads it, checks the routing and plugin survived, and
+# exports the master bus with Session:simple_export() and the preset below.
+# ardourN-export is not used: about 1 export in 10-15 of the same session came out
+# different (whole mix shifted by 16 samples, or the automation ramp off by a few
+# LSB), a race at its export start; the Lua export, run after the session settles,
+# gave 40/40 identical files.
+write_ardour_lua() { # write_ardour_lua FILE SESSION_DIR EXPORT_DIR
   cat > "$1" <<EOF
 local dir, name = "$2", "check"
 local rate = $RATE
@@ -160,13 +163,71 @@ assert(n == 4, "expected master + 2 tracks + bus after reload, got " .. n)
 local rb = s:route_by_name("FX Bus")
 assert(not rb:isnil(), "bus missing after reload")
 assert(not rb:nth_plugin(0):isnil(), "bus plugin missing after reload")
-close_session()
 print("ARDOUR_RELOAD_OK")
+-- export: let the freshly loaded session settle, then render the session range
+-- of the master bus with the check preset (WAV int24, session rate, no dither,
+-- no normalise, no BWF/bext, no tags)
+ARDOUR.LuaAPI.usleep(500000)
+local e = s:simple_export()
+e:set_folder("$3")
+e:set_name("mix")
+e:set_range(0, 4 * $RATE)
+assert(e:set_preset("$ARDOUR_PRESET_ID"), "export preset not found")
+assert(e:check_outputs(), "master bus has no outputs to export")
+assert(e:run_export(), "export failed")
+close_session()
+print("ARDOUR_EXPORT_OK")
+EOF
+}
+
+# Export format + preset for Session:simple_export(), read from a private
+# XDG_CONFIG_HOME so nothing is written to the user's Ardour config on a host.
+ARDOUR_FORMAT_ID=5c1e0d7a-48a0-4b0e-9c3e-2a7d0c0f4801
+ARDOUR_PRESET_ID=5c1e0d7a-48a0-4b0e-9c3e-2a7d0c0f4802
+write_ardour_export_preset() { # write_ardour_export_preset DIR
+  mkdir -p "$1"
+  cat > "$1/check-wav24.format" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<ExportFormatSpecification name="Check WAV 24" id="$ARDOUR_FORMAT_ID" analyse="0">
+  <Encoding id="F_WAV" type="T_Sndfile" extension="wav" name="WAV" has-sample-format="true" channel-limit="256"/>
+  <SampleRate rate="SR_Session"/>
+  <SRCQuality quality="SRC_SincBest"/>
+  <EncodingOptions>
+    <Option name="sample-format" value="SF_24"/>
+    <Option name="dithering" value="D_None"/>
+    <Option name="tag-metadata" value="false"/>
+    <Option name="tag-support" value="false"/>
+    <Option name="broadcast-info" value="false"/>
+  </EncodingOptions>
+  <Processing>
+    <Normalize enabled="false" loudness="no" dbfs="0" lufs="-23" dbtp="-1"/>
+    <Silence>
+      <Start><Trim enabled="false"/><Add enabled="false"><Duration format="Timecode" hours="0" minutes="0" seconds="0" frames="0"/></Add></Start>
+      <End><Trim enabled="false"/><Add enabled="false"><Duration format="Timecode" hours="0" minutes="0" seconds="0" frames="0"/></Add></End>
+    </Silence>
+  </Processing>
+</ExportFormatSpecification>
+EOF
+  cat > "$1/check-wav24.preset" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<ExportPreset id="$ARDOUR_PRESET_ID" name="Check WAV 24">
+  <ExportFormat id="$ARDOUR_FORMAT_ID"/>
+  <ExportFilename>
+    <Folder relative="1" path="export"/>
+    <Field name="label" enabled="1"/>
+    <Field name="session" enabled="0"/>
+    <Field name="snapshot" enabled="0"/>
+    <Field name="timespan" enabled="0"/>
+    <Field name="revision" enabled="0"/>
+    <Field name="time" enabled="0" value="T_None"/>
+    <Field name="date" enabled="0" value="D_None"/>
+  </ExportFilename>
+</ExportPreset>
 EOF
 }
 
 check_ardour() {
-  local t0 bin exp ver run lua out hashes=() files=() detail
+  local t0 bin ver run lua out hashes=() files=() detail
   t0="$(now)"
   if ! bin="$(ardour_lua_bin)"; then
     record Ardour "not installed" GPL-2.0-or-later "-" FAIL "$(elapsed "$t0")" \
@@ -174,25 +235,20 @@ check_ardour() {
     return 1
   fi
   ver="$(deb_version ardour)"
-  exp="${bin%-lua}-export"
-  if ! command -v "$exp" > /dev/null; then
-    record Ardour "$ver" GPL-2.0-or-later "$bin" FAIL "$(elapsed "$t0")" "$exp not on PATH"
-    return 1
-  fi
+  # ardourN reads export presets from $XDG_CONFIG_HOME/ardourN/export
+  write_ardour_export_preset "$WORK/xdg/$(basename "${bin%-lua}")/export"
   for run in 1 2; do
     lua="$WORK/ardour_$run.lua"
     out="$OUT/ardour_run$run"
     rm -rf "$WORK/ardour_session_$run" "$out"
     mkdir -p "$out"
-    write_ardour_lua "$lua" "$WORK/ardour_session_$run"
-    # export: 24-bit, session rate, no normalise, no BWF header (ardourN-export
-    # applies no dither); output is the master bus over the session range
-    if ! timeout 600 "$bin" "$lua" > "$LOGS/ardour_run$run.log" 2>&1 \
+    write_ardour_lua "$lua" "$WORK/ardour_session_$run" "$out"
+    if ! XDG_CONFIG_HOME="$WORK/xdg" timeout 600 "$bin" "$lua" > "$LOGS/ardour_run$run.log" 2>&1 \
        || ! grep -q ARDOUR_BUILD_OK "$LOGS/ardour_run$run.log" \
-       || ! timeout 600 "$bin" "${lua%.lua}_reload.lua" >> "$LOGS/ardour_run$run.log" 2>&1 \
+       || ! XDG_CONFIG_HOME="$WORK/xdg" timeout 600 "$bin" "${lua%.lua}_reload.lua" \
+            >> "$LOGS/ardour_run$run.log" 2>&1 \
        || ! grep -q ARDOUR_RELOAD_OK "$LOGS/ardour_run$run.log" \
-       || ! timeout 600 "$exp" -b 24 -s "$RATE" -o "$out/mix.wav" \
-            "$WORK/ardour_session_$run" check >> "$LOGS/ardour_run$run.log" 2>&1; then
+       || ! grep -q ARDOUR_EXPORT_OK "$LOGS/ardour_run$run.log"; then
       record Ardour "$ver" GPL-2.0-or-later "$bin" FAIL "$(elapsed "$t0")" \
         "run $run failed: $(grep -v '^$' "$LOGS/ardour_run$run.log" | grep -v 'encoder is not available' | tail -n 3)"
       return 1

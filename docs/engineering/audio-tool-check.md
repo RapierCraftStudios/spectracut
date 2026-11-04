@@ -55,22 +55,22 @@ Each step is one commented `RUN` in `host/docker/audio.Dockerfile`.
 
 ## Results
 
-Run on 2026-11-04 (08:48 UTC) in the lane, image
-`sha256:381448c09c774d16407435ea91e5ee343d6b8545989245dd3b641fe0a8e61dee`
+Run on 2026-11-04 (09:55 UTC) in the lane, image
+`sha256:5dacb62980b757a79ebafa07ae186e5f2de6b679dfd23666786f9cf4fce72b9d`
 (Linux x86_64, Docker). The check exited 0.
 
 | Tool | Version | Licence | Install path | Result | Time | Fallback |
 |---|---|---|---|---|---|---|
-| Ardour | 1:8.12.0+ds-1 | GPL-2.0-or-later | /usr/bin/ardour8-lua, /usr/bin/ardour8-export | PASS | 46.7 s | — |
-| SuperCollider | 1:3.13.0+repack-3 | GPL-3.0-or-later | /usr/bin/sclang, /usr/bin/scsynth | PASS | 1.5 s | — |
-| Pedalboard | 0.9.26 | GPL-3.0-only | /opt/venv/lib/python3.12/site-packages | PASS | 35.4 s | — |
-| LSP Plugins | 1.2.21-5 | LGPL-3.0-or-later | /usr/lib/lv2 (184 URIs), /usr/lib/vst3/lsp-plugins.vst3 | PASS | 14.8 s | — |
+| Ardour | 1:8.12.0+ds-1 | GPL-2.0-or-later | /usr/bin/ardour8-lua | PASS | 24.4 s | — |
+| SuperCollider | 1:3.13.0+repack-3 | GPL-3.0-or-later | /usr/bin/sclang, /usr/bin/scsynth | PASS | 1.7 s | — |
+| Pedalboard | 0.9.26 | GPL-3.0-only | /opt/venv/lib/python3.12/site-packages | PASS | 37.5 s | — |
+| LSP Plugins | 1.2.21-5 | LGPL-3.0-or-later | /usr/lib/lv2 (184 URIs), /usr/lib/vst3/lsp-plugins.vst3 | PASS | 17.7 s | — |
 | x42 | 20240611+ds-1 | GPL-2.0-or-later | /usr/lib/lv2 (113 URIs) | PASS | 0.0 s | — |
 | Airwindows | 2026-10-31-d013e10 | MIT | /usr/lib/vst3/Airwindows Consolidated.vst3 | PASS | 0.2 s | — |
 | Dragonfly Reverb | 3.2.10-3 | GPL-3.0-or-later | /usr/lib/lv2 (3 URIs), /usr/lib/vst3/DragonflyRoomReverb.vst3 | PASS | 0.2 s | — |
 | Surge XT | 1.3.4 | GPL-3.0-or-later | /usr/lib/lv2 (2 URIs), /usr/lib/vst3/Surge XT.vst3 | PASS | 0.3 s | — |
 | IEM Plugin Suite | not installed (target 1.16.0) | GPL-3.0-or-later | not installed | FAIL | 0.0 s | Build IEM 1.16.0 from source (CMake + JUCE, VST3/LV2 targets) in a separate pinned builder stage, or take the binaries from a Debian release whose glibc matches the image; until then, do ambisonic encode/decode with the IEM-equivalent ambisonic tools in SuperCollider (ATK) or render immersive beds through ear |
-| EBU ADM Renderer (ear) | 2.1.0 | BSD-3-Clause-Clear | /opt/venv/bin/ear-render | PASS | 3.6 s | — |
+| EBU ADM Renderer (ear) | 2.1.0 | BSD-3-Clause-Clear | /opt/venv/bin/ear-render | PASS | 2.4 s | — |
 
 What each check does:
 
@@ -78,9 +78,11 @@ What each check does:
   stereo bus (not to master), gain automation on each track (Play mode), and the
   LV2 plugin ACE EQ (`urn:ardour:a-eq`, +6 dB band) on the bus; it saves and
   closes. A second `ardour8-lua` process reloads the session and checks the
-  routes and the bus plugin. `ardour8-export -b 24 -s 48000` renders the master
-  bus over the session range to WAV. This runs twice in fresh dirs; both full
-  files had sha256 `06a8d89610d05b8c…`.
+  routes and the bus plugin, waits 0.5 s, and renders the master bus over the
+  session range to WAV with `Session:simple_export()` and the check's own export
+  preset (WAV int24, session rate, no dither, no normalise, no BWF, no tags),
+  which the script writes to a private `XDG_CONFIG_HOME`. This runs twice in
+  fresh dirs; both full files had sha256 `fd25855c2a86a4f3…`.
 - **SuperCollider (R6):** `sclang` builds a `Score` for a riser parameterised by
   duration, start/end frequency, brightness and seed (`RandSeed`), and renders it
   with `Score.recordNRT` (scsynth NRT, int24 WAV). Two runs, both sha256
@@ -94,9 +96,20 @@ What each check does:
 
 ## Determinism notes
 
-- Ardour exports are byte-identical only with: no dither (`ardour8-export` uses
-  none), no normalise, no BWF/bext chunk (`-B` not passed), and a fixed export
-  rate. The output is a plain 44-byte-header RIFF/WAVE.
+- Ardour exports are byte-identical only with: no dither, no normalise, no
+  BWF/bext chunk, no metadata tags, and a fixed export rate (all set in the
+  check's export preset). The output is a plain 44-byte-header RIFF/WAVE.
+- `ardour8-export` is not deterministic. Exporting freshly built copies of the
+  same session gave a different file about 1 time in 10 to 15 (seen in runs of
+  10, 16, 20, 24 and 30 exports, with and without the bus, the plugin or the
+  automation). The bad files were either the whole mix shifted by 16 samples or
+  the automation ramp off by 1 to 2 LSB. Re-exporting the same session gave the
+  good file again, so the difference comes from a race when the export starts,
+  not from the session. Latency compensation was 0 on every route. Exporting
+  from `ardour8-lua` after the session has settled gave 40/40 identical files
+  (2 × 20 builds, run in parallel), and the check uses that path. The two paths
+  render the same mix, except for differences of at most 8 LSB in the
+  automation ramp, so hashes from one path do not match the other.
 - The gain automation must start at the fader's static value. With the curve
   starting at 0.0 while the fader sat at unity, the same session exported to one
   of two different files (seen 2 times in about 20 exports): the first block's
@@ -122,8 +135,10 @@ What each check does:
   Fallback for importing real media (not yet tested): place the files in
   `interchange/<name>/audiofiles` and write the matching `Source`/`Region` entries
   into the session XML before loading it.
-- **Ardour Lua export:** `Session:simple_export():run_export()` hangs headless
-  with the "None (Dummy)" backend. Fallback used: `ardour8-export`.
+- **`ardour8-export`:** see "Determinism notes": about 1 export in 10 to 15
+  differs. Fallback used: `Session:simple_export()` in `ardour8-lua` with an
+  explicit preset (`set_preset`). Without a preset, the Lua export did not
+  finish headless in an earlier attempt.
 - **Ardour reload in the same process:** `load_session()` after `close_session()`
   in one `ardour8-lua` process hangs on the second close. Fallback used: reload in
   a fresh process.
