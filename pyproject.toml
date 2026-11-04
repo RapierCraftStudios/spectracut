@@ -8,6 +8,7 @@ license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 dependencies = [
     "cryptography>=43",
+    "opentimelineio>=0.17,<0.19",
     "pydantic>=2.9,<3",
     "typer>=0.12",
 ]
@@ -53,6 +54,10 @@ files = ["src/spectracut", "host/spectracut_host", "scripts", "tests"]
 explicit_package_bases = true
 mypy_path = ["src", "host"]
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["opentimelineio", "opentimelineio.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
