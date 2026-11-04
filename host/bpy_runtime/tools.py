@@ -11,65 +11,53 @@ module (the control plane and host agent never import the bpy runtime).
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 from typing import Any
+
+from bpy_runtime.ops import ENGINES, Report, ToolError, engine_id
+from bpy_runtime.ops import active_camera as _active_camera
+from bpy_runtime.ops import as_choice as _choice
+from bpy_runtime.ops import as_int as _int
+from bpy_runtime.ops import as_name as _name
+from bpy_runtime.ops import as_num as _num
+from bpy_runtime.ops import as_vec3 as _vec3
+from bpy_runtime.ops import check_only as _only
+from bpy_runtime.ops.camera import (
+    camera_add_aspect,
+    camera_move,
+    camera_set_dof,
+    camera_use,
+)
+from bpy_runtime.ops.inspect import inspect_bounds, inspect_framing
+from bpy_runtime.ops.look import look_set_view
+from bpy_runtime.ops.material import material_apply_preset
+from bpy_runtime.ops.props import render_set_property
+from bpy_runtime.ops.scene import object_import_gltf
+
+__all__ = ["TOOL_NAMES", "TOOLS", "run_step"]
 
 TOOL_NAMES = frozenset(
     {
         "scene.clear",
         "object.add_primitive",
+        "object.import_gltf",
+        "material.apply_preset",
         "camera.add",
         "camera.set_lens",
         "camera.set_transform",
+        "camera.set_dof",
+        "camera.move",
+        "camera.add_aspect",
+        "camera.use",
         "light.add",
         "render.set_engine",
         "render.set_resolution",
+        "render.set_property",
+        "inspect.bounds",
+        "inspect.framing",
+        "look.set_view",
     }
 )
-
-
-class ToolError(ValueError):
-    """A recipe step names an unknown tool or passes invalid arguments."""
-
-
-def _only(args: dict[str, Any], allowed: set[str], tool: str) -> None:
-    extra = set(args) - allowed
-    if extra:
-        raise ToolError(f"{tool}: unknown argument(s) {sorted(extra)}")
-
-
-def _num(value: Any, what: str, lo: float | None = None, hi: float | None = None) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-        raise ToolError(f"{what} must be a finite number")
-    if (lo is not None and value < lo) or (hi is not None and value > hi):
-        raise ToolError(f"{what} must be within [{lo}, {hi}]")
-    return float(value)
-
-
-def _int(value: Any, what: str, lo: int, hi: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
-        raise ToolError(f"{what} must be an integer within [{lo}, {hi}]")
-    return value
-
-
-def _vec3(value: Any, what: str) -> tuple[float, float, float]:
-    if not isinstance(value, list) or len(value) != 3:
-        raise ToolError(f"{what} must be a list of 3 numbers")
-    x, y, z = (_num(v, f"{what}[{i}]") for i, v in enumerate(value))
-    return (x, y, z)
-
-
-def _name(value: Any, what: str) -> str:
-    if not isinstance(value, str) or not 0 < len(value) <= 63:
-        raise ToolError(f"{what} must be a non-empty string of at most 63 characters")
-    return value
-
-
-def _choice(value: Any, what: str, choices: dict[str, str]) -> str:
-    if value not in choices:
-        raise ToolError(f"{what} must be one of {sorted(choices)}")
-    return choices[value]
 
 
 def scene_clear(bpy: Any, args: dict[str, Any]) -> None:
@@ -116,10 +104,7 @@ def camera_add(bpy: Any, args: dict[str, Any]) -> None:
 
 
 def _camera(bpy: Any, tool: str) -> Any:
-    camera = bpy.context.scene.camera
-    if camera is None:
-        raise ToolError(f"{tool}: the scene has no camera; add one with camera.add")
-    return camera
+    return _active_camera(bpy, tool)
 
 
 def camera_set_lens(bpy: Any, args: dict[str, Any]) -> None:
@@ -151,20 +136,10 @@ def light_add(bpy: Any, args: dict[str, Any]) -> None:
     _link(bpy, obj)
 
 
-def _eevee_id(bpy: Any) -> str:
-    # Blender 4.2-4.x names the new EEVEE "BLENDER_EEVEE_NEXT".
-    version = tuple(bpy.app.version)
-    return "BLENDER_EEVEE_NEXT" if (4, 2) <= version[:2] < (5, 0) else "BLENDER_EEVEE"
-
-
 def render_set_engine(bpy: Any, args: dict[str, Any]) -> None:
     _only(args, {"engine"}, "render.set_engine")
-    engine = _choice(
-        args.get("engine"),
-        "engine",
-        {"eevee": "EEVEE", "cycles": "CYCLES", "workbench": "BLENDER_WORKBENCH"},
-    )
-    bpy.context.scene.render.engine = _eevee_id(bpy) if engine == "EEVEE" else engine
+    engine = _choice(args.get("engine"), "engine", ENGINES)
+    bpy.context.scene.render.engine = engine_id(bpy, engine)
 
 
 def render_set_resolution(bpy: Any, args: dict[str, Any]) -> None:
@@ -175,7 +150,7 @@ def render_set_resolution(bpy: Any, args: dict[str, Any]) -> None:
     render.resolution_percentage = _int(args.get("percentage", 100), "percentage", 1, 100)
 
 
-TOOLS: dict[str, Callable[[Any, dict[str, Any]], None]] = {
+TOOLS: dict[str, Callable[[Any, dict[str, Any]], Report]] = {
     "scene.clear": scene_clear,
     "object.add_primitive": object_add_primitive,
     "camera.add": camera_add,
@@ -184,16 +159,28 @@ TOOLS: dict[str, Callable[[Any, dict[str, Any]], None]] = {
     "light.add": light_add,
     "render.set_engine": render_set_engine,
     "render.set_resolution": render_set_resolution,
+    "object.import_gltf": object_import_gltf,
+    "material.apply_preset": material_apply_preset,
+    "camera.set_dof": camera_set_dof,
+    "camera.move": camera_move,
+    "camera.add_aspect": camera_add_aspect,
+    "camera.use": camera_use,
+    "render.set_property": render_set_property,
+    "inspect.bounds": inspect_bounds,
+    "inspect.framing": inspect_framing,
+    "look.set_view": look_set_view,
 }
 
 assert frozenset(TOOLS) == TOOL_NAMES, "TOOLS and TOOL_NAMES must list the same tools"
 
 
-def run_step(bpy: Any, tool: str, args: dict[str, Any]) -> None:
-    """Run one recipe step; unknown tools are refused."""
+def run_step(bpy: Any, tool: str, args: dict[str, Any]) -> Report:
+    """Run one recipe step and return its JSON report (or ``None``); unknown tools are refused."""
     fn = TOOLS.get(tool)
     if fn is None:
-        raise ToolError(f"unknown tool {tool!r}: the bpy runtime runs only registered tools")
+        raise ToolError(
+            f"unknown tool {tool!r}: the bpy runtime runs only registered tools", "tool.unknown"
+        )
     if not isinstance(args, dict):
         raise ToolError(f"{tool}: args must be an object")
-    fn(bpy, args)
+    return fn(bpy, args)
