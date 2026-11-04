@@ -1,0 +1,54 @@
+{
+  "id": "key-light-and-material",
+  "source": "3dcodebench",
+  "instruction": "Raise the key light to clear exposure and set the orb material to the brand teal (#20B2AA).",
+  "threshold": 0.95,
+  "start": {
+    "background": [
+      30,
+      30,
+      30
+    ],
+    "light": 0.35,
+    "objects": [
+      {
+        "id": "orb",
+        "shape": "circle",
+        "center": [
+          0.5,
+          0.5
+        ],
+        "size": 0.5,
+        "color": [
+          180,
+          60,
+          60
+        ]
+      }
+    ]
+  },
+  "ground_truth": {
+    "background": [
+      30,
+      30,
+      30
+    ],
+    "light": 1.0,
+    "objects": [
+      {
+        "id": "orb",
+        "shape": "circle",
+        "center": [
+          0.5,
+          0.5
+        ],
+        "size": 0.5,
+        "color": [
+          32,
+          178,
+          170
+        ]
+      }
+    ]
+  }
+}
