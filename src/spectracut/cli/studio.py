@@ -156,7 +156,7 @@ def _report_lines(report: RunReport) -> list[str]:
 
 
 @studio_app.command("run")
-def run(
+def run_cmd(
     production_id: IdArg,
     home: HomeOpt = None,
     workers: Annotated[int, typer.Option("--workers", min=1, help="Parallel node builds.")] = 1,
@@ -176,7 +176,7 @@ def run(
 
 
 @studio_app.command("status")
-def status(production_id: IdArg, home: HomeOpt = None) -> None:
+def status_cmd(production_id: IdArg, home: HomeOpt = None) -> None:
     """Show each node's status, tier, gate and decision, plus the cost ledger."""
     graph = _load(ProductionStore(home), production_id)
     profile = graph.profile.name if graph.profile is not None else "none"

@@ -75,7 +75,7 @@ def _frames(value: str) -> tuple[int, int]:
     return first, last
 
 
-def render(
+def render_cmd(
     recipe_file: Annotated[Path, typer.Argument(metavar="RECIPE", help="Recipe JSON file.")],
     profile_file: Annotated[
         Path,
@@ -154,7 +154,7 @@ def _job_lines(jobs_dir: Path) -> list[str]:
     return lines
 
 
-def status(home: HomeOpt = None) -> None:
+def status_cmd(home: HomeOpt = None) -> None:
     """List productions with node-status counts, and queued render jobs."""
     root = _home(home)
     store = ProductionStore(root)
@@ -303,4 +303,4 @@ def hosts_remove(
     typer.echo(f"removed {name}")
 
 
-__all__ = ["HostEntry", "HostRegistry", "hosts_app", "load_hosts", "render", "status"]
+__all__ = ["HostEntry", "HostRegistry", "hosts_app", "load_hosts", "render_cmd", "status_cmd"]
