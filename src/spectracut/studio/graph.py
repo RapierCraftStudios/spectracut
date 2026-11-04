@@ -27,9 +27,9 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from pydantic import JsonValue
+from pydantic import Field, JsonValue
 
-from spectracut.spec._base import StrictModel, content_hash
+from spectracut.spec._base import ContentHash, Slug, StrictModel, content_hash
 from spectracut.studio.gates import Critic, CriticVerdict, GateDecision, GateMode, GatePolicy
 from spectracut.studio.ledger import Ledger, LedgerEntry, Outcome, Usage
 from spectracut.studio.node import NEEDS_BUILD, NodeSpec, NodeState, NodeStatus, Tier, node_key
@@ -83,6 +83,38 @@ class _Accepted:
     output_hash: str
 
 
+class AcceptedOutput(StrictModel):
+    """An output accepted under a node key, as stored in a :class:`GraphSnapshot`."""
+
+    output: JsonValue
+    output_hash: ContentHash
+
+
+class PendingApproval(StrictModel):
+    """An output waiting on a human gate, as stored in a :class:`GraphSnapshot`."""
+
+    key: ContentHash
+    output: JsonValue
+    output_hash: ContentHash
+
+
+class GraphSnapshot(StrictModel):
+    """Everything needed to rebuild a :class:`ProductionGraph` in another process."""
+
+    production_id: Slug
+    profile: QualityProfile | None = None
+    gates: GatePolicy = GatePolicy()
+    nodes: tuple[NodeSpec, ...] = ()
+    """Node declarations in dependency order."""
+    states: dict[str, NodeState] = Field(default_factory=dict)
+    cache: dict[str, AcceptedOutput] = Field(default_factory=dict)
+    """Accepted outputs by node key."""
+    pending: dict[str, PendingApproval] = Field(default_factory=dict)
+    """Outputs awaiting a person, by node id."""
+    decisions: dict[str, GateDecision] = Field(default_factory=dict)
+    ledger: tuple[LedgerEntry, ...] = ()
+
+
 class ProductionGraph:
     """Nodes, their build state, an output cache by key, gates and a cost ledger."""
 
@@ -111,6 +143,67 @@ class ProductionGraph:
         self._pending: dict[str, tuple[str, _Accepted]] = {}
         self._decisions: dict[str, GateDecision] = {}
         self._lock = threading.RLock()
+
+    # ---- persistence -------------------------------------------------------
+
+    def snapshot(self) -> GraphSnapshot:
+        """A JSON-safe copy of the whole graph: nodes, states, outputs, gates and ledger."""
+        with self._lock:
+            return GraphSnapshot(
+                production_id=self.production_id,
+                profile=self.profile,
+                gates=self.gates,
+                nodes=tuple(self._specs.values()),
+                states={nid: self._states[nid] for nid in self._specs},
+                cache={
+                    key: AcceptedOutput(output=a.output, output_hash=a.output_hash)
+                    for key, a in self._cache.items()
+                },
+                pending={
+                    nid: PendingApproval(key=key, output=a.output, output_hash=a.output_hash)
+                    for nid, (key, a) in self._pending.items()
+                },
+                decisions=dict(self._decisions),
+                ledger=self.ledger.entries(),
+            )
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        snap: GraphSnapshot,
+        *,
+        profile: QualityProfile | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> ProductionGraph:
+        """Rebuild a graph from :meth:`snapshot`; ``profile`` overrides the stored one."""
+        graph = cls(
+            snap.production_id,
+            profile=profile if profile is not None else snap.profile,
+            gates=snap.gates,
+            ledger=Ledger(snap.ledger),
+            clock=clock,
+            now=now,
+        )
+        graph.add_nodes(snap.nodes)
+        ids = set(graph._specs)
+        for what, table in (
+            ("states", snap.states),
+            ("pending", snap.pending),
+            ("decisions", snap.decisions),
+        ):
+            unknown = sorted(set(table) - ids)
+            if unknown:
+                raise ValueError(f"snapshot {what} name unknown nodes {unknown}")
+        graph._states.update(snap.states)
+        graph._cache = {
+            key: _Accepted(a.output, a.output_hash) for key, a in snap.cache.items()
+        }
+        graph._pending = {
+            nid: (p.key, _Accepted(p.output, p.output_hash)) for nid, p in snap.pending.items()
+        }
+        graph._decisions = dict(snap.decisions)
+        return graph
 
     # ---- structure ---------------------------------------------------------
 
