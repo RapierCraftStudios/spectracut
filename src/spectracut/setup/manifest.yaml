@@ -79,7 +79,9 @@ components:
       linux: >-
         set -e; mkdir -p ~/.local/opt/flamenco; f=$(mktemp);
         u=https://flamenco.blender.org/downloads/flamenco-{version}-linux-amd64.tar.gz;
-        curl -fsSL $u -o "$f"; want=$(curl -fsSL $u.sha256 | cut -d' ' -f1);
+        curl -fsSL $u -o "$f";
+        want=$(curl -fsSL https://flamenco.blender.org/downloads/flamenco-{version}.sha256
+        | grep 'flamenco-{version}-linux-amd64.tar.gz$' | cut -d' ' -f1);
         echo "$want  $f" | sha256sum -c - && tar -xz --strip-components=1 -C ~/.local/opt/flamenco -f "$f" && rm -f "$f"
   flamenco-worker:
     description: Flamenco Worker, native on every render host
@@ -90,16 +92,19 @@ components:
       linux: >-
         set -e; mkdir -p ~/.local/opt/flamenco; f=$(mktemp);
         u=https://flamenco.blender.org/downloads/flamenco-{version}-linux-amd64.tar.gz;
-        curl -fsSL $u -o "$f"; want=$(curl -fsSL $u.sha256 | cut -d' ' -f1);
+        curl -fsSL $u -o "$f";
+        want=$(curl -fsSL https://flamenco.blender.org/downloads/flamenco-{version}.sha256
+        | grep 'flamenco-{version}-linux-amd64.tar.gz$' | cut -d' ' -f1);
         echo "$want  $f" | sha256sum -c - && tar -xz --strip-components=1 -C ~/.local/opt/flamenco -f "$f" && rm -f "$f"
       windows: >-
         $ErrorActionPreference = 'Stop'; $d = Join-Path $env:USERPROFILE 'spectracut';
         New-Item -ItemType Directory -Force $d | Out-Null; $z = Join-Path $env:TEMP 'flamenco.zip';
         $u = 'https://flamenco.blender.org/downloads/flamenco-{version}-windows-amd64.zip';
         Invoke-WebRequest $u -OutFile $z;
-        $r = (Invoke-WebRequest "$u.sha256" -UseBasicParsing).Content;
+        $r = (Invoke-WebRequest https://flamenco.blender.org/downloads/flamenco-{version}.sha256 -UseBasicParsing).Content;
         $t = if ($r -is [byte[]]) {{ [Text.Encoding]::UTF8.GetString($r) }} else {{ [string]$r }};
-        $want = $t.Trim().Split(' ')[0];
+        $want = ($t
+        -split "\r?\n" | Select-String -SimpleMatch 'flamenco-{version}-windows-amd64.zip' | Select-Object -First 1).Line.Split(' ')[0];
         if ((Get-FileHash $z -Algorithm SHA256).Hash -ne $want) {{ throw 'Flamenco {version} SHA-256 mismatch' }};
         Expand-Archive -Force $z $d
   samba:
