@@ -19,8 +19,8 @@ It's process-driven rather than outcome-driven: direction is settled at the chea
 ## License
 SpectraCut is dual-licensed:
 - **open source** under [AGPL-3.0-or-later](LICENSE);
-- **commercial**, for organisations that can't comply with the AGPL. See `COMMERCIAL.md` (coming with the governance issue).
+- **commercial**, for organisations that can't comply with the AGPL. See [COMMERCIAL.md](COMMERCIAL.md) and [docs/licensing.md](docs/licensing.md).
 
-Contributions require signing the CLA, so dual licensing stays possible.
+Contributions require signing the [CLA](CLA.md), so dual licensing stays possible.
 
 A [RapierCraft Studios](https://github.com/RapierCraftStudios) project.
