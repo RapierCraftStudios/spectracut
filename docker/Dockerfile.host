@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Render-host agent image. Blender is not bundled: the host supplies it through
+# SPECTRACUT_BLENDER, and bpy_runtime stays outside the packaged wheel.
+
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS build
+WORKDIR /src
+COPY pyproject.toml uv.lock README.md LICENSE ./
+COPY src ./src
+COPY host ./host
+RUN uv build --wheel --out-dir /dist \
+    && uv build --wheel --package spectracut-host --out-dir /dist
+
+FROM python:3.12-slim
+LABEL org.opencontainers.image.title="spectracut-host" \
+      org.opencontainers.image.description="SpectraCut render host agent" \
+      org.opencontainers.image.source="https://github.com/RapierCraftStudios/SpectraCut" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later"
+COPY --from=build /dist /tmp/dist
+RUN pip install --no-cache-dir /tmp/dist/spectracut-*.whl /tmp/dist/spectracut_host-*.whl \
+    && rm -rf /tmp/dist \
+    && useradd --create-home --uid 10001 spectracut
+USER spectracut
+ENTRYPOINT ["spectracut-host"]
+CMD ["--help"]
