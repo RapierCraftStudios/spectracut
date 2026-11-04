@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 import shlex
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -447,6 +448,21 @@ class SetupError(RuntimeError):
     pass
 
 
+_CLIXML_OBJS = re.compile(r"<Objs\b.*?</Objs>", re.DOTALL)
+_CLIXML_ERR = re.compile(r'<S S="[Ee]rror">(.*?)</S>', re.DOTALL)
+
+
+def _error_lines(text: str) -> list[str]:
+    """Non-empty lines of ``text`` with PowerShell CLIXML records reduced to their errors."""
+
+    def _errors(m: re.Match[str]) -> str:
+        found = _CLIXML_ERR.findall(m.group(0))
+        return "".join(found).replace("_x000D__x000A_", "\n").replace("_x000A_", "\n")
+
+    text = _CLIXML_OBJS.sub(_errors, text.replace("#< CLIXML", ""))
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+
 class CommandRunner:
     """Runs steps on the control plane locally and on render hosts over SSH."""
 
@@ -457,6 +473,7 @@ class CommandRunner:
         self, host: str, cmd: str, shell: str, stdin: str | None
     ) -> subprocess.CompletedProcess[str]:
         if shell == "powershell":
+            cmd = f"$ProgressPreference = 'SilentlyContinue'; {cmd}"
             enc = base64.b64encode(cmd.encode("utf-16-le")).decode("ascii")
             remote = f"powershell -NoProfile -NonInteractive -EncodedCommand {enc}"
         else:
@@ -469,7 +486,7 @@ class CommandRunner:
     def run(self, step: Step) -> str | None:
         proc = self._exec(step.host, step.command, step.shell, step.stdin)
         if proc.returncode != 0:
-            tail = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or [""]
+            tail = _error_lines(proc.stderr or proc.stdout)[-1:] or [""]
             raise SetupError(f"{step.host}: {step.summary} failed ({proc.returncode}): {tail[0]}")
         return proc.stdout if step.artifact else None
 

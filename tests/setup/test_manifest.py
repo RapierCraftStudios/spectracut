@@ -151,3 +151,50 @@ def test_first_command_token_of_every_install_and_version_cmd_resolves() -> None
                 if tok not in allowed:
                     unresolved.append((name, os_name, tok))
     assert not unresolved, unresolved
+
+
+WINDOWS_CHECKSUMS = ("blender", "uv", "flamenco-worker")
+
+
+def _render_windows(name: str) -> str:
+    m = load_manifest()
+    return m.components[name].install["windows"].format(version=m.sets[0].versions[name])
+
+
+@pytest.mark.parametrize("name", WINDOWS_CHECKSUMS)
+def test_windows_install_decodes_byte_checksums_and_throws_on_mismatch(name: str) -> None:
+    cmd = _render_windows(name)
+    assert "{{" not in cmd and "}}" not in cmd
+    assert "-is [byte[]]" in cmd and "[Text.Encoding]::UTF8.GetString" in cmd
+    assert ").Content.Trim()" not in cmd and ").Content -split" not in cmd
+    assert re.search(r"-ne \$want\) \{ throw '[^']*SHA-256 mismatch' \}", cmd)
+
+
+def test_powershell_commands_silence_progress_and_report_the_real_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import base64
+    import subprocess
+
+    from spectracut.setup.manifest import Step
+    from spectracut.setup.plan import CommandRunner, SetupError
+
+    seen: list[list[str]] = []
+    clixml = (
+        '#< CLIXML\n<Objs Version="1.1.0.1"><Obj S="progress"><TN/></Obj>'
+        '<S S="Error">Method invocation failed_x000D__x000A_</S></Objs>'
+    )
+
+    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 1, "", clixml)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    step = Step("legion", "s", "install uv", "Write-Output 1", "powershell")
+    with pytest.raises(SetupError) as err:
+        CommandRunner().run(step)
+    enc = seen[0][-1].rsplit(" ", 1)[1]
+    script = base64.b64decode(enc).decode("utf-16-le")
+    assert script.startswith("$ProgressPreference = 'SilentlyContinue';")
+    assert str(err.value).endswith("Method invocation failed")
+    assert "CLIXML" not in str(err.value) and "<" not in str(err.value)
