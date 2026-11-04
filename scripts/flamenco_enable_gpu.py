@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Enable every CUDA/OptiX device for Cycles before the job renders (prefs are not stored in .blend files),
 # and denoise on the GPU (a scene setting, applied after the .blend loads).
 import bpy
