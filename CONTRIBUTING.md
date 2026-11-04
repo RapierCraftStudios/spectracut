@@ -4,7 +4,7 @@ Thanks for helping build SpectraCut. The design lives in [`docs/engineering/tech
 
 ## Licence and CLA
 
-SpectraCut is AGPL-3.0-or-later and dual-licensed. Every contribution must be covered by the Contributor Licence Agreement so dual licensing stays possible; a CLA check runs on pull requests (see `CLA.md`, added by the governance work).
+SpectraCut is AGPL-3.0-or-later and dual-licensed. Every contribution must be covered by the Contributor Licence Agreement so dual licensing stays possible; a CLA check runs on pull requests. Read [CLA.md](CLA.md) and sign by commenting `I have read the CLA Document and I hereby sign the CLA` on your pull request. The check is report-only until the maintainers enable enforcement (#10); see [docs/licensing.md](docs/licensing.md).
 
 Every source file (`.py`, `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`) starts with an SPDX header in its first five lines:
 
