@@ -9,7 +9,8 @@ import subprocess
 import sys
 from typing import Any
 
-from spectracut.spec import Recipe, canonical_json
+from spectracut.spec._base import canonical_json
+from spectracut.spec.recipe import Recipe
 
 STEPS: list[dict[str, Any]] = [
     {"index": 0, "tool": "scene.new", "args": {}},
@@ -27,7 +28,7 @@ GOLDEN = "sha256:aa4a53b1e25ed6d4138ef1fa25fc91696e5f06d7b3b7c7e0b47301223f4f86e
 
 SNIPPET = """
 import json, sys
-from spectracut.spec import Recipe
+from spectracut.spec.recipe import Recipe
 print(Recipe.model_validate(json.loads(sys.argv[1])).content_hash)
 """
 

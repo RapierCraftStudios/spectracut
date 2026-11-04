@@ -11,7 +11,12 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from spectracut.canon.schema import Canon, CanonPin
-from spectracut.spec import SCHEMAS, Asset, BrandKit, Brief, LicenseRecord, Look, Recipe, Shot
+from spectracut.spec.asset import Asset, LicenseRecord
+from spectracut.spec.brand import BrandKit, Look
+from spectracut.spec.brief import Brief
+from spectracut.spec.recipe import Recipe
+from spectracut.spec.registry import SCHEMAS
+from spectracut.spec.spec import Shot
 
 AUDIENCE: dict[str, Any] = {
     "personas": [{"name": "Indie dev", "description": "Ships SaaS alone"}],
