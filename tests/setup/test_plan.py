@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 
@@ -264,3 +265,55 @@ def test_linux_worker_finds_blender_on_path() -> None:
     assert ".local/bin/blender" in install.command
     unit = next(s for s in plan.steps if s.id == "service:worker-unit:rig")
     assert "Environment=PATH=%h/.local/bin" in (unit.stdin or "")
+
+
+def test_every_host_uv_call_uses_only_managed_python() -> None:
+    manifest = load_manifest()
+    seen = 0
+    for comp in manifest.components.values():
+        if "host" not in comp.roles:
+            continue
+        for cmd in comp.install.values():
+            for m in re.finditer(r"tool install --[^;]*", cmd):
+                seen += 1
+                assert "--python-preference only-managed" in m.group(0)
+    assert seen == 2
+
+
+@pytest.mark.parametrize("component", ["flamenco-worker", "spectracut-host", None])
+def test_worker_stopped_before_files_are_replaced_and_started_after(component: str | None) -> None:
+    from spectracut.setup.plan import HostState
+
+    if component is None:
+        plan = _plan(SetupState())
+        state = SetupState()
+        for step in plan.steps:
+            if step.component and step.version:
+                state.hosts.setdefault(step.host, HostState()).components[step.component] = (
+                    step.version
+                )
+        plan = _plan(state)
+        assert not [s for s in plan.steps if s.id.startswith("worker:")]
+        return
+    state = SetupState()
+    for step in _plan(SetupState()).steps:
+        if step.component and step.version and step.component != component:
+            state.hosts.setdefault(step.host, HostState()).components[step.component] = step.version
+    ids = [s.id for s in _plan(state).steps]
+    by_id = {s.id: s for s in _plan(state).steps}
+    for name, shell in (("legion", "powershell"), ("rig", "sh")):
+        stop, inst, start = (
+            f"worker:stop:{name}",
+            f"install:{component}:{name}",
+            f"worker:start:{name}",
+        )
+        assert ids.index(stop) < ids.index(inst) < ids.index(start)
+        for sid in (stop, start):
+            assert by_id[sid].shell == shell and by_id[sid].component is None
+            assert "sudo" not in by_id[sid].command and "RunAs" not in by_id[sid].command
+            assert CRED.password not in by_id[sid].command
+    assert "Stop-ScheduledTask" in by_id["worker:stop:legion"].command
+    assert "Get-ScheduledTask" in by_id["worker:start:legion"].command
+    assert "systemctl --user stop spectracut-worker" in by_id["worker:stop:rig"].command
+    assert "is-enabled" in by_id["worker:start:rig"].command
+    assert CONTROL not in {s.host for s in _plan(state).steps if s.id.startswith("worker:")}
