@@ -15,6 +15,7 @@ import re
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -80,6 +81,20 @@ class ProviderAuthError(ProviderError):
         if hint and hint not in message:
             message = f"{message} (sign in with `{hint}`)"
         super().__init__(cli, f"sign-in failed: {message}")
+
+
+class ProviderExhausted(ProviderError):
+    """The provider is out of capacity (rate limit) until ``reset_at``.
+
+    The queue parks a job that raises this in ``waiting_for_ai`` and resumes it
+    once ``reset_at`` has passed, instead of failing it.
+    """
+
+    def __init__(self, cli: str, reset_at: datetime, message: str = "rate limit reached") -> None:
+        if reset_at.tzinfo is None or reset_at.utcoffset() is None:
+            raise ValueError("reset_at must be timezone-aware")
+        self.reset_at = reset_at
+        super().__init__(cli, f"{message}; capacity resets at {reset_at.isoformat()}")
 
 
 @dataclass(frozen=True)
