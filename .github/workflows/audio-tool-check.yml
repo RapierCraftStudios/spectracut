@@ -28,7 +28,9 @@ jobs:
       - name: Build audio image
         run: docker build -f host/docker/audio.Dockerfile -t spectracut-audio-check host/docker
       - name: Run audio tool check
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p "$RUNNER_TEMP/audio-check"
           docker run --rm \
             -v "$PWD/scripts:/opt/check:ro" \

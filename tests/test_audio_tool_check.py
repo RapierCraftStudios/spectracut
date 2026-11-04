@@ -157,3 +157,9 @@ def test_ardour_export_is_deterministic_path() -> None:
     ):
         assert f'<Option name="{option}" value="{value}"/>' in text, option
     assert '<Normalize enabled="false"' in text
+
+
+def test_workflow_fails_when_script_fails() -> None:
+    text = (ROOT / ".github" / "workflows" / "audio-tool-check.yml").read_text()
+    assert "shell: bash" in text
+    assert "pipefail" in text
