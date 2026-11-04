@@ -10,11 +10,11 @@ from typing import Any
 import pytest
 
 from spectracut.queue.cache import FrameCache
-from spectracut.queue.executors import FlamencoExecutor, JobResult, Resources
-from spectracut.queue.executors.flamenco import TIER_PRIORITY, map_status
+from spectracut.queue.executors.base import JobResult, JobStatus, Resources
+from spectracut.queue.executors.flamenco import TIER_PRIORITY, FlamencoExecutor, map_status
 from spectracut.queue.flamenco import JOB_TYPE, WorkerTag
 from spectracut.queue.profile import RenderProfile
-from spectracut.queue.queue import Job, JobQueue, JobStatus
+from spectracut.queue.queue import Job, JobQueue
 from spectracut.queue.signing import JobEnvelope
 from spectracut.spec.recipe import Recipe, RecipeStep
 from spectracut.studio import NodeSpec, NodeStatus, ProductionGraph, RunContext, Tier
@@ -176,7 +176,7 @@ def test_rendered_recipe_is_cached_for_next_time(tmp_path: Path) -> None:
 
 
 def test_non_blender_kinds_never_go_to_flamenco() -> None:
-    from spectracut.queue.executors import NoCapableExecutor
+    from spectracut.queue.executors.base import NoCapableExecutor
 
     client = FakeFlamenco(["completed"])
     q = JobQueue([_executor(client)], now=lambda: T0)

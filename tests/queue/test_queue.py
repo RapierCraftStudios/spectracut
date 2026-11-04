@@ -11,20 +11,20 @@ import pytest
 
 from spectracut.providers.base import ProviderError, ProviderExhausted
 from spectracut.queue.cache import FrameCache
-from spectracut.queue.executors import (
+from spectracut.queue.executors.base import (
     Executor,
     ExecutorBusy,
     GpuCard,
-    HostPoolExecutor,
-    HostSlot,
     JobResult,
+    JobStatus,
     LeasePool,
     NoCapableExecutor,
     Resources,
+    metered_run,
 )
-from spectracut.queue.executors.base import metered_run
+from spectracut.queue.executors.hostpool import HostPoolExecutor, HostSlot
 from spectracut.queue.profile import RenderProfile, frame_cache_key
-from spectracut.queue.queue import Job, JobQueue, JobStatus, QueueStalled
+from spectracut.queue.queue import Job, JobQueue, QueueStalled
 from spectracut.studio.ledger import Usage
 
 RECIPE = "sha256:" + "a" * 64

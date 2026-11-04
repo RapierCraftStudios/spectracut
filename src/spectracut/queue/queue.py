@@ -40,7 +40,7 @@ from spectracut.queue.profile import RenderProfile
 from spectracut.studio.graph import RunContext, Runner, RunResult
 from spectracut.studio.node import Tier
 
-__all__ = ["Job", "JobFailed", "JobQueue", "JobStatus", "QueueStalled"]
+__all__ = ["Job", "JobFailed", "JobQueue", "QueueStalled"]
 
 BLENDER: str = "blender"
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
