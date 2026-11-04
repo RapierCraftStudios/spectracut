@@ -6,3 +6,14 @@
 # ForgeDock config (contains local paths)
 forge.yaml
 forge.yaml.bak
+
+# Python
+.venv/
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
