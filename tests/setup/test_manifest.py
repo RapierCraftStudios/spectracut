@@ -102,3 +102,26 @@ def test_audio_tools_install_from_the_pinned_image() -> None:
     assert "host/docker/audio.Dockerfile" in comp.install["linux"]
     assert (ROOT / "host/docker/audio.Dockerfile").is_file()
     assert "pacman" not in comp.install["linux"] and "apt-get" not in comp.install["linux"]
+
+
+def test_audio_image_install_runs_docker_build_of_the_dockerfile(tmp_path: Path) -> None:
+    """Executes the manifest's install command with a recording `docker` (no daemon needed)."""
+    import os
+    import stat
+    import subprocess
+
+    m = load_manifest()
+    version = m.sets[0].versions["audio-image"]
+    cmd = m.components["audio-image"].install["linux"].format(version=version)
+    cmd = cmd.replace("${{", "${").replace("}}", "}") if "{{" in cmd else cmd
+    log = tmp_path / "docker.log"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "docker"
+    fake.write_text(f'#!/bin/sh\necho "$@" >> {log}\n')
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "SPECTRACUT_REPO": str(ROOT)}
+    subprocess.run(["sh", "-c", cmd], env=env, check=True)
+    line = log.read_text()
+    assert "build -f host/docker/audio.Dockerfile" in line
+    assert f"spectracut-audio:{version}" in line and "spectracut-audio:current" in line

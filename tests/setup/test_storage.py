@@ -75,3 +75,48 @@ def test_general_host_keeps_all_memory_and_build_lanes() -> None:
     slot = HostEntry(name="rig", cpus=8, mem_gb=32, profile=PROFILE).slot()
     assert slot.mem_gb == 32
     assert slot.build_lanes is True
+
+
+class _SimulatedWindowsHost:
+    """Runs a plan against a stand-in for the storage host: the share exists only once an admin ran the script."""
+
+    def __init__(self) -> None:
+        self.script: str | None = None
+        self.password: str | None = None
+        self.share_ready = False
+        self.ran: list[str] = []
+
+    def admin_runs_script(self) -> None:
+        assert self.script is not None and self.password is not None
+        self.share_ready = True
+        self.password = None  # the script deletes the password file
+
+    def run(self, step):  # type: ignore[no-untyped-def]
+        from spectracut.setup.plan import SetupError
+
+        self.ran.append(step.id)
+        if step.id == "storage:admin-script":
+            self.script = step.stdin
+        elif step.id == "storage:admin-password":
+            self.password = step.stdin
+        elif step.id == "storage:serve" and not self.share_ready:
+            raise SetupError("run once as Administrator, then re-run spectracut setup")
+        return ""
+
+
+def test_windows_storage_flow_blocks_until_admin_ran_then_mounts_and_maps(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import pytest
+
+    from spectracut.setup.plan import SetupError, apply_plan
+
+    host = _SimulatedWindowsHost()
+    with pytest.raises(SetupError, match="Administrator"):
+        apply_plan(_plan(), host, SetupState(), tmp_path)
+    assert host.script == windows_storage_source()
+    assert not any(i.startswith("storage:attach") for i in host.ran)
+
+    host.admin_runs_script()
+    host.ran.clear()
+    state = apply_plan(_plan(), host, SetupState(), tmp_path)
+    assert "storage:attach:" + CONTROL in host.ran and "storage:attach:rig" in host.ran
+    assert state.storage == TARGET
