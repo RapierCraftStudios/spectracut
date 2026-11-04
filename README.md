@@ -1,6 +1,8 @@
 # SpectraCut
 
-**Agent-native video and ad engine.** AI agents direct Blender on GPU render hosts, capture your live product frame by frame, and ship tutorials, explainers, ads in every aspect ratio and cinematic trailers. Every frame is checked by an automated QA gate and a vision critique loop before a human sees it.
+**An agent-run CGI studio.** SpectraCut takes a request, from a 15 s ad to a full launch film or an episode, and runs it through a studio pipeline: discovery and audience research, script, storyboards, style frames, animatic, previs, Blender production on GPU render hosts, compositing, grade, motion typography, sound design and mix. Every role is a specialised AI agent, independent work runs in parallel, and every stage is reviewed by a critic before a person sees it.
+
+It's process-driven rather than outcome-driven: direction is settled at the cheap stages, every asset is reused, and a late change re-runs only what depends on it. The bar is output quality a top studio would be proud of.
 
 > Status: bootstrapping. The design is in [`docs/engineering/technical-spike.md`](docs/engineering/technical-spike.md); the build plan is in the milestones and issues.
 
