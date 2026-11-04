@@ -12,6 +12,7 @@ SpectraCut is an agent-native video and ad engine. AI agents direct headless Ble
 **First use and long-term aim:**
 - **First:** all of AlterLab's marketing. That covers SaaS launch films, product demos and walkthroughs, feature announcements and ads.
 - **Long-term:** an original cinematic universe of episodes and films sharing characters and worlds. Canon therefore spans productions, not just one film.
+- **Long-term product:** a hosted service where anyone types a prompt and gets a finished video end to end, positioned as a better alternative to the whole video-generation market: higher quality, controllable, editable and reusable. See Hosted service.
 - **The bar for both:** the output has to be that good, or none of the rest matters.
 
 Nothing in the architecture caps it at short ads. Long-form and film-length work is a matter of scale (more shots, longer timelines), not a different system. Every quality decision is judged against "would this pass in a launch film from a top studio?"
@@ -103,7 +104,8 @@ It grows out of the AlterLab launch-trailer pipeline (RapierCraftStudios/AlterLa
 
 **Other components:**
 - **Capture (`@spectracut/capture`):** TypeScript and Playwright (Chromium or Edge) with a virtual clock (`page.clock`), producing PNG sequences and DOM-layer exports.
-- **Web (`apps/web`):** Next.js App Router, shadcn/ui plus Tailwind, Auth.js (cloud), the review UI and cloud dashboard, Stripe (cloud).
+- **Review page (`apps/review`):** a small local page served by `spectracut serve`: the gate queue, a frame-accurate player with audio, approve/reject and frame-pinned comments. No accounts, localhost only. Productions are started and steered from Claude Code (MCP) and the CLI.
+- **Hosted web app (`apps/web`, M5 only):** Next.js, shadcn/ui plus Tailwind, Auth.js and Stripe, built when the hosted service starts.
 - **Media:** ffmpeg for encode and mux, pyloudnorm for loudness, OpenCV and Pillow for QA metrics, and Tesseract (local) for OCR.
 - **Local models:** a model runtime on the render hosts' GPUs for every AI job that isn't Claude, ChatGPT or ElevenLabs (see Cost and external dependencies).
 
@@ -143,7 +145,9 @@ spectracut/
     bpy_runtime/
   packages/capture/              # @spectracut/capture (TypeScript, Playwright)
   integrations/forgedock/        # optional ForgeDock skills (demo, release) and failure-issue writer
-  apps/web/                      # Next.js review UI + cloud dashboard + marketing site
+  apps/review/                   # local review page (gates, player, comments)
+  apps/web/                      # hosted service web app (M5)
+  site/                          # static marketing site
   brands/examples/spellwise/     # fictional demo brand kit + demo app for acceptance
   docs/engineering/              # this spike, ADRs
   docs/setup/                    # credentials / host setup guides
@@ -711,6 +715,35 @@ The target fleet today: `archlinux` (control plane and computeshare router, no G
 
 **Rationale**: SpectraCut's CLI and MCP server already make it scriptable, so ForgeDock support is mostly packaging: skills plus an issue writer. PR demo clips need only capture and mux, so they're the earliest useful piece. Rejected: running SpectraCut's agent work as ForgeDock lanes; lanes are built for long repo-changing jobs, while SpectraCut makes many short AI calls that its own queue handles better.
 
+## Hosted service: prompt to finished video (M5)
+
+The long-term product: anyone types a prompt and gets a finished video, better than any video-generation model, because it's made by a studio pipeline rather than sampled in one pass. Nothing here is built before M5, but the earlier milestones must not block it.
+
+- **Same studio, fully automatic.** The service runs the same production graph with every gate set to the Critic instead of a person. Discovery works from the prompt alone, asking at most a couple of clarifying questions. The user can still step in at style frames or the animatic if they want control, which video generation can't offer.
+- **Service tiers map to quality profiles:**
+  - `fast`: draft profile, templates, Eevee, minutes;
+  - `standard` and `premium`: hours;
+  - `cinema`: long-form, days, with an optional human polish pass.
+
+  The cost ledger prices each tier from real GPU and AI usage.
+- **Why it can win:**
+  - exact text and UI;
+  - consistent characters and products across shots and episodes;
+  - edits that change one thing without regenerating everything;
+  - real sound design and a real mix;
+  - any length;
+  - reusable assets;
+  - deliverables (stems, OTIO, masters) a professional can take further.
+- **Proof:** a standing benchmark compares SpectraCut against leading video-generation models on the same prompts, scored by the Critic and by blind human raters. The marketing claim is whatever that benchmark shows.
+- **What changes for a public service:**
+  - **AI:** provider API keys under the service's own account, not personal subscription sign-in. AI cost becomes a per-production cost and goes into pricing.
+  - **GPUs:** a cloud GPU fleet (rented or owned) next to customers' own registered hosts. Flamenco is designed for about 100 machines, so the executor interface allows a larger dispatcher later.
+  - **Tenancy:** workspaces, isolated storage per customer, quotas, and Stripe billing per minute rendered and per production tier.
+  - **Content policy and moderation:** a public prompt box needs a usage policy and screening of prompts and outputs, e.g. sexual content involving minors, impersonation of real people, and harassment.
+- **Local-first stays:** the self-hosted studio keeps its three-external-services rule and zero hosting costs. The hosted service is a separate deployment of the same code.
+
+**Rationale**: a studio pipeline beats one-pass generation on control, consistency, editability, sound and length, and its quality improves with every asset, skill and benchmark added. Building the service last means selling a product already proven on RapierCraft's own films. Rejected: building the hosted web app and cloud early, which would spend the first milestones on accounts and billing instead of output quality.
+
 ## Milestone plan
 
 Each milestone ends with a real AlterLab deliverable judged against its benchmark, so quality is proven on real work, not on demos.
@@ -734,7 +767,8 @@ Each milestone ends with a real AlterLab deliverable judged against its benchmar
    - QA gate and Critic v1, the Producer and departments v1;
    - ads and demos as cut-downs of the same production;
    - computeshare GPU work (benchmark, whole-GPU leases, native runner, `mrdubey-1`) so both cards render;
-   - the ForgeDock `spectracut-demo` skill (PR demo clips).
+   - the ForgeDock `spectracut-demo` skill (PR demo clips);
+   - the local review page for gates.
 
    **Deliverable:** the AlterLab launch film, plus its 15 s and 30 s ads in every aspect, beating the first benchmark films.
 3. **M3 Premium and cinema: depth across every department.**
@@ -748,14 +782,21 @@ Each milestone ends with a real AlterLab deliverable judged against its benchmar
    - ForgeDock failure issues and `/design` critique hand-off.
 
    **Deliverable:** an AlterLab product walkthrough and a `premium` launch piece, scored above the `standard` film on the same rubric.
-4. **M4 Long-form, review, distribution and cloud.**
+4. **M4 Long-form, distribution and open-source launch.**
    - long-form: hierarchical breakdown and consolidation, universe canon, continuity checks, character animation track (facial animation from VO, human polish gate);
-   - review UI, distribution exports and the performance loop;
+   - distribution exports and the performance loop;
    - HDR, `hero` deliverables, 5.1 and immersive mixes;
-   - cloud (tenancy, auth, billing, GPU pool, storage), marketing site, `spectracut-release` skill;
+   - static marketing site, `spectracut-release` skill, optional Kitsu sync;
    - the Spellwise product-agnostic acceptance.
 
    **Deliverable:** a short original narrative piece (rung 2–3 of the capability ladder) in an original universe, plus the open-source release.
+5. **M5 Hosted service: prompt to finished video.**
+   - fully automatic productions from a single prompt, with service tiers;
+   - hosted web app, accounts, workspaces, billing;
+   - the cloud GPU fleet and storage;
+   - content policy and moderation for public use.
+
+   **Deliverable:** a public beta where a prompt returns a finished video that beats leading video-generation output on the benchmark rubric.
 
 **Rationale**:
 - The production graph sits in M1 because every stage, department and gate is a node in it; building formats first and the graph later would mean rewriting them.
