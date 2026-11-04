@@ -1,0 +1,458 @@
+{
+  "$defs": {
+    "CDL": {
+      "additionalProperties": false,
+      "description": "ASC CDL grade.",
+      "properties": {
+        "offset": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Offset",
+          "type": "array"
+        },
+        "power": {
+          "default": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Power",
+          "type": "array"
+        },
+        "saturation": {
+          "default": 1.0,
+          "minimum": 0.0,
+          "title": "Saturation",
+          "type": "number"
+        },
+        "slope": {
+          "default": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Slope",
+          "type": "array"
+        }
+      },
+      "title": "CDL",
+      "type": "object"
+    },
+    "ClaimSource": {
+      "additionalProperties": false,
+      "description": "A citable source for claims: a URL, document or data reference.",
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "ref": {
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "ref"
+      ],
+      "title": "ClaimSource",
+      "type": "object"
+    },
+    "Grade": {
+      "additionalProperties": false,
+      "description": "A CDL or a LUT per look; neither means a neutral grade.",
+      "properties": {
+        "cdl": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CDL"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lut": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lut"
+        }
+      },
+      "title": "Grade",
+      "type": "object"
+    },
+    "Lens": {
+      "additionalProperties": false,
+      "properties": {
+        "chromatic_aberration": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Chromatic Aberration",
+          "type": "number"
+        },
+        "distortion": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Distortion",
+          "type": "number"
+        },
+        "halation": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Halation",
+          "type": "number"
+        },
+        "vignette": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Vignette",
+          "type": "number"
+        }
+      },
+      "title": "Lens",
+      "type": "object"
+    },
+    "Look": {
+      "additionalProperties": false,
+      "description": "A versioned finishing preset: grade, lens, bloom, grain, motion blur and DoF.",
+      "properties": {
+        "bloom": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Bloom",
+          "type": "number"
+        },
+        "depth_of_field": {
+          "default": true,
+          "title": "Depth Of Field",
+          "type": "boolean"
+        },
+        "grade": {
+          "$ref": "#/$defs/Grade"
+        },
+        "grain": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Grain",
+          "type": "number"
+        },
+        "id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "lens": {
+          "$ref": "#/$defs/Lens"
+        },
+        "motion_blur": {
+          "default": true,
+          "title": "Motion Blur",
+          "type": "boolean"
+        },
+        "qa_thresholds": {
+          "$ref": "#/$defs/QAThresholds"
+        },
+        "version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "Look",
+      "type": "object"
+    },
+    "Palette": {
+      "additionalProperties": false,
+      "description": "Named colour swatches, e.g. ``{\"primary\": \"#1a2b3c\"}``.",
+      "properties": {
+        "swatches": {
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9_-]*$": {
+              "pattern": "^#[0-9a-fA-F]{6}$",
+              "type": "string"
+            }
+          },
+          "propertyNames": {
+            "maxLength": 128
+          },
+          "title": "Swatches",
+          "type": "object"
+        }
+      },
+      "required": [
+        "swatches"
+      ],
+      "title": "Palette",
+      "type": "object"
+    },
+    "QAThresholds": {
+      "additionalProperties": false,
+      "description": "Per-look QA limits; QA reads these instead of one global limit.",
+      "properties": {
+        "bloom_max": {
+          "default": 0.1,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Bloom Max",
+          "type": "number"
+        },
+        "grain_max": {
+          "default": 0.1,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Grain Max",
+          "type": "number"
+        },
+        "haze_max": {
+          "default": 0.05,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Haze Max",
+          "type": "number"
+        }
+      },
+      "title": "QAThresholds",
+      "type": "object"
+    },
+    "Typography": {
+      "additionalProperties": false,
+      "description": "Font family per role, e.g. ``{\"display\": \"Inter\"}``.",
+      "properties": {
+        "families": {
+          "minProperties": 1,
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9_-]*$": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "propertyNames": {
+            "maxLength": 128
+          },
+          "title": "Families",
+          "type": "object"
+        },
+        "weights": {
+          "items": {
+            "maximum": 900,
+            "minimum": 100,
+            "type": "integer"
+          },
+          "title": "Weights",
+          "type": "array"
+        }
+      },
+      "required": [
+        "families"
+      ],
+      "title": "Typography",
+      "type": "object"
+    },
+    "VoiceChoice": {
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "style": {
+          "default": "",
+          "title": "Style",
+          "type": "string"
+        },
+        "voice_id": {
+          "minLength": 1,
+          "title": "Voice Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "voice_id"
+      ],
+      "title": "VoiceChoice",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Palette, type, hero object, logo, tone, Looks, voice, forbidden words and claim sources.",
+  "properties": {
+    "claim_sources": {
+      "items": {
+        "$ref": "#/$defs/ClaimSource"
+      },
+      "title": "Claim Sources",
+      "type": "array"
+    },
+    "default_look_id": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "title": "Default Look Id",
+      "type": "string"
+    },
+    "forbidden_words": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Forbidden Words",
+      "type": "array"
+    },
+    "hero_object_mesh": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Asset id of the hero mesh",
+      "title": "Hero Object Mesh"
+    },
+    "id": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "logo": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Asset id of the logo",
+      "title": "Logo"
+    },
+    "looks": {
+      "items": {
+        "$ref": "#/$defs/Look"
+      },
+      "minItems": 1,
+      "title": "Looks",
+      "type": "array"
+    },
+    "name": {
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "palette": {
+      "$ref": "#/$defs/Palette"
+    },
+    "tone": {
+      "minLength": 1,
+      "title": "Tone",
+      "type": "string"
+    },
+    "typography": {
+      "$ref": "#/$defs/Typography"
+    },
+    "voice": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VoiceChoice"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "palette",
+    "typography",
+    "tone",
+    "looks",
+    "default_look_id"
+  ],
+  "title": "BrandKit",
+  "type": "object"
+}

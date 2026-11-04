@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
-dependencies = []
+dependencies = [
+    "pydantic>=2.9,<3",
+]
 
 [build-system]
 requires = ["hatchling>=1.27"]
@@ -41,6 +43,7 @@ strict = true
 files = ["src/spectracut", "host/spectracut_host", "scripts", "tests"]
 explicit_package_bases = true
 mypy_path = ["src", "host"]
+plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

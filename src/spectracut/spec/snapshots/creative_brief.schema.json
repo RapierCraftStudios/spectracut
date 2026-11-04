@@ -1,0 +1,187 @@
+{
+  "$defs": {
+    "AudienceProfile": {
+      "additionalProperties": false,
+      "description": "Personas, prior knowledge, objections and platform expectations.",
+      "properties": {
+        "objections": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Objections",
+          "type": "array"
+        },
+        "personas": {
+          "items": {
+            "$ref": "#/$defs/Persona"
+          },
+          "minItems": 1,
+          "title": "Personas",
+          "type": "array"
+        },
+        "platform_expectations": {
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9_-]*$": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "propertyNames": {
+            "maxLength": 128
+          },
+          "title": "Platform Expectations",
+          "type": "object"
+        },
+        "prior_knowledge": {
+          "default": "",
+          "title": "Prior Knowledge",
+          "type": "string"
+        }
+      },
+      "required": [
+        "personas"
+      ],
+      "title": "AudienceProfile",
+      "type": "object"
+    },
+    "ClaimSource": {
+      "additionalProperties": false,
+      "description": "A citable source for claims: a URL, document or data reference.",
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "ref": {
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "ref"
+      ],
+      "title": "ClaimSource",
+      "type": "object"
+    },
+    "Persona": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "title": "Persona",
+      "type": "object"
+    },
+    "ProofPoint": {
+      "additionalProperties": false,
+      "properties": {
+        "claim": {
+          "minLength": 1,
+          "title": "Claim",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Source Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claim",
+        "source_id"
+      ],
+      "title": "ProofPoint",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The approved output of Discovery.",
+  "properties": {
+    "audience": {
+      "$ref": "#/$defs/AudienceProfile"
+    },
+    "cta": {
+      "minLength": 1,
+      "title": "Cta",
+      "type": "string"
+    },
+    "id": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "message": {
+      "minLength": 1,
+      "title": "Message",
+      "type": "string"
+    },
+    "offer": {
+      "default": "",
+      "title": "Offer",
+      "type": "string"
+    },
+    "proof_points": {
+      "items": {
+        "$ref": "#/$defs/ProofPoint"
+      },
+      "minItems": 1,
+      "title": "Proof Points",
+      "type": "array"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/ClaimSource"
+      },
+      "minItems": 1,
+      "title": "Sources",
+      "type": "array"
+    },
+    "success_measure": {
+      "minLength": 1,
+      "title": "Success Measure",
+      "type": "string"
+    },
+    "tone": {
+      "minLength": 1,
+      "title": "Tone",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "message",
+    "audience",
+    "sources",
+    "proof_points",
+    "tone",
+    "success_measure",
+    "cta"
+  ],
+  "title": "CreativeBrief",
+  "type": "object"
+}

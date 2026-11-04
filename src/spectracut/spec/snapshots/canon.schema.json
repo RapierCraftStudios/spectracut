@@ -1,0 +1,286 @@
+{
+  "$defs": {
+    "CharacterSheet": {
+      "additionalProperties": false,
+      "description": "Model, rig, wardrobe states and voice of one character.",
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "model_asset_id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Model Asset Id",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "rig_asset_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[a-z0-9][a-z0-9_-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rig Asset Id"
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VoiceChoice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "wardrobe_states": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Wardrobe States",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "model_asset_id"
+      ],
+      "title": "CharacterSheet",
+      "type": "object"
+    },
+    "ContinuityState": {
+      "additionalProperties": false,
+      "description": "Per-scene continuity: time of day, damage by subject, props held by character.",
+      "properties": {
+        "damage": {
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9_-]*$": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "propertyNames": {
+            "maxLength": 128
+          },
+          "title": "Damage",
+          "type": "object"
+        },
+        "holdings": {
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9_-]*$": {
+              "items": {
+                "maxLength": 128,
+                "pattern": "^[a-z0-9][a-z0-9_-]*$",
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "propertyNames": {
+            "maxLength": 128
+          },
+          "title": "Holdings",
+          "type": "object"
+        },
+        "scene_id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Scene Id",
+          "type": "string"
+        },
+        "time_of_day": {
+          "default": "",
+          "title": "Time Of Day",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scene_id"
+      ],
+      "title": "ContinuityState",
+      "type": "object"
+    },
+    "Environment": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_ids": {
+          "items": {
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9_-]*$",
+            "type": "string"
+          },
+          "title": "Asset Ids",
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "Environment",
+      "type": "object"
+    },
+    "Prop": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "asset_id"
+      ],
+      "title": "Prop",
+      "type": "object"
+    },
+    "VoiceChoice": {
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "style": {
+          "default": "",
+          "title": "Style",
+          "type": "string"
+        },
+        "voice_id": {
+          "minLength": 1,
+          "title": "Voice Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "voice_id"
+      ],
+      "title": "VoiceChoice",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Story bible: everything that must stay the same everywhere.",
+  "properties": {
+    "characters": {
+      "items": {
+        "$ref": "#/$defs/CharacterSheet"
+      },
+      "title": "Characters",
+      "type": "array"
+    },
+    "continuity": {
+      "items": {
+        "$ref": "#/$defs/ContinuityState"
+      },
+      "title": "Continuity",
+      "type": "array"
+    },
+    "environments": {
+      "items": {
+        "$ref": "#/$defs/Environment"
+      },
+      "title": "Environments",
+      "type": "array"
+    },
+    "id": {
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "look_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Look Id"
+    },
+    "music_themes": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Music Themes",
+      "type": "array"
+    },
+    "props": {
+      "items": {
+        "$ref": "#/$defs/Prop"
+      },
+      "title": "Props",
+      "type": "array"
+    },
+    "scope": {
+      "enum": [
+        "production",
+        "universe"
+      ],
+      "title": "Scope",
+      "type": "string"
+    },
+    "version": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "scope"
+  ],
+  "title": "Canon",
+  "type": "object"
+}
