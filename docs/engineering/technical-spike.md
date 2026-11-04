@@ -49,14 +49,14 @@ It grows out of the AlterLab launch-trailer pipeline (RapierCraftStudios/AlterLa
   - local: SQLite plus the filesystem;
   - cloud: Postgres with row-level security per workspace, and S3-compatible object storage for media.
 - **Integrations:**
-  - ElevenLabs (VO, SFX);
+  - ElevenLabs (final VO only);
   - AI through the user's own subscriptions: ChatGPT through the official Codex CLI sign-in (text, image generation) and Claude through the official Claude Code sign-in (text, vision, agents). OAuth means no API keys, with keys as an optional fallback;
   - Playwright;
   - Blender 4.5 LTS;
   - ffmpeg;
   - platform exports (YouTube, Meta, TikTok, X, LinkedIn, Reddit);
   - Stripe for the cloud;
-  - optional, off by default: tokenbaton (AI capacity across several Claude accounts), computeshare (jobs on spare tailnet machines, including GPU slices) and ForgeDock (skills and failure issues). See Optional integrations.
+  - optional, off by default: tokenbaton (AI capacity across several Claude accounts), computeshare (jobs on spare tailnet machines, including whole-GPU leases) and ForgeDock (skills and failure issues). See Optional integrations.
 
   Every credentialed integration has a mock provider.
 - **Payments:** the cloud uses Stripe usage-based billing (render minutes plus generations) behind a mock in dev. The OSS edition is free; commercial licences are sold off-platform.
@@ -104,7 +104,8 @@ It grows out of the AlterLab launch-trailer pipeline (RapierCraftStudios/AlterLa
 **Other components:**
 - **Capture (`@spectracut/capture`):** TypeScript and Playwright (Chromium or Edge) with a virtual clock (`page.clock`), producing PNG sequences and DOM-layer exports.
 - **Web (`apps/web`):** Next.js App Router, shadcn/ui plus Tailwind, Auth.js (cloud), the review UI and cloud dashboard, Stripe (cloud).
-- **Media:** ffmpeg for encode and mux, pyloudnorm for loudness, OpenCV and Pillow for QA metrics, and Tesseract or a vision model for OCR.
+- **Media:** ffmpeg for encode and mux, pyloudnorm for loudness, OpenCV and Pillow for QA metrics, and Tesseract (local) for OCR.
+- **Local models:** a model runtime on the render hosts' GPUs for every AI job that isn't Claude, ChatGPT or ElevenLabs (see Cost and external dependencies).
 
 **Rationale**:
 - Python is where Blender (bpy), the MCP SDK and the media tooling all live. Playwright and the web UI are strongest in TypeScript.
@@ -271,7 +272,6 @@ Retention: media is kept until the project is deleted; caches are evicted LRU by
 |-----------------------|------------|-------------------|----------------|
 | ElevenLabs API (paid plan, commercial licence) | `ELEVENLABS_API_KEY` | ElevenLabs paid plan and API key | `providers/mock_tts.py` (silent WAV with timed markers) |
 | AI providers: ChatGPT (images, text) and Claude (vision, text, agents) | none by default: the user's subscription sign-in via the official Codex CLI and Claude Code (OAuth); optional `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` fallback | none (the AI provider layer issue) | `providers/mock_image.py`, `providers/mock_vision.py` |
-| Music licensing source | `MUSIC_LIBRARY_API_KEY` | Music licensing source | `providers/mock_music.py` (generated click track) |
 | Domain + DNS (spectracut.com, .dev, .io) | `CLOUDFLARE_API_TOKEN` | Domains and DNS | n/a (localhost) |
 | Cloud VPS + GPU worker account | `DEPLOY_SSH_KEY`, `GPU_PROVIDER_API_KEY` | Cloud hosting and GPU account | local host agent |
 | Object storage (R2) | `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Object storage bucket | local filesystem storage |
@@ -427,7 +427,7 @@ So long-form productions:
 - choose looks partly by render cost;
 - render previews and the animatic on Eevee;
 - spend Cycles time only on approved shots;
-- can rent extra GPUs through the same executor interface when a deadline needs it.
+- if a deadline ever needs more, the same executor interface could take extra GPUs, but nothing depends on that: the plan is sized for the cards on the tailnet.
 
 **Style references are welcome.** "An episode that feels like Warhammer" is a style brief: SpectraCut builds an original setting, characters and sound with that aura (see Discovery). What it makes is new material in the spirit of the reference, not copies of a franchise's actual characters, logos, melodies or recordings. Long-form test pieces and the cinematic universe use original worlds built this way.
 
@@ -516,9 +516,9 @@ The exact versions, and whether each tool's headless mode works as needed (espec
 
 **Where the sounds come from:**
 - **Generative audio is a main source, not a fallback.** AI audio models produce the bulk of designed sound and score: original, high-quality, and owned by the user under the model's commercial terms.
-  - **Sound effects and designed layers:** text-to-audio models (e.g. ElevenLabs SFX, open models) generate impacts, whooshes, textures and ambiences from each cue's description.
+  - **Sound effects and designed layers:** local text-to-audio models generate impacts, whooshes, textures and ambiences from each cue's description.
   - **Foley:** video-to-audio models generate sound matched to the rendered picture.
-  - **Score:** music-generation models (hosted, or open models on a render-host GPU) generate music from a brief written by the sound-design agent, in stems where possible, then cut to picture.
+  - **Score:** local music-generation models on a render-host GPU generate music from a brief written by the sound-design agent, in stems where possible, then cut to picture.
   - Generations are prompted from the cue (event type, size, duration, the Look's sonic palette), several candidates are generated in parallel, and the audio critic picks the best. The DAW then handles exact timing, layering and the mix, which generation alone can't do frame-accurately.
 - **Procedural** (SuperCollider, Surge XT) for precisely shaped elements: risers that must peak on an exact frame, UI tones, sub drops.
 - **Libraries** the user owns (e.g. the Sonniss GDC bundles, paid libraries), indexed locally and searchable.
@@ -538,8 +538,7 @@ The exact versions, and whether each tool's headless mode works as needed (espec
      - speech MOS predictors such as **UTMOS** and **DNSMOS** score VO.
      These catch thin, muddy or badly produced audio. Known biases (an independent review found it can rate low-bitrate audio too highly, and it favours some vocal styles) mean they flag problems rather than decide on their own.
   3. **An omni model that listens:** an audio-native model hears the mix, or the video with its sound, and answers the rubric questions: does every major cut land on a transition sound, does the riser peak on the title, does the music's energy match the edit, is the VO always clear, does anything sound cheap or out of place.
-     - Local by default: an open omni model on a render-host GPU (e.g. Qwen3-Omni; its Q4 quantisation needs about 19 GB of VRAM, which is more than the 4070 Ti's 12 GB, so it runs split across cards, on a rented GPU, or as a smaller variant). Licence checked before use.
-     - Optional providers: a hosted audio-native model through the user's own API key.
+     - Runs locally: an open omni model on a render-host GPU. Qwen3-Omni's Q4 quantisation needs about 19 GB of VRAM, more than the 4070 Ti's 12 GB, so the audio tool check picks between a smaller omni model that fits in 12 GB and splitting a larger one across both cards.
   4. **Calibration against people:** the stack's scores are checked against your ratings of the same mixes, and weighted by how well each layer agrees with you.
 
   Human approval of `final` audio stays on until calibration shows the critic agrees with people on the benchmark mixes; then it becomes a setting like every other gate. Commercial music generators (e.g. Suno) don't publish their internal quality models, so SpectraCut doesn't depend on them.
@@ -548,6 +547,43 @@ The exact versions, and whether each tool's headless mode works as needed (espec
 - ffmpeg filter graphs as the mix engine: no plugin hosting, buses or automation, and no human hand-off;
 - a closed DAW such as Reaper (scriptable but not open source) as the required engine; it can be added later as an optional export target;
 - generative audio with no DAW behind it: models give great raw sound, but frame-exact timing, layering and a real mix need the session.
+
+## Cost and external dependencies
+
+Cost has to be absolutely low. SpectraCut uses exactly three external services; everything else runs on the user's own GPUs or inside SpectraCut.
+
+| External service | Used for | How cost stays low |
+|---|---|---|
+| **Claude** (Claude Code sign-in) | agent departments, Critic (vision), writing | subscription, not per-token; spread over accounts with tokenbaton; minimal per-call context; results cached by content hash |
+| **ChatGPT** (Codex sign-in) | text, concept images and boards | subscription; local image models do bulk exploration, ChatGPT is used where it's clearly better |
+| **ElevenLabs** | final VO only: it's the one thing local models can't match yet | temp VO for boards and animatics is generated locally; ElevenLabs runs once per line after the script is locked; cached by text, voice and settings, so only changed lines are regenerated |
+
+**Everything else is local**, as models on the render hosts' GPUs (4070 Ti, 12 GB; 3070 Laptop, 8 GB) or as code in SpectraCut:
+
+| Job | Local approach |
+|---|---|
+| sound effects, designed layers, ambiences | local text-to-audio models, plus procedural synthesis |
+| foley matched to picture | local video-to-audio model |
+| score and music | local music-generation model, cut to picture in the DAW |
+| temp VO, scratch dialogue | local text-to-speech |
+| listening audio critic | local omni model plus Audiobox Aesthetics and speech MOS predictors |
+| captions and alignment | local Whisper |
+| stems, beat analysis, dialogue clean-up | Demucs, librosa and Essentia, DeepFilterNet |
+| image exploration, textures, style-frame variations | local diffusion model |
+| 3D assets from concept images | local image-to-3D model |
+| character and creature motion | local motion-generation models plus motion libraries |
+| OCR for copy QA | Tesseract |
+| sound library search | local CLAP embeddings |
+
+Rules:
+- **Model choice:** each local model is picked in a tool check that measures quality on the benchmarks, VRAM fit (12 GB and 8 GB cards) and speed. Models are swappable providers with mocks, so a better open model can replace one without touching the pipeline. Only models whose output can be used commercially are eligible; that's checked once at selection and never comes up again in use.
+- **Sharing GPUs between models and Blender:** model jobs take GPU leases like renders do. The Producer batches model work (e.g. all sound-effect generation for a scene at once) so models load once, and keeps warm model sessions just like warm Blender sessions.
+- **A cost ledger per production:** ElevenLabs characters used, AI subscription usage per account, GPU hours per card. A production shows its estimate before it starts and can carry a hard cap on external usage.
+- **Infrastructure for the hosted cloud edition is separate.** The cloud (later) needs its own hosting, storage, payments and sign-in. Those are costs of running a service, not of making a film, and the self-hosted studio never needs them.
+
+**Rationale**: the user already pays for Claude and ChatGPT subscriptions and owns the GPUs, so the marginal cost of a film should be close to electricity plus ElevenLabs characters for the final VO. Open models now cover sound effects, music, speech recognition, image exploration and analysis well enough when paired with a strong critic and a real DAW. Rejected:
+- paid APIs per capability (music licensing, stock sound, hosted image or audio models): each adds a bill per film and a dependency;
+- ElevenLabs for sound effects and temp VO: it would spend paid characters on work that local models do well enough.
 
 ## Optional integrations: tokenbaton, computeshare, ForgeDock
 
@@ -609,7 +645,7 @@ The target fleet today: `archlinux` (control plane and computeshare router, no G
   - the frame cache key includes the render profile (Blender version, GPU model, driver), so frames from different machines are never mixed in a final shot.
 - **Other GPU work ("whatever"):** the same lease runs allow-listed GPU job kinds besides Blender:
   - NVENC encodes for review proxies and fast exports;
-  - local image models (e.g. a ComfyUI/Flux worker) as a board and mockup provider, alongside ChatGPT;
+  - local image, audio, music, 3D and motion models (see Cost and external dependencies);
   - local speech models (e.g. Whisper) for caption timing.
 
   Each is a provider with a mock, like every other integration.
