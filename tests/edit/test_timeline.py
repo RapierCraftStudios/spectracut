@@ -10,7 +10,9 @@ import opentimelineio as otio
 import pytest
 from pydantic import ValidationError
 
-from spectracut.edit import (
+from spectracut.edit.conform import find_shot, replace_shot
+from spectracut.edit.otio_io import from_otio, read_otio, to_otio, write_otio
+from spectracut.edit.timeline import (
     FPS_23_976,
     FPS_24,
     FPS_25,
@@ -24,12 +26,6 @@ from spectracut.edit import (
     SpeedRamp,
     Track,
     Transition,
-    find_shot,
-    from_otio,
-    read_otio,
-    replace_shot,
-    to_otio,
-    write_otio,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
