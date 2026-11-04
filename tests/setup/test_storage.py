@@ -78,7 +78,7 @@ def test_general_host_keeps_all_memory_and_build_lanes() -> None:
 
 
 class _SimulatedWindowsHost:
-    """Runs a plan against a stand-in for the storage host: the share exists only once an admin ran the script."""
+    """Stand-in storage host: the share exists only once an admin ran the script."""
 
     def __init__(self) -> None:
         self.script: str | None = None
