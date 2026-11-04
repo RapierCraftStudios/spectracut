@@ -18,7 +18,7 @@ import typer
 
 from spectracut.cli.render import HomeOpt, _home, _read_registry
 from spectracut.providers.base import redact
-from spectracut.setup.manifest import HostFacts, Runner, load_manifest
+from spectracut.setup.manifest import HostFacts, StepRunner, load_manifest
 from spectracut.setup.plan import (
     CommandRunner,
     SetupError,
@@ -90,7 +90,7 @@ def setup_cmd(
             else:
                 set_id = nxt.id
         target = parse_storage_host(storage_host, [CONTROL, *workers]) if storage_host else None
-        runner: Runner = CommandRunner()
+        runner: StepRunner = CommandRunner()
         facts: dict[str, HostFacts] = {n: runner.probe(n) for n in (CONTROL, *workers)}
         cred = share_credential(root, target or state.storage)
         plan = build_plan(manifest, set_id, facts, workers, state, cred, target)

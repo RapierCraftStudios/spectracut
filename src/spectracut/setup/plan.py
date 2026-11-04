@@ -3,7 +3,7 @@
 
 :func:`build_plan` emits only the steps a machine still needs, so a converged
 farm gives an empty plan (setup is idempotent). :func:`apply_plan` runs steps
-through a :class:`~spectracut.setup.manifest.Runner` and records each success in
+through a :class:`~spectracut.setup.manifest.StepRunner` and records each success in
 ``<home>/setup-state.json``, so an interrupted run resumes where it stopped.
 """
 
@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from spectracut.setup.manifest import HostFacts, Manifest, Os, Role, Runner, Step
+from spectracut.setup.manifest import HostFacts, Manifest, Os, Role, Step, StepRunner
 from spectracut.setup.storage import (
     CONTROL,
     GPU_SCRIPT,
@@ -237,7 +237,7 @@ def build_plan(
 
 
 def apply_plan(
-    plan: Plan, runner: Runner, state: SetupState, home: Path | None = None
+    plan: Plan, runner: StepRunner, state: SetupState, home: Path | None = None
 ) -> SetupState:
     """Run the steps in order; record each success. A failure stops the run (state kept)."""
     for step in plan.steps:

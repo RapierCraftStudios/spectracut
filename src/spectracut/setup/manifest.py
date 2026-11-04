@@ -4,7 +4,7 @@
 ``manifest.yaml`` lists each bundled component once and the tested *sets* of
 pins; the first set is the baseline and each later one is the next tested set
 ``spectracut setup --upgrade`` moves to. Plans are data (:class:`Step`) run
-through an injectable :class:`Runner`, so they are testable without hosts.
+through an injectable :class:`StepRunner`, so they are testable without hosts.
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ class Step:
     version: str | None = None
 
 
-class Runner(Protocol):
+class StepRunner(Protocol):
     def probe(self, host: str) -> HostFacts: ...
 
     def run(self, step: Step) -> None: ...
