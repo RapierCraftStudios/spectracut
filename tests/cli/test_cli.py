@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The ``spectracut`` CLI over the studio: studio, render, status, hosts and doctor."""
+"""The ``spectracut`` CLI over the studio: studio, render, status, hosts, doctor and mcp."""
 
 from __future__ import annotations
 
@@ -333,3 +333,11 @@ def test_graph_snapshot_round_trip(tmp_path: Path) -> None:
     loaded, meta = store.load("spellwise")
     assert loaded.statuses() == graph.statuses() and meta.profile == "standard"
     assert store.list() == ["spellwise"]
+
+
+def test_mcp_command_is_listed_and_documented() -> None:
+    top = runner.invoke(app, ["--help"])
+    assert top.exit_code == 0 and "mcp" in top.output
+    result = runner.invoke(app, ["mcp", "--help"])
+    assert result.exit_code == 0
+    assert "MCP over stdio" in result.output

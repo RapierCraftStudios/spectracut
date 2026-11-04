@@ -8,6 +8,7 @@ license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 dependencies = [
     "cryptography>=43",
+    "mcp>=1.30,<2",
     "opentimelineio>=0.17,<0.19",
     "pydantic>=2.9,<3",
     "typer>=0.12",
