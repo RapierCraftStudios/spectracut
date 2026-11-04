@@ -7,7 +7,8 @@ Launched only by the host execution guard as::
 
 It refuses to run unless ``SPECTRACUT_EXECUTION_TOKEN`` matches the token in the
 manifest the guard wrote, dispatches each step only through the fixed tool
-registry, then renders the requested frames. It never evaluates code.
+registry, writes any steps' JSON reports to ``report.json`` in the output
+directory, then renders the requested frames. It never evaluates code.
 """
 
 from __future__ import annotations
@@ -45,14 +46,37 @@ def load_manifest(path: Path, env: dict[str, str]) -> dict[str, Any]:
     return manifest
 
 
+def write_report(output_dir: Path, reports: list[dict[str, Any]]) -> Path:
+    """Write the steps' JSON reports to ``output_dir/report.json``."""
+    try:
+        text = json.dumps({"steps": reports}, sort_keys=True, allow_nan=False, indent=2)
+    except (TypeError, ValueError) as exc:
+        raise RunnerRefused(f"[runtime.error] step reports are not JSON: {exc}") from exc
+    path = output_dir / "report.json"
+    path.write_text(text + "\n", encoding="utf-8")
+    return path
+
+
 def run(manifest: dict[str, Any], bpy: Any) -> None:
+    from bpy_runtime.ops.scene import set_context
     from bpy_runtime.tools import run_step
 
+    assets_dir = manifest.get("assets_dir")
+    set_context(assets_dir if isinstance(assets_dir, str) else None)
+    reports: list[dict[str, Any]] = []
     for i, step in enumerate(manifest["steps"]):
         try:
-            run_step(bpy, step["tool"], step.get("args", {}))
+            report = run_step(bpy, step["tool"], step.get("args", {}))
         except Exception as exc:
-            raise RunnerRefused(f"step {i} ({step.get('tool')}): {exc}") from exc
+            code = getattr(exc, "code", None)
+            code = code if isinstance(code, str) else "runtime.error"
+            raise RunnerRefused(f"step {i} ({step.get('tool')}) [{code}]: {exc}") from exc
+        if report is not None:
+            reports.append({"index": i, "tool": step["tool"], "report": report})
+    if reports:
+        # Only ops that return data produce a report; plain build steps leave the
+        # output dir with frames only.
+        write_report(Path(manifest["output_dir"]), reports)
     scene = bpy.context.scene
     scene.frame_start = int(manifest["frame_start"])
     scene.frame_end = int(manifest["frame_end"])

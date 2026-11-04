@@ -35,6 +35,7 @@ from spectracut.queue.signing import (
 HOST_CONFIG_ENV = "SPECTRACUT_HOST_CONFIG"
 RUNTIME_DIR_ENV = "SPECTRACUT_BPY_RUNTIME"
 TOKEN_ENV = "SPECTRACUT_EXECUTION_TOKEN"
+ASSETS_DIR_ENV = "SPECTRACUT_ASSETS_DIR"
 _SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", re.IGNORECASE)
 
 
@@ -192,6 +193,10 @@ class ExecutionGuard:
     ) -> subprocess.CompletedProcess[str]:
         """Write the run manifest and run Blender headless with the bpy runtime."""
         output_dir.mkdir(parents=True, exist_ok=True)
+        env = os.environ if env is None else env
+        # Blender's env drops every SPECTRACUT_* variable, so the assets root
+        # for object.import_gltf travels in the manifest instead.
+        assets = env.get(ASSETS_DIR_ENV)
         token = secrets.token_urlsafe(32)
         manifest = {
             "token": token,
@@ -201,12 +206,13 @@ class ExecutionGuard:
             "frame_start": frames[0],
             "frame_end": frames[1],
             "output_dir": str(output_dir.resolve()),
+            "assets_dir": str(Path(assets).resolve()) if assets else None,
         }
         manifest_path = output_dir / f".manifest-{frames[0]}-{frames[1]}.json"
         fd = os.open(manifest_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(manifest, fh)
-        child_env = scrubbed_env(os.environ if env is None else env)
+        child_env = scrubbed_env(env)
         child_env[TOKEN_ENV] = token
         cmd = [
             blender_bin,
