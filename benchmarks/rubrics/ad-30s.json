@@ -1,0 +1,36 @@
+{
+  "id": "ad-30s",
+  "title": "30 second ad",
+  "criteria": [
+    {
+      "id": "message",
+      "prompt": "Does the frame carry one clear message that traces to the brief?",
+      "weight": 2.0
+    },
+    {
+      "id": "legibility",
+      "prompt": "Is every on-screen word and UI element sharp and readable at delivery size?",
+      "weight": 2.0
+    },
+    {
+      "id": "composition",
+      "prompt": "Is the frame composed with a clear subject, deliberate framing and safe areas respected?",
+      "weight": 1.5
+    },
+    {
+      "id": "lighting",
+      "prompt": "Is the subject lit clearly, exposed for any screen, with no haze or crushed detail?",
+      "weight": 1.0
+    },
+    {
+      "id": "brand-safety",
+      "prompt": "Is the frame free of unlicensed third-party brands, logos and forbidden words?",
+      "weight": 1.5
+    },
+    {
+      "id": "polish",
+      "prompt": "Would this frame pass in a launch film from a top studio?",
+      "weight": 2.0
+    }
+  ]
+}
