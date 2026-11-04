@@ -6,7 +6,12 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
-dependencies = []
+dependencies = [
+    "typer>=0.12",
+]
+
+[project.scripts]
+spectracut = "spectracut.cli.app:app"
 
 [build-system]
 requires = ["hatchling>=1.27"]
@@ -44,3 +49,6 @@ mypy_path = ["src", "host"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "e2e: real provider CLI calls; run only with SPECTRACUT_E2E=1",
+]
