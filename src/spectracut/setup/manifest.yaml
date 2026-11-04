@@ -59,13 +59,13 @@ components:
     version_cmd: {linux: "spectracut-host --version", windows: "spectracut-host.exe --version"}
     install:
       linux: >-
-        set -e; "$HOME/.local/bin/uv" tool install --force --reinstall --python 3.12
+        set -e; "$HOME/.local/bin/uv" tool install --force --reinstall --python 3.12 --python-preference only-managed
         --find-links "{wheel_dir}" --with "{spectracut_wheel}" "{host_wheel}";
         v=$("$HOME/.local/bin/spectracut-host" --version);
         test "$v" = "{public_version}" || {{ echo "spectracut-host is $v, want {public_version}" >&2; exit 1; }}
       windows: >-
         $ErrorActionPreference = 'Stop'; $bin = Join-Path $env:USERPROFILE '.local/bin';
-        & (Join-Path $bin 'uv.exe') tool install --force --reinstall --python 3.12
+        & (Join-Path $bin 'uv.exe') tool install --force --reinstall --python 3.12 --python-preference only-managed
         --find-links "{wheel_dir}" --with "{spectracut_wheel}" "{host_wheel}";
         if ($LASTEXITCODE -ne 0) {{ throw "uv tool install of spectracut-host failed ($LASTEXITCODE)" }};
         $v = (& (Join-Path $bin 'spectracut-host.exe') --version | Out-String).Trim();

@@ -85,6 +85,9 @@ def test_general_host_is_installed_profiled_and_registered_under_its_alias(
     assert "install:spectracut-host:legion" in ids
     assert "install:blender:legion" in ids
     assert ids[-1] == "host:profile:legion"
+    installs = [ids.index(f"install:{c}:legion") for c in ("flamenco-worker", "spectracut-host")]
+    assert ids.index("worker:stop:legion") < min(installs)
+    assert max(installs) < ids.index("worker:start:legion") < ids.index("host:profile:legion")
     copies = [i for i in ids if i.startswith("wheel:")]
     assert copies == [f"wheel:{w.name}:legion" for w in WHEELS.files]
     assert max(ids.index(c) for c in copies) < ids.index("install:spectracut-host:legion")

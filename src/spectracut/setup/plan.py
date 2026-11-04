@@ -54,6 +54,9 @@ HOST_PSEUDO = "host-profile"
 WORKER_SCRIPT = "windows_worker.ps1"
 PROFILE_DIR = "profiles"
 LINUX_BIN = "$HOME/.local/bin"
+WORKER_TASK = "spectracut-worker"
+# Components whose files the running worker holds open: replaced only with the worker stopped.
+WORKER_FILES = ("flamenco-worker", "spectracut-host")
 SSH_ERROR = 255
 
 
@@ -275,6 +278,41 @@ def _windows_worker_files(
     return files
 
 
+def _worker_stop_start(f: HostFacts) -> tuple[Step, Step]:
+    """Stop the worker (task or unit) before its files are replaced, start it again after.
+
+    Both tolerate a host with no worker registered yet (a first install) and need no
+    admin or sudo. They carry no component, so setup state never records them.
+    """
+    if f.os == "windows":
+        stop = (
+            f"Stop-ScheduledTask -TaskName {WORKER_TASK} -ErrorAction SilentlyContinue; "
+            "$root = Join-Path $env:USERPROFILE ''; "
+            "$p = @(Get-Process -Name flamenco-worker, spectracut-host -ErrorAction "
+            "SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($root) }); "
+            "$p | Stop-Process -Force -ErrorAction SilentlyContinue; "
+            "$p | ForEach-Object { $_.WaitForExit(15000) | Out-Null }; $true | Out-Null"
+        )
+        start = (
+            f"if (Get-ScheduledTask -TaskName {WORKER_TASK} -ErrorAction SilentlyContinue) "
+            f"{{ Start-ScheduledTask -TaskName {WORKER_TASK} }}"
+        )
+        shell: Shell = "powershell"
+    else:
+        stop = f"systemctl --user stop {WORKER_TASK} 2>/dev/null || true"
+        start = (
+            f"if systemctl --user is-enabled --quiet {WORKER_TASK} 2>/dev/null; "
+            f"then systemctl --user start {WORKER_TASK}; fi"
+        )
+        shell = "sh"
+    return (
+        Step(
+            f.name, f"worker:stop:{f.name}", "stop the Flamenco Worker for the upgrade", stop, shell
+        ),
+        Step(f.name, f"worker:start:{f.name}", "start the Flamenco Worker again", start, shell),
+    )
+
+
 def _install_steps(
     manifest: Manifest,
     pins: Mapping[str, str],
@@ -290,11 +328,14 @@ def _install_steps(
     """
     steps: list[Step] = []
     fields = install_fields(f.os, wheels)
+    stop_at: int | None = None
     for cname, comp in manifest.components.items():
         if not roles & set(comp.roles) or f.os not in comp.os:
             continue
         if have.get(cname) == pins[cname]:
             continue
+        if stop_at is None and cname in WORKER_FILES and "host" in roles:
+            stop_at = len(steps)
         if pins[cname] == wheels.pin:
             steps += wheel_copy_steps(f, wheels)
         steps.append(
@@ -308,6 +349,10 @@ def _install_steps(
                 version=pins[cname],
             )
         )
+    if stop_at is not None:
+        stop, start = _worker_stop_start(f)
+        steps.insert(stop_at, stop)
+        steps.append(start)
     return steps
 
 
