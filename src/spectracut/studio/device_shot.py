@@ -22,6 +22,18 @@ Stages (``profiles/device-shot.json``):
     scene-graph hash and every frame's sha256. The preview frame is scored once
     by the vision judge and counted as ``vision_qa_requests`` AI usage.
 
+The ``device-shot-graded`` profile (``profiles/device-shot-graded.json``) adds:
+
+``render_scene``
+    The final tier plus the production's :class:`ColorPipeline` steps, the
+    Look's :func:`render_rules` (motion blur, DoF) and
+    ``render.set_output {OPEN_EXR, 16}``: linear scene-referred EXR frames.
+``finish``
+    :func:`spectracut.finishing.looks.finish_runner`: stages the EXRs and runs
+    the node's Look (param ``look_id`` in param ``brand_kit``) as a separate
+    compositor job. Only this node keys on the Look's finishing, so switching
+    Looks re-runs ``finish`` alone and reuses the render.
+
 :func:`replay` re-renders a recorded render node with a fresh job id into a
 fresh output dir, bypassing the FrameCache and the graph cache, and compares
 the scene-graph hash and per-frame hashes.
@@ -42,22 +54,26 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from importlib import resources
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
 
+from spectracut.finishing.color import ColorPipeline
+from spectracut.finishing.looks import finish_runner, render_rules, resolve_look
 from spectracut.harness.imagecmp import ImageError, decode_png
 from spectracut.queue.executors.flamenco import FlamencoApi, FlamencoExecutor
 from spectracut.queue.queue import Job, JobQueue
 from spectracut.queue.signing import JobEnvelope, sign_job
-from spectracut.spec.brand import BrandKit
+from spectracut.spec.brand import BrandKit, Look
 from spectracut.spec.brief import Brief, CreativeBrief
 from spectracut.spec.recipe import Recipe, RecipeStep
 from spectracut.studio.estimate import BRIEF_PARAM
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunResult
 from spectracut.studio.node import Tier
+from spectracut.studio.profiles import QualityProfile
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -67,6 +83,14 @@ if TYPE_CHECKING:
 PROFILE = "device-shot"
 SHOT_STAGE = "shot"
 RENDER_STAGES = frozenset({"render_preview", "render_final"})
+GRADED_PROFILE = "device-shot-graded"
+RENDER_SCENE_STAGE = "render_scene"
+"""Graded profile: final-tier render to linear scene-referred EXR (no Look baked in)."""
+FINISH_STAGE = "finish"
+"""Graded profile: the Look's finishing as a separate compositor job on the EXRs."""
+LOOK_ID_PARAM = "look_id"
+COLOR_PARAM = "color"
+LOOKS_DIR_PARAM = "looks_dir"
 
 BRAND_KIT_PARAM = "brand_kit"
 SCREEN_IMAGE_PARAM = "screen_image"
@@ -415,13 +439,15 @@ def _fresh_job_id(config: DeviceShotConfig, base: str) -> str:
     return candidate
 
 
-def _envelope(job_id: str, recipe: Recipe, config: DeviceShotConfig, now: datetime) -> JobEnvelope:
+def _envelope(
+    job_id: str, recipe: Recipe, config: DeviceShotConfig, now: datetime, frame_end: int = 1
+) -> JobEnvelope:
     return JobEnvelope(
         job_id=job_id,
         recipe=recipe,
         recipe_hash=recipe.content_hash,
         frame_start=1,
-        frame_end=1,
+        frame_end=frame_end,
         output=recipe.shot_id,
         required_tag=config.worker_tag,
         issued_at=now,
@@ -523,6 +549,47 @@ def _stage_for(
     return storage_assets_dir(sha), sha
 
 
+def graded_profile() -> QualityProfile:
+    """The ``device-shot-graded`` profile from ``profiles/device-shot-graded.json``."""
+    text = resources.files("spectracut.studio").joinpath("profiles", f"{GRADED_PROFILE}.json")
+    return QualityProfile.model_validate(json.loads(text.read_text("utf-8")))
+
+
+def _node_look(ctx: RunContext) -> Look:
+    """The node's Look: param ``look_id`` (else the kit default) in param ``brand_kit``."""
+    kit = ctx.spec.params.get(BRAND_KIT_PARAM)
+    if kit is None:
+        raise ValueError(f"node {ctx.spec.id!r} needs param {BRAND_KIT_PARAM!r} to pick a Look")
+    look_id = ctx.spec.params.get(LOOK_ID_PARAM)
+    return resolve_look(BrandKit.model_validate(kit), str(look_id) if look_id is not None else None)
+
+
+def _node_pipeline(ctx: RunContext) -> ColorPipeline:
+    """The production's colour pipeline from param ``color`` (AgX, Rec.1886 by default)."""
+    pipeline = ColorPipeline.model_validate(ctx.spec.params.get(COLOR_PARAM) or {})
+    pipeline.require_blender(BLENDER_VERSION)
+    return pipeline
+
+
+def scene_render_recipe(base: Recipe, look: Look, pipeline: ColorPipeline) -> Recipe:
+    """``base`` at the final tier, colour-managed, with ``look``'s render rules, to linear EXR.
+
+    ``image_settings.color_management = FOLLOW_SCENE`` with OpenEXR writes
+    scene-linear values: the view transform is applied later, in finishing.
+    """
+    steps = list(base.steps) + tier_steps(Tier.FINAL, start=len(base.steps))
+    steps += pipeline.render_steps(start=len(steps))
+    steps += render_rules(look, start=len(steps))
+    steps.append(
+        RecipeStep(
+            index=len(steps),
+            tool="render.set_output",
+            args={"format": "OPEN_EXR", "color_depth": "16"},
+        )
+    )
+    return base.model_copy(update={"steps": steps})
+
+
 def _load_brief(data: Any) -> Brief | CreativeBrief:
     try:
         return Brief.model_validate(data)
@@ -540,7 +607,7 @@ def device_shot_runner(
     now: Callable[[], datetime] | None = None,
     options: ExecutorOptions | None = None,
 ) -> Runner:
-    """A graph Runner for the ``device-shot`` profile's ``shot`` and render stages."""
+    """A graph Runner for the ``device-shot`` and ``device-shot-graded`` profiles' stages."""
     opts = options or ExecutorOptions()
     clock_now = now or opts.now
 
@@ -563,7 +630,13 @@ def device_shot_runner(
 
     def render(ctx: RunContext) -> RunResult:
         base = _base_recipe(ctx)
-        recipe = with_tier(base, ctx.tier)
+        scene_referred = ctx.spec.kind == RENDER_SCENE_STAGE
+        if scene_referred:
+            look = _node_look(ctx)
+            pipeline = _node_pipeline(ctx)
+            recipe = scene_render_recipe(base, look, pipeline)
+        else:
+            recipe = with_tier(base, ctx.tier)
         source = _shot_assets_source(ctx)
         assets_dir, assets_sha = _stage_for(config, source, recipe)
         job_id = _fresh_job_id(
@@ -593,8 +666,11 @@ def device_shot_runner(
             output["assets_source"] = source
         if assets_sha is not None:
             output["assets_sha"] = assets_sha
+        if scene_referred:
+            output[LOOK_ID_PARAM] = look.id
+            output["render_rules"] = [{"tool": s.tool, "args": s.args} for s in render_rules(look)]
         usage = result.usage
-        if ctx.tier is Tier.PREVIEW:
+        if ctx.tier is Tier.PREVIEW and not scene_referred:
             active = judge
             if active is None:
                 from spectracut.providers.base import select_vision_judge
@@ -609,8 +685,22 @@ def device_shot_runner(
     def run(ctx: RunContext) -> RunResult:
         if ctx.spec.kind == SHOT_STAGE:
             return shot(ctx)
-        if ctx.spec.kind in RENDER_STAGES:
+        if ctx.spec.kind in RENDER_STAGES or ctx.spec.kind == RENDER_SCENE_STAGE:
             return render(ctx)
+        if ctx.spec.kind == FINISH_STAGE:
+            looks_dir = ctx.spec.params.get(LOOKS_DIR_PARAM)
+            return finish_runner(
+                ctx,
+                look=_node_look(ctx),
+                pipeline=_node_pipeline(ctx),
+                production_id=graph.production_id,
+                config=config,
+                client=client,
+                key=key,
+                now=clock_now,
+                options=opts,
+                looks_dir=Path(looks_dir) if isinstance(looks_dir, str) and looks_dir else None,
+            )
         raise LookupError(f"device-shot has no stage {ctx.spec.kind!r}")
 
     return run
