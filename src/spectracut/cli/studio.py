@@ -3,21 +3,32 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from spectracut.providers.base import TextProvider
+from spectracut.queue.executors.flamenco import FlamencoApi
+from spectracut.spec.brand import BrandKit, load_brand_kit
 from spectracut.spec.brief import Brief, CreativeBrief
+from spectracut.studio import device_shot as ds
 from spectracut.studio.department import Department
-from spectracut.studio.estimate import breakdown, estimate
+from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
+from spectracut.studio.node import NodeSpec
 from spectracut.studio.profiles import available_profiles, load_profile
 from spectracut.studio.runner import DepartmentRunner
 from spectracut.studio.store import ProductionError, ProductionStore
+
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from spectracut.providers.base import VisionJudge
 
 studio_app = typer.Typer(
     no_args_is_help=True,
@@ -43,8 +54,50 @@ class Production:
         return self.store.brief(self.id)
 
 
+@dataclass
+class DeviceShotDeps:
+    """What the ``device-shot`` runner and ``studio replay`` talk to."""
+
+    config: ds.DeviceShotConfig
+    client: FlamencoApi
+    key: Ed25519PrivateKey
+    judge: VisionJudge | None = None
+    """``None`` picks :func:`~spectracut.providers.base.select_vision_judge` on first use."""
+    options: ds.ExecutorOptions | None = None
+
+
+def default_device_shot(production: Production) -> DeviceShotDeps:
+    """Real farm dependencies from the environment and the SpectraCut home's signing key."""
+    from spectracut.queue.flamenco import FlamencoClient
+    from spectracut.queue.signing import load_private_key
+
+    config = ds.DeviceShotConfig.from_env()
+    key = load_private_key(home=production.store.home)
+    return DeviceShotDeps(config=config, client=FlamencoClient(config.flamenco_url), key=key)
+
+
+device_shot_factory: Callable[[Production], DeviceShotDeps] = default_device_shot
+"""Builds the device-shot dependencies; tests inject a fake Flamenco and a mock judge."""
+
+SCREEN_ASSET = Path("ui") / "dashboard.png"
+"""The UI screen image, relative to the brand kit's ``assets`` dir."""
+
+
 def default_runner(production: Production, graph: ProductionGraph) -> Runner:
-    """Run nodes through :data:`DEPARTMENTS`; a node with no department fails clearly."""
+    """Run nodes through :data:`DEPARTMENTS`; a node with no department fails clearly.
+
+    Productions on the ``device-shot`` profile run through the device-shot runner.
+    """
+    if graph.profile is not None and graph.profile.name == ds.PROFILE:
+        deps = device_shot_factory(production)
+        return ds.device_shot_runner(
+            graph,
+            deps.config,
+            client=deps.client,
+            judge=deps.judge,
+            key=deps.key,
+            options=deps.options,
+        )
     inner: DepartmentRunner | None = None
     if DEPARTMENTS and text_provider_factory is not None:
         inner = DepartmentRunner(
@@ -120,6 +173,10 @@ def new(
     ] = None,
     home: HomeOpt = None,
     force: Annotated[bool, typer.Option("--force", help="Replace an existing production.")] = False,
+    brand_kit: Annotated[
+        Path | None,
+        typer.Option("--brand-kit", help="brand-kit.yaml (required for profile device-shot)."),
+    ] = None,
 ) -> None:
     """Create a production from a brief file and print its estimate."""
     brief = _load_brief(brief_file)
@@ -127,17 +184,51 @@ def new(
         quality = load_profile(profile)
     except ValueError as exc:
         raise _fail(str(exc)) from exc
+    shot_params: dict[str, JsonValue] | None = None
+    if quality.name == ds.PROFILE:
+        if brand_kit is None:
+            raise _fail(f"profile {ds.PROFILE} needs --brand-kit PATH")
+        shot_params = _device_shot_params(brand_kit)
     pid = production_id or brief.id
     store = ProductionStore(home)
     try:
         graph = ProductionGraph(pid, profile=quality)
-        graph.add_nodes(breakdown(brief, quality))
+        specs = breakdown(brief, quality)
+        if shot_params is not None:
+            specs = [_with_params(s, shot_params) if s.kind == ds.SHOT_STAGE else s for s in specs]
+        graph.add_nodes(specs)
         path = store.create(pid, brief, graph, force=force)
     except (ProductionError, ValueError) as exc:
         raise _fail(str(exc)) from exc
     typer.echo(f"production {pid} created at {path}")
     for line in estimate(graph, DEPARTMENTS).lines():
         typer.echo(line)
+
+
+def _device_shot_params(kit_path: Path) -> dict[str, JsonValue]:
+    """The brand kit's JSON and its screen asset (path and sha256) for the ``shot`` node."""
+    try:
+        kit: BrandKit = load_brand_kit(kit_path)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    screen = (kit_path.parent / "assets" / SCREEN_ASSET).resolve()
+    try:
+        digest = hashlib.sha256(screen.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise _fail(f"cannot read screen asset {screen}: {exc.strerror or exc}") from exc
+    return {
+        ds.BRAND_KIT_PARAM: kit.model_dump(mode="json"),
+        ds.SCREEN_IMAGE_PARAM: SCREEN_ASSET.as_posix(),
+        ds.SCREEN_PATH_PARAM: str(screen),
+        ds.SCREEN_SHA256_PARAM: digest,
+    }
+
+
+def _with_params(spec: NodeSpec, extra: dict[str, JsonValue]) -> NodeSpec:
+    params = {**spec.params, **extra}
+    if BRIEF_PARAM not in params:
+        raise ValueError(f"node {spec.id!r} carries no brief")
+    return spec.model_copy(update={"params": params})
 
 
 def _report_lines(report: RunReport) -> list[str]:
@@ -164,7 +255,12 @@ def run_cmd(
     """Build every pending or dirty node whose inputs are ready, then save the production."""
     store = ProductionStore(home)
     graph = _load(store, production_id)
-    runner = runner_factory(Production(production_id, store), graph)
+    try:
+        runner = runner_factory(Production(production_id, store), graph)
+    except (LookupError, ValueError) as exc:
+        if graph.profile is None or graph.profile.name != ds.PROFILE:
+            raise
+        raise _fail(str(exc)) from exc  # device-shot farm config or signing key missing
     report = graph.run(runner, max_workers=workers)
     _save(store, production_id, graph)
     for line in _report_lines(report):
@@ -234,3 +330,48 @@ def reject(
 ) -> None:
     """Reject a node at its human gate; its dependants do not build."""
     _decide(production_id, node, comment, home, approve=False)
+
+
+ReplayNodeArg = Annotated[str, typer.Argument(metavar="NODE", help="Render node to replay.")]
+
+
+@studio_app.command("replay")
+def replay_cmd(production_id: IdArg, node: ReplayNodeArg, home: HomeOpt = None) -> None:
+    """Re-render a node's recorded recipe, bypassing caches, into a fresh output dir.
+
+    Exits 0 when the scene-graph hash and every frame's sha256 match, 1 otherwise.
+    """
+    store = ProductionStore(home)
+    graph = _load(store, production_id)
+    try:
+        graph.spec(node)
+        graph.output(node)
+    except KeyError as exc:
+        raise _fail(str(exc.args[0]) if exc.args else str(exc)) from exc
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    try:
+        deps = device_shot_factory(Production(production_id, store))
+    except (LookupError, ValueError) as exc:
+        raise _fail(str(exc)) from exc
+    try:
+        result = ds.replay(
+            graph, node, deps.config, client=deps.client, key=deps.key, options=deps.options
+        )
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - a failed render is a failed replay
+        typer.echo(f"error: replay of {node} failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"replay {node}: job {result.job_id} -> {result.output_dir}")
+    typer.echo(f"  scene_graph_hash recorded={result.original_scene_graph_hash}")
+    typer.echo(f"  scene_graph_hash replayed={result.scene_graph_hash}")
+    for name in sorted(set(result.original_frames) | set(result.frames)):
+        typer.echo(
+            f"  {name} recorded={result.original_frames.get(name, '-')} "
+            f"replayed={result.frames.get(name, '-')}"
+        )
+    if not result.matches:
+        typer.echo(f"mismatch: {', '.join(result.mismatches())}", err=True)
+        raise typer.Exit(1)
+    typer.echo("match")

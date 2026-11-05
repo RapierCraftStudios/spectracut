@@ -7,9 +7,7 @@ from pathlib import Path
 from typing import Annotated
 
 import yaml
-from pydantic import ValidationError
-
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, ValidationError, ValidationInfo, field_validator
 
 from spectracut.spec._base import (
     HexColor,

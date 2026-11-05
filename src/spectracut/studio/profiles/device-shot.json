@@ -1,0 +1,24 @@
+{
+  "name": "device-shot",
+  "description": "One product device shot: a deterministic recipe, then a preview render (Eevee, 50%) and a final render (Cycles, fixed seed, OIDN denoise) on the farm; no human gates.",
+  "stages": [
+    "shot",
+    "render_preview",
+    "render_final"
+  ],
+  "revision_budget": {
+    "shot": 0,
+    "render_preview": 0,
+    "render_final": 0
+  },
+  "tier": {
+    "shot": "preview",
+    "render_preview": "preview",
+    "render_final": "final"
+  },
+  "gates": {
+    "shot": "auto",
+    "render_preview": "auto",
+    "render_final": "auto"
+  }
+}

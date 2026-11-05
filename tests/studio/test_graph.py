@@ -323,15 +323,17 @@ def test_structure_errors_are_rejected() -> None:
 
 
 def test_profiles_are_data_files_selecting_stages_budgets_and_tiers() -> None:
-    assert available_profiles() == ("draft", "standard", "premium", "cinema")
+    assert available_profiles() == ("draft", "standard", "premium", "cinema", "device-shot")
+    ladder = ("draft", "standard", "premium", "cinema")
     previous: set[str] = set()
     for name in available_profiles():
         p = load_profile(name)
         assert p.name == name
         assert set(p.revision_budget) == set(p.stages) == set(p.tier)
-        assert previous <= set(p.stages), f"{name} drops stages of the cheaper profile"
-        previous = set(p.stages)
-    draft, standard, premium, cinema = (load_profile(n) for n in available_profiles())
+        if name in ladder:
+            assert previous <= set(p.stages), f"{name} drops stages of the cheaper profile"
+            previous = set(p.stages)
+    draft, standard, premium, cinema = (load_profile(n) for n in ladder)
     assert set(draft.tier.values()) == {Tier.PREVIEW}
     assert all(m is GateMode.AUTO for m in draft.gates.values())
     assert standard.tier["render"] is Tier.FINAL and "storyboard" in standard.stages
