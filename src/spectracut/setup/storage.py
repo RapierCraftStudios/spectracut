@@ -257,6 +257,8 @@ def write_file_step(
     A Linux ``$HOME/...`` path is expanded by the remote shell and written without sudo;
     any other Linux path is a literal system path written with sudo.
     """
+    if os != "windows" and not re.fullmatch(r"[0-7]{3,4}", mode):
+        raise ValueError(f"mode must be 3-4 octal digits: {mode!r}")
     if os == "windows":
         cmd = (
             f"$d = Split-Path '{path}'; New-Item -ItemType Directory -Force $d | Out-Null; "
@@ -270,13 +272,19 @@ def write_file_step(
         if not rest or any(c in rest for c in UNSAFE_PATH_CHARS):
             raise ValueError(f"unsafe path under $HOME: {path!r}")
         q = f'"{path}"'
-        cmd = f'd=$(dirname {q}); mkdir -p "$d" && tee {q} >/dev/null && chmod {mode} {q}'
+        cmd = (
+            f'd=$(dirname {q}); mkdir -p "$d" && (umask 077 && cat > {q}.tmp) '
+            f"&& chmod {mode} {q}.tmp && mv -f {q}.tmp {q}"
+        )
         return Step(host, step_id, summary, cmd, "sh", stdin=content, kind="write")
     if "$" in path or "'" in path:
         raise ValueError(f"path must be absolute or start with $HOME/: {path!r}")
+    # Create under umask 077 as root and rename into place, so the content is never readable
+    # beyond the final mode, even when the file already exists with a looser one.
     cmd = (
-        f"d=$(dirname '{path}'); sudo mkdir -p \"$d\" && sudo tee '{path}' >/dev/null "
-        f"&& sudo chmod {mode} '{path}'"
+        f"d=$(dirname '{path}'); sudo mkdir -p \"$d\" && sudo sh -c "
+        '\'umask 077; cat > "$1.tmp" && chmod "$2" "$1.tmp" && mv -f "$1.tmp" "$1"\' '
+        f"sh '{path}' '{mode}'"
     )
     return Step(host, step_id, summary, cmd, "sh", stdin=content, kind="write")
 

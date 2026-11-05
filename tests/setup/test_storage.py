@@ -357,12 +357,65 @@ def test_write_file_step_expands_home_and_writes_without_sudo(tmp_path: Path) ->
     assert list(cwd.iterdir()) == []  # no literal "$HOME" tree
 
 
-def test_write_file_step_absolute_path_keeps_sudo_form() -> None:
+def test_write_file_step_absolute_path_writes_atomically_under_umask() -> None:
     step = write_file_step("rig", "linux", "x", "x", "/etc/x.conf", "c", mode="600")
     assert step.command == (
-        "d=$(dirname '/etc/x.conf'); sudo mkdir -p \"$d\" && sudo tee '/etc/x.conf' >/dev/null "
-        "&& sudo chmod 600 '/etc/x.conf'"
+        "d=$(dirname '/etc/x.conf'); sudo mkdir -p \"$d\" && sudo sh -c "
+        '\'umask 077; cat > "$1.tmp" && chmod "$2" "$1.tmp" && mv -f "$1.tmp" "$1"\' '
+        "sh '/etc/x.conf' '600'"
     )
+
+
+def _run_with_stubs(cmd: str, stdin: str, tmp_path: Path) -> list[str]:
+    """Run ``cmd`` under umask 022 with a pass-through sudo and a chmod that logs the mode."""
+    import subprocess
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "chmod.log"
+    (bin_dir / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
+    (bin_dir / "chmod").write_text(f'#!/bin/sh\nstat -c "%a" "$2" >> {log}\nexec /bin/chmod "$@"\n')
+    for f in bin_dir.iterdir():
+        f.chmod(0o755)
+    env = {"HOME": str(tmp_path / "home"), "PATH": f"{bin_dir}:/usr/bin:/bin"}
+    subprocess.run(["sh", "-c", "umask 022; " + cmd], input=stdin, text=True, env=env, check=True)
+    return log.read_text().split()
+
+
+def test_write_file_step_sudo_secret_never_group_or_world_readable(tmp_path: Path) -> None:
+    target = tmp_path / "etc" / "x.cred"
+    step = write_file_step("rig", "linux", "x", "x", str(target), "secret\n", mode="600")
+    before = _run_with_stubs(step.command, "secret\n", tmp_path)
+    assert before == ["600"]  # mode already restricted when chmod runs
+    assert target.read_text() == "secret\n"
+    assert oct(target.stat().st_mode & 0o777) == "0o600"
+    assert [p.name for p in target.parent.iterdir()] == ["x.cred"]
+
+
+def test_write_file_step_sudo_rewrites_loose_existing_file(tmp_path: Path) -> None:
+    target = tmp_path / "x.cred"
+    target.write_text("old")
+    target.chmod(0o644)
+    step = write_file_step("rig", "linux", "x", "x", str(target), "new", mode="600")
+    _run_with_stubs(step.command, "new", tmp_path)
+    assert target.read_text() == "new"
+    assert oct(target.stat().st_mode & 0o777) == "0o600"
+
+
+def test_write_file_step_home_branch_honours_mode_600(tmp_path: Path) -> None:
+    home, cwd = tmp_path / "home", tmp_path / "cwd"
+    home.mkdir()
+    cwd.mkdir()
+    step = write_file_step("c", "linux", "x", "x", "$HOME/s/k", "v", mode="600")
+    _run_sh(step.command, "v", home, cwd)
+    assert oct((home / "s" / "k").stat().st_mode & 0o777) == "0o600"
+    assert [p.name for p in (home / "s").iterdir()] == ["k"]
+
+
+@pytest.mark.parametrize("bad", ["", "9", "60000", "u+r", "600; rm"])
+def test_write_file_step_rejects_bad_mode(bad: str) -> None:
+    with pytest.raises(ValueError):
+        write_file_step("rig", "linux", "x", "x", "/etc/x", "c", mode=bad)
 
 
 @pytest.mark.parametrize("bad", ['$HOME/a"b', "$HOME/a`b", "$HOME/a$b", "$HOME/", "$X/a", "/a'b"])
@@ -380,4 +433,6 @@ def test_no_single_quoted_dollar_path_in_linux_write_steps() -> None:
     assert {"service:manager-unit", "service:worker-unit:rig", "storage:variables"} <= ids
     for s in writes:
         quoted = re.findall(r"'([^']*)'", s.command)  # sequential pairs: real quoted spans
+        # the sudo writer's sh -c script legitimately single-quotes its "$1"/"$2" arguments
+        quoted = [q for q in quoted if not q.startswith("umask 077;")]
         assert not any("$" in q for q in quoted), s.id
