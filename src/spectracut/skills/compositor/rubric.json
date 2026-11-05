@@ -1,0 +1,26 @@
+{
+  "id": "compositor",
+  "title": "Compositor department",
+  "criteria": [
+    {
+      "id": "integration",
+      "prompt": "Do composited elements sit naturally in the shot (perspective, light, edges)?",
+      "weight": 1.5
+    },
+    {
+      "id": "ui-sharpness",
+      "prompt": "Are screen inserts and UI text crisp and correctly exposed?",
+      "weight": 2.0
+    },
+    {
+      "id": "grade",
+      "prompt": "Is the grade consistent across shots and within the Look's thresholds?",
+      "weight": 1.5
+    },
+    {
+      "id": "artifacts",
+      "prompt": "Is the shot free of compositing artifacts (edges, banding, flicker)?",
+      "weight": 1.0
+    }
+  ]
+}

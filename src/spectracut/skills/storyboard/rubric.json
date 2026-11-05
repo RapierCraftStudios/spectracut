@@ -1,0 +1,26 @@
+{
+  "id": "storyboard",
+  "title": "Storyboard department",
+  "criteria": [
+    {
+      "id": "clarity",
+      "prompt": "Does each board read at a glance: subject, size, action and move?",
+      "weight": 1.5
+    },
+    {
+      "id": "continuity",
+      "prompt": "Is screen direction and continuity consistent across the boards?",
+      "weight": 1.0
+    },
+    {
+      "id": "safe-areas",
+      "prompt": "Are text and key action inside the safe areas for every delivery aspect?",
+      "weight": 1.0
+    },
+    {
+      "id": "timing",
+      "prompt": "Does the animatic timing match the VO and the shot plan?",
+      "weight": 1.0
+    }
+  ]
+}

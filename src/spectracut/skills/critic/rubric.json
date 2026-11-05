@@ -1,0 +1,26 @@
+{
+  "id": "critic",
+  "title": "Critic department",
+  "criteria": [
+    {
+      "id": "accuracy",
+      "prompt": "Do the scores reflect what is visible in the frames, consistent with human ratings?",
+      "weight": 2.0
+    },
+    {
+      "id": "coverage",
+      "prompt": "Does the review check every rubric criterion, the brief, the canon and the failure corpus?",
+      "weight": 1.5
+    },
+    {
+      "id": "actionability",
+      "prompt": "Are notes specific enough for the department to fix the problem?",
+      "weight": 1.5
+    },
+    {
+      "id": "bar",
+      "prompt": "Is the review judged against the taste anchors, distinguishing good from great?",
+      "weight": 1.0
+    }
+  ]
+}

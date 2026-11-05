@@ -1,0 +1,31 @@
+{
+  "id": "writer",
+  "title": "Writer department",
+  "criteria": [
+    {
+      "id": "message",
+      "prompt": "Does the script carry one clear message that traces to the brief?",
+      "weight": 2.0
+    },
+    {
+      "id": "claims",
+      "prompt": "Does every on-screen claim and VO line trace to a source in the brief, with no forbidden words?",
+      "weight": 2.0
+    },
+    {
+      "id": "hook",
+      "prompt": "Do the first seconds hook the stated audience?",
+      "weight": 1.5
+    },
+    {
+      "id": "voice",
+      "prompt": "Is the copy concise, concrete and natural when read aloud at pace?",
+      "weight": 1.0
+    },
+    {
+      "id": "structure",
+      "prompt": "Does the structure build to the offer and call to action within the target length?",
+      "weight": 1.0
+    }
+  ]
+}

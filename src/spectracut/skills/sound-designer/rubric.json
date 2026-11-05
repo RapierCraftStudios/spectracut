@@ -1,0 +1,26 @@
+{
+  "id": "sound-designer",
+  "title": "Sound designer department",
+  "criteria": [
+    {
+      "id": "sync",
+      "prompt": "Are effects tightly in sync with the actions they belong to?",
+      "weight": 1.5
+    },
+    {
+      "id": "restraint",
+      "prompt": "Is sound design supportive and restrained, leaving space for VO and music?",
+      "weight": 1.5
+    },
+    {
+      "id": "consistency",
+      "prompt": "Is the sound palette consistent across the film?",
+      "weight": 1.0
+    },
+    {
+      "id": "licensing",
+      "prompt": "Is every sound original or commercially licensed with provenance?",
+      "weight": 1.5
+    }
+  ]
+}
