@@ -64,7 +64,10 @@ def main() -> None:
             tr_cls = getattr(diffusers, cfg["transformer"])
             qc = diffusers.GGUFQuantizationConfig(compute_dtype=torch.bfloat16)
             kw["transformer"] = tr_cls.from_single_file(
-                gf, quantization_config=qc, torch_dtype=torch.bfloat16, config=cfg["repo"],
+                gf,
+                quantization_config=qc,
+                torch_dtype=torch.bfloat16,
+                config=cfg["repo"],
                 subfolder="transformer",
             )
         pipe = getattr(diffusers, cfg["pipeline"]).from_pretrained(cfg["repo"], **kw)

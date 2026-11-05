@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Usage: setup_repo.ps1 -Name foley -Url https://github.com/... -Dir foley [-Req requirements.txt]
 # Clones a repo under $SC_MODELS\repos\<Dir> and prints its requirements (no auto-install: pins often clash with torch).
 param([string]$Name,[string]$Url,[string]$Dir,[string]$Req="requirements.txt")

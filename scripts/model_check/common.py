@@ -30,7 +30,7 @@ SECRET_ENV = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 
 
 def models_root() -> Path:
-    """``$SC_MODELS`` (the folder holding venvs, weights and ``out``), default ``~/spectracut-models``."""
+    """``$SC_MODELS`` (venvs, weights and ``out``), default ``~/spectracut-models``."""
     return Path(os.environ.get("SC_MODELS", str(Path.home() / "spectracut-models")))
 
 
@@ -102,7 +102,9 @@ class Sampler(threading.Thread):
             cur, pk = _proc_ram_mib()
             self.ram_peak = max(self.ram_peak, pk)
             if self.ram_limit_mib and cur > self.ram_limit_mib:
-                print(f"[common] RAM {cur} MiB > limit {self.ram_limit_mib} MiB, stopping", flush=True)
+                print(
+                    f"[common] RAM {cur} MiB > limit {self.ram_limit_mib} MiB, stopping", flush=True
+                )
                 os._exit(99)
             time.sleep(0.1)
 

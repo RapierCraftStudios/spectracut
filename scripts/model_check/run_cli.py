@@ -3,7 +3,7 @@
 
 Usage: ``run.ps1 tts run_cli.py <job> <model> <settings> <cwd> -- <exe> [args ...]``
 
-Used for HeartMuLa (music), HunyuanVideo-Foley and ThinkSound (foley), whose inference entry
+Used for HeartMuLa (music) and HunyuanVideo-Foley (foley), whose inference entry
 points are repo scripts with their own venvs. stdout/stderr tails go into ``extra``.
 """
 

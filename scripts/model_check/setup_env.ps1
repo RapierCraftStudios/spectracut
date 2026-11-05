@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Usage: setup_env.ps1 -Name tts -Packages "kokoro,soundfile" [-Python 3.11] [-Torch cu128] [-NoTorch]
 # Creates $SC_MODELS\venvs\<Name> with CUDA torch + packages via uv. Per-user, no admin needed.
 # Windows quirk (non-admin user on mrdubey-1): uv's "minor version" junction is untraversable

@@ -16,9 +16,13 @@ from common import measure, out_dir, setup_env
 
 
 def _cuda_dlls() -> None:
-    """Make pip-installed CUDA DLLs (nvidia-cublas-cu12, nvidia-cudnn-cu12) loadable on Windows."""
+    """Make CUDA DLLs loadable on Windows for CTranslate2: pip-installed nvidia-cublas/cudnn wheels
+    or, without them, the cuBLAS and cuDNN DLLs that the CUDA torch wheel ships in ``torch/lib``."""
     for sp in site.getsitepackages():
-        for d in glob.glob(os.path.join(sp, "nvidia", "*", "bin")):
+        dirs = glob.glob(os.path.join(sp, "nvidia", "*", "bin")) + glob.glob(
+            os.path.join(sp, "torch", "lib")
+        )
+        for d in dirs:
             getattr(os, "add_dll_directory")(d)  # noqa: B009 (Windows only)
             os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
 
@@ -35,7 +39,7 @@ def main() -> None:
         mdl = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
         m["load_s"] = round(time.time() - t, 1)
         for wav in wavs:
-            for i in range(2):
+            for _ in range(2):  # 0 = warm-up, 1 = steady state
                 t = time.time()
                 segs, _info = mdl.transcribe(wav, word_timestamps=True, beam_size=1)
                 words = [w for s in segs for w in s.words]

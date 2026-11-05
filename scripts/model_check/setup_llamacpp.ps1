@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Download llama.cpp prebuilt Windows CUDA 13.4 binaries (+cudart) into $SC_MODELS\llama.cpp, then fetch GGUFs.
 # Usage: setup_llamacpp.ps1 [-Tag b12110]
 param([string]$Tag="b12110",[string]$Cuda="13.4")  # legion driver 581.80 = CUDA 13.0 -> use -Cuda 12.4 there

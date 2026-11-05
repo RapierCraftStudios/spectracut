@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Usage: run.ps1 <venvName> <script.py> [args...]
 param([string]$Name,[string]$Script)
 if(-not $env:SC_MODELS){ $env:SC_MODELS = Split-Path $PSScriptRoot -Parent }

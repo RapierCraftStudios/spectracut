@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # ACE-Step 1.5 (MIT): clone + uv sync into its own venv (torch 2.7.1+cu128 pinned by the repo)
 if(-not $env:SC_MODELS){ $env:SC_MODELS = Split-Path $PSScriptRoot -Parent }
 $root=$env:SC_MODELS; $env:UV_CACHE_DIR="$root\uv-cache"; $env:HF_HOME="$root\hf"

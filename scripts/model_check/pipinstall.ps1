@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Usage: pipinstall.ps1 <venvName> <uv pip install args...>  (e.g. a wheel URL or git+https://...)
 param([string]$Name)
 if(-not $env:SC_MODELS){ $env:SC_MODELS = Split-Path $PSScriptRoot -Parent }

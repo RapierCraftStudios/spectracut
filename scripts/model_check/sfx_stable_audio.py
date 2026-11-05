@@ -42,7 +42,11 @@ def main() -> None:
             t = time.time()
             cond = [{"prompt": p, "seconds_start": 0, "seconds_total": 10}]
             audio = generate_diffusion_cond(
-                model, steps=steps, cfg_scale=cfg_scale, conditioning=cond, sample_size=n,
+                model,
+                steps=steps,
+                cfg_scale=cfg_scale,
+                conditioning=cond,
+                sample_size=n,
                 device="cuda",
             )
             m[f"gen{i}_s"] = round(time.time() - t, 1)

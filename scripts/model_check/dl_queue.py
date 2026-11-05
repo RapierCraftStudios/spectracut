@@ -22,7 +22,14 @@ QUEUE: list[tuple[str, list[str] | None]] = [
     ("unsloth/FLUX.2-klein-4B-GGUF", ["flux-2-klein-4b-Q8_0.gguf"]),
     (
         "black-forest-labs/FLUX.2-klein-4B",
-        ["text_encoder/*", "tokenizer/*", "vae/*", "scheduler/*", "transformer/config.json", "*.json"],
+        [
+            "text_encoder/*",
+            "tokenizer/*",
+            "vae/*",
+            "scheduler/*",
+            "transformer/config.json",
+            "*.json",
+        ],
     ),
     (
         "tencent/HunyuanVideo-Foley",

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Usage: run_repo.ps1 <venvName> <repoDirName> <script.py> [args]  -- runs with cwd = repo
 param([string]$Name,[string]$Repo,[string]$Script)
 if(-not $env:SC_MODELS){ $env:SC_MODELS = Split-Path $PSScriptRoot -Parent }

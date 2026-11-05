@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copy these scripts to a render host: ./push.sh legion|mrdubey-1
 set -e
 h=$1; d=$(dirname "$0")

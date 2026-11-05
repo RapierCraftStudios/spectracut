@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Omni listening critic via llama.cpp mtmd CLI. Samples peak VRAM (nvidia-smi) and peak RAM (process WS), appends to out\results.jsonl.
 # Usage: omni_llama.ps1 -Gguf <name under gguf\> -Mmproj <file> -Audio <wav> [-NCpuMoe 0] [-Ngl 99] [-Tag label]
 param([string]$Gguf,[string]$Mmproj,[string]$Audio,[int]$NCpuMoe=0,[string]$Cuda="13.4",[int]$Ngl=99,[string]$Tag="omni",

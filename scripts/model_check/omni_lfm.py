@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Omni critic candidate 2: LFM3-Omni-2B (LFM Open License v1.0) listening to a clip, text out.
 
-Venv ``omni`` (transformers>=5.20.2, librosa, soundfile). Usage: ``run.ps1 omni omni_lfm.py [wav ...]``
-(default: ``out/kokoro.wav`` and ``out/ace_lm.wav``, the clips Qwen2.5-Omni was asked about).
+Venv ``omni`` (transformers>=5.20.2, librosa, soundfile).
+Usage: ``run.ps1 omni omni_lfm.py [wav ...]``. Default clips: ``out/kokoro.wav`` and
+``out/ace_lm.wav``, the ones Qwen2.5-Omni was asked about.
 """
 
 from __future__ import annotations
