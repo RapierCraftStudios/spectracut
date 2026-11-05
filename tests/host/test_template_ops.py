@@ -50,6 +50,9 @@ def _new_object(name, data=None):
         ["key", o.name, kw["data_path"], kw["frame"],
          list(getattr(o, kw["data_path"]))]
     )
+    o.modifiers.new.side_effect = lambda **kw: (
+        _events.append(["modifier", o.name, kw["name"], kw["type"]]) or MagicMock(name="mod")
+    )
     _objects.append(o)
     return o
 
@@ -569,7 +572,7 @@ def test_text_cutout_builtin_font_cuts_the_plate(blender: Path, tmp_path: Path) 
         "object": "Cut",
     }
     assert not any("fonts.load" in c for c in run.calls)
-    assert any("modifiers.new(name='cutout.Cut', type='BOOLEAN')" in c for c in run.calls)
+    assert ["modifier", "Box", "cutout.Cut", "BOOLEAN"] in run.state["events"]
     assert any("new_from_object" in c for c in run.calls)
 
 

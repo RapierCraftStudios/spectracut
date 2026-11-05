@@ -47,7 +47,7 @@ FADE_START = 0.25
 FADE_END = 0.5
 _HEX = frozenset("0123456789abcdef")
 Geometry = tuple[list[tuple[float, float, float]], list[tuple[int, ...]]]
-_NUMBERED = re.compile(r"^(.*?)(\d+)(\.[A-Za-z0-9]+)$")
+_NUMBERED = r"^(.*?)(\d+)(\.[A-Za-z0-9]+)$"
 
 
 def grid_fade(footprint_cells: float) -> float:
@@ -80,7 +80,7 @@ def check_sequence(paths: list[str]) -> None:
     """Refuse frames that are not consecutively numbered files in one directory."""
     parts = []
     for path in paths:
-        m = _NUMBERED.match(path)
+        m = re.match(_NUMBERED, path)
         if m is None:
             raise ToolError(f"{TOOL}: sequence frame {path!r} must end in a frame number")
         parts.append((m.group(1), m.group(2), m.group(3)))
