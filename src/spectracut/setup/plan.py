@@ -15,14 +15,27 @@ import ipaddress
 import json
 import re
 import shlex
+import signal
 import subprocess
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
+from os import killpg
 from pathlib import Path
 from typing import Protocol
 
 from spectracut.queue.profile import RenderProfile
-from spectracut.setup.manifest import HostFacts, Manifest, Os, Role, Shell, Step, StepRunner
+from spectracut.setup.manifest import (
+    HostFacts,
+    Manifest,
+    Os,
+    Role,
+    Shell,
+    Step,
+    StepKind,
+    StepRunner,
+)
 from spectracut.setup.storage import (
     CONTROL,
     GPU_SCRIPT,
@@ -45,6 +58,7 @@ from spectracut.setup.storage import (
     windows_task_stop,
     write_file_step,
 )
+from spectracut.setup.transport import STEP_INPUT, frame_input, windows_input_preamble
 from spectracut.setup.wheels import (
     CONTROL_PLANE_PIN,
     LocalWheels,
@@ -178,13 +192,13 @@ def worker_task_notes(facts: Mapping[str, HostFacts], hosts: Sequence[str]) -> l
 
 
 def profile_write_step(host: str, step_id: str, summary: str, rel: str, content: str) -> Step:
-    """Write ``content`` (stdin) to ``rel`` under the Windows account's profile."""
+    """Write ``content`` (framed stdin) to ``rel`` under the Windows account's profile."""
     cmd = (
         f"$p = Join-Path $env:USERPROFILE '{rel}'; "
         "New-Item -ItemType Directory -Force (Split-Path $p) | Out-Null; "
-        "[IO.File]::WriteAllText($p, [Console]::In.ReadToEnd())"
+        f"[IO.File]::WriteAllText($p, {STEP_INPUT})"
     )
-    return Step(host, step_id, summary, cmd, "powershell", stdin=content)
+    return Step(host, step_id, summary, cmd, "powershell", stdin=content, kind="write")
 
 
 def _roles(name: str, storage_host: str | None) -> set[Role]:
@@ -299,7 +313,7 @@ def _windows_service_steps(
         f"$p = Join-Path $env:USERPROFILE 'spectracut/{TASK_SCRIPT}'; "
         "New-Item -ItemType Directory -Force (Split-Path $p) | Out-Null; "
         "$id = [Security.Principal.WindowsIdentity]::GetCurrent(); "
-        "$t = [Console]::In.ReadToEnd().Replace('__ACCOUNT__', $id.Name)"
+        f"$t = {STEP_INPUT}.Replace('__ACCOUNT__', $id.Name)"
         ".Replace('__SID__', $id.User.Value).Replace('__HOME__', $env:USERPROFILE); "
         "[IO.File]::WriteAllText($p, $t)"
     )
@@ -327,6 +341,7 @@ def _windows_service_steps(
             write_task,
             "powershell",
             stdin=task_script_source(),
+            kind="write",
         ),
         Step(
             name,
@@ -417,9 +432,21 @@ def _worker_stop_start(f: HostFacts) -> tuple[Step, Step]:
         shell = "sh"
     return (
         Step(
-            f.name, f"worker:stop:{f.name}", "stop the Flamenco Worker for the upgrade", stop, shell
+            f.name,
+            f"worker:stop:{f.name}",
+            "stop the Flamenco Worker for the upgrade",
+            stop,
+            shell,
+            kind="task",
         ),
-        Step(f.name, f"worker:start:{f.name}", "start the Flamenco Worker again", start, shell),
+        Step(
+            f.name,
+            f"worker:start:{f.name}",
+            "start the Flamenco Worker again",
+            start,
+            shell,
+            kind="task",
+        ),
     )
 
 
@@ -457,6 +484,7 @@ def _install_steps(
                 "powershell" if f.os == "windows" else "sh",
                 component=cname,
                 version=pins[cname],
+                kind="install",
             )
         )
     if stop_at is not None:
@@ -558,10 +586,14 @@ def build_plan(
 
 
 def _run_steps(
-    steps: Sequence[Step], runner: StepRunner, state: SetupState, home: Path | None
+    steps: Sequence[Step],
+    runner: StepRunner,
+    state: SetupState,
+    home: Path | None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     for step in steps:
-        out = runner.run(step)
+        out = run_with_retry(partial(runner.run, step), step.kind, sleep)
         if step.artifact and out:
             write_atomic(
                 (Path(home) if home is not None else spectracut_home())
@@ -576,10 +608,18 @@ def _run_steps(
 
 
 def apply_plan(
-    plan: Plan, runner: StepRunner, state: SetupState, home: Path | None = None
+    plan: Plan,
+    runner: StepRunner,
+    state: SetupState,
+    home: Path | None = None,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> SetupState:
-    """Run the steps in order; record each success. A failure stops the run (state kept)."""
-    _run_steps(plan.steps, runner, state, home)
+    """Run the steps in order; record each success. A failure stops the run (state kept).
+
+    Idempotent steps (:data:`RETRY_KINDS`) are retried with backoff before failing.
+    """
+    _run_steps(plan.steps, runner, state, home, sleep)
     state = state.model_copy(
         update={"set_id": plan.set_id, "storage": plan.storage, "storage_layout": plan.layout}
     )
@@ -607,6 +647,7 @@ def bootstrap_host(
     home: Path | None = None,
     *,
     wheels: LocalWheels,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> Bootstrapped:
     """Probe ``alias`` over SSH, run the host install steps and read its render profile.
 
@@ -625,7 +666,7 @@ def bootstrap_host(
     profile_step = _profile_step(facts, f"{pins['spectracut-host']}+{pins['blender']}")
     if not any(s.id == profile_step.id for s in steps):
         steps.append(profile_step)
-    _run_steps(steps, runner, state, home)
+    _run_steps(steps, runner, state, home, sleep)
     path = (Path(home) if home is not None else spectracut_home()) / PROFILE_DIR
     try:
         profile = RenderProfile.model_validate_json((path / f"{alias}.json").read_bytes())
@@ -637,6 +678,47 @@ def bootstrap_host(
 
 class SetupError(RuntimeError):
     pass
+
+
+class StepTimeout(SetupError):
+    """A step outlived its timeout; its ssh client (process group) was killed."""
+
+
+# Seconds per step kind. Copies and writes are small; installs download and unpack.
+STEP_TIMEOUTS: dict[StepKind, float] = {
+    "copy": 120.0,
+    "write": 120.0,
+    "probe": 120.0,
+    "task": 120.0,
+    "install": 1800.0,
+    "run": 600.0,
+}
+# Idempotent kinds: safe to run again after a timeout or a failure.
+RETRY_KINDS: frozenset[StepKind] = frozenset({"copy", "write", "probe", "task"})
+RETRIES = 3
+BACKOFF = 2.0
+
+
+def run_with_retry[T](
+    fn: Callable[[], T],
+    kind: StepKind,
+    sleep: Callable[[float], None] = time.sleep,
+    retries: int = RETRIES,
+) -> T:
+    """``fn()``; for a :data:`RETRY_KINDS` kind, up to ``retries`` retries (2, 4, 8 s apart).
+
+    Only :class:`SetupError` (including :class:`StepTimeout`) is retried; the last
+    one is raised. Other kinds run once.
+    """
+    attempts = retries + 1 if kind in RETRY_KINDS else 1
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except SetupError:
+            if attempt == attempts - 1:
+                raise
+            sleep(BACKOFF * 2**attempt)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 _CLIXML_OBJS = re.compile(r"<Objs\b.*?</Objs>", re.DOTALL)
@@ -657,25 +739,74 @@ def _error_lines(text: str) -> list[str]:
 class CommandRunner:
     """Runs steps on the control plane locally and on render hosts over SSH."""
 
-    def __init__(self, timeout: float = 1800.0) -> None:
+    def __init__(self, timeout: float | None = None) -> None:
+        # When set, overrides every kind's timeout (STEP_TIMEOUTS).
         self.timeout = timeout
+
+    def timeout_for(self, kind: StepKind) -> float:
+        return self.timeout if self.timeout is not None else STEP_TIMEOUTS[kind]
 
     def _exec(
         self, host: str, cmd: str, shell: str, stdin: str | None
     ) -> subprocess.CompletedProcess[str]:
+        """A read-only call (probe, resources, address): the probe kind's timeout."""
+        return self._spawn(host, cmd, shell, stdin, self.timeout_for("probe"), None)
+
+    def _spawn(
+        self,
+        host: str,
+        cmd: str,
+        shell: str,
+        stdin: str | None,
+        limit: float,
+        summary: str | None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run ``cmd``; past ``limit`` s kill its process group and raise :class:`StepTimeout`.
+
+        A PowerShell step's stdin is framed (:mod:`spectracut.setup.transport`) and read
+        into ``$StepInput`` by exact length, since Windows OpenSSH can lose stdin EOF.
+        """
         if shell == "powershell":
+            if stdin is not None:
+                cmd = windows_input_preamble() + cmd
+                stdin = frame_input(stdin)
             cmd = f"$ProgressPreference = 'SilentlyContinue'; {cmd}"
             enc = base64.b64encode(cmd.encode("utf-16-le")).decode("ascii")
             remote = f"powershell -NoProfile -NonInteractive -EncodedCommand {enc}"
         else:
             remote = f"sh -c {shlex.quote(cmd)}"
         argv = ["sh", "-c", cmd] if host == CONTROL else ["ssh", host, remote]
-        return subprocess.run(
-            argv, input=stdin, capture_output=True, text=True, timeout=self.timeout, check=False
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE if stdin is not None else None,  # as before: inherited
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
         )
+        try:
+            out, err = proc.communicate(stdin, timeout=limit)
+        except subprocess.TimeoutExpired:
+            try:
+                killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            what = summary or cmd.split(";", 1)[0][:60]
+            raise StepTimeout(
+                f"{host}: {what} timed out after {limit:g} s (ssh client killed)"
+            ) from None
+        return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
     def run(self, step: Step) -> str | None:
-        proc = self._exec(step.host, step.command, step.shell, step.stdin)
+        proc = self._spawn(
+            step.host,
+            step.command,
+            step.shell,
+            step.stdin,
+            self.timeout_for(step.kind),
+            step.summary,
+        )
         if proc.returncode != 0:
             tail = _error_lines(proc.stderr or proc.stdout)[-1:] or [""]
             raise SetupError(f"{step.host}: {step.summary} failed ({proc.returncode}): {tail[0]}")
@@ -684,12 +815,17 @@ class CommandRunner:
     def probe(self, host: str) -> HostFacts:
         os: Os = "linux"
         if host != CONTROL:
-            first = self._exec(host, "uname -s", "sh", None)
-            if first.returncode == SSH_ERROR:
-                raise SetupError(
-                    f"cannot reach {host} over SSH: {first.stderr.strip()[-200:] or 'no output'}"
-                )
-            if first.returncode != 0:
+
+            def _uname() -> subprocess.CompletedProcess[str]:
+                first = self._exec(host, "uname -s", "sh", None)
+                if first.returncode == SSH_ERROR:
+                    raise SetupError(
+                        f"cannot reach {host} over SSH: "
+                        f"{first.stderr.strip()[-200:] or 'no output'}"
+                    )
+                return first
+
+            if run_with_retry(_uname, "probe").returncode != 0:
                 os = "windows"
         if os == "windows":
             # No CIM or WMI cmdlets: a network-logon standard user is
@@ -697,9 +833,15 @@ class CommandRunner:
             script = WINDOWS_PROBE
         else:
             script = LINUX_PROBE
-        proc = self._exec(host, script, "powershell" if os == "windows" else "sh", None)
-        if proc.returncode != 0:
-            raise SetupError(f"cannot probe {host}: {proc.stderr.strip()[-200:]}")
+        shell = "powershell" if os == "windows" else "sh"
+
+        def _probe() -> subprocess.CompletedProcess[str]:
+            done = self._exec(host, script, shell, None)
+            if done.returncode != 0:
+                raise SetupError(f"cannot probe {host}: {done.stderr.strip()[-200:]}")
+            return done
+
+        proc = run_with_retry(_probe, "probe")
         facts = parse_probe(host, os, proc.stdout)
         found = self.resolve_address(host) if host != CONTROL else None
         return replace(facts, address=found) if found else facts
@@ -712,7 +854,7 @@ class CommandRunner:
         """
         try:
             proc = self._exec(CONTROL, f"tailscale ip -4 {shlex.quote(host)}", "sh", None)
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, SetupError):
             return None
         first = proc.stdout.split(None, 1)[0] if proc.returncode == 0 and proc.stdout else ""
         try:

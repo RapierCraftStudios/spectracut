@@ -21,6 +21,8 @@ from spectracut.spec._base import StrictModel
 Role = Literal["control", "host", "storage"]
 Os = Literal["linux", "windows"]
 Shell = Literal["sh", "powershell"]
+# What a step does: sets its timeout and whether it is retried (copy, write, probe, task).
+StepKind = Literal["copy", "write", "probe", "task", "install", "run"]
 
 MANIFEST_PATH = Path(__file__).with_name("manifest.yaml")
 
@@ -114,6 +116,7 @@ class Step:
     component: str | None = None
     version: str | None = None
     artifact: str | None = None  # file under <home>/profiles that receives the step's stdout
+    kind: StepKind = "run"
 
 
 class StepRunner(Protocol):

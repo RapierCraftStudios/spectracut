@@ -3,5 +3,10 @@
     "run": "findmnt -n -o SOURCE /srv/flamenco",
     "pass": "/^\\/\\/100\\.\\d+\\.\\d+\\.\\d+\\//",
     "timeout": 30
+  },
+  "setup-completes-on-farm": {
+    "run": "spectracut setup",
+    "pass": "/set \\S+ applied|nothing to do/",
+    "timeout": 3600
   }
 }
