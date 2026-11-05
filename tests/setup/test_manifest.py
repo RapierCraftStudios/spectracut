@@ -185,11 +185,19 @@ def test_powershell_commands_silence_progress_and_report_the_real_error(
         '<S S="Error">Method invocation failed_x000D__x000A_</S></Objs>'
     )
 
-    def fake_run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        seen.append(argv)
-        return subprocess.CompletedProcess(argv, 1, "", clixml)
+    class FakePopen:
+        pid = 0
+        returncode = 1
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+        def __init__(self, argv: list[str], **_: object) -> None:
+            seen.append(argv)
+
+        def communicate(
+            self, _input: str | None = None, timeout: float | None = None
+        ) -> tuple[str, str]:
+            return "", clixml
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
     step = Step("legion", "s", "install uv", "Write-Output 1", "powershell")
     with pytest.raises(SetupError) as err:
         CommandRunner().run(step)

@@ -22,6 +22,7 @@ from typing import Literal
 import yaml
 
 from spectracut.setup.manifest import HostFacts, Step
+from spectracut.setup.transport import STEP_INPUT
 from spectracut.spec._base import StrictModel
 
 CONTROL = "control"
@@ -246,18 +247,18 @@ def manager_config(listen: str, windows_drive: str = WINDOWS_DRIVE) -> str:
 def write_file_step(
     host: str, os: str, step_id: str, summary: str, path: str, content: str, mode: str = "644"
 ) -> Step:
-    """Write ``content`` to ``path`` on the host, content via stdin."""
+    """Write ``content`` to ``path`` on the host, content via stdin (framed on Windows)."""
     if os == "windows":
         cmd = (
             f"$d = Split-Path '{path}'; New-Item -ItemType Directory -Force $d | Out-Null; "
-            f"[IO.File]::WriteAllText('{path}', [Console]::In.ReadToEnd())"
+            f"[IO.File]::WriteAllText('{path}', {STEP_INPUT})"
         )
-        return Step(host, step_id, summary, cmd, "powershell", stdin=content)
+        return Step(host, step_id, summary, cmd, "powershell", stdin=content, kind="write")
     cmd = (
         f"d=$(dirname '{path}'); sudo mkdir -p \"$d\" && sudo tee '{path}' >/dev/null "
         f"&& sudo chmod {mode} '{path}'"
     )
-    return Step(host, step_id, summary, cmd, "sh", stdin=content)
+    return Step(host, step_id, summary, cmd, "sh", stdin=content, kind="write")
 
 
 def _smb_server(target: StorageTarget, facts: Mapping[str, HostFacts]) -> str:
@@ -287,14 +288,13 @@ def _windows_admin_steps(
     """
     marker = f"{path}/{MARKER_NAME}"
     write_script = (
-        _PROFILE_DIR + f"[IO.File]::WriteAllText((Join-Path $d '{ADMIN_SCRIPT}'), "
-        "[Console]::In.ReadToEnd())"
+        _PROFILE_DIR + f"[IO.File]::WriteAllText((Join-Path $d '{ADMIN_SCRIPT}'), {STEP_INPUT})"
     )
     write_pw = (
         _PROFILE_DIR
         + "$f = Join-Path $d 'storage.pw'; New-Item -ItemType File -Force $f | Out-Null; "
         "icacls $f /inheritance:r /grant:r ($env:USERNAME + ':F') '*S-1-5-32-544:F' | Out-Null; "
-        "[IO.File]::WriteAllText($f, [Console]::In.ReadLine())"
+        f'[IO.File]::WriteAllText($f, {STEP_INPUT}.TrimEnd("`r", "`n"))'
     )
     if admin:
         serve = (
@@ -323,6 +323,7 @@ def _windows_admin_steps(
             write_script,
             "powershell",
             stdin=windows_storage_source(),
+            kind="write",
         ),  # fmt: skip
         Step(
             host,
@@ -331,6 +332,7 @@ def _windows_admin_steps(
             write_pw,
             "powershell",
             stdin=cred.password + "\n",
+            kind="write",
         ),  # fmt: skip
         Step(host, "storage:serve", summary, serve, "powershell"),
     ]
@@ -506,6 +508,7 @@ def plan_storage(
                 if facts[name].os == "windows"
                 else "systemctl --user restart spectracut-worker",
                 "powershell" if facts[name].os == "windows" else "sh",
+                kind="task",
             )
         )
     unique: dict[str, Step] = {}

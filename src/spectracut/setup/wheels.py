@@ -25,6 +25,7 @@ from pathlib import Path
 
 import spectracut
 from spectracut.setup.manifest import HostFacts, Os, Shell, Step
+from spectracut.setup.transport import STEP_INPUT
 
 CONTROL_PLANE_PIN = "control-plane"  # manifest pin of a component built on the control plane
 REPO_ENV = "SPECTRACUT_REPO"
@@ -148,17 +149,28 @@ def install_fields(os_name: Os, wheels: LocalWheels) -> dict[str, str]:
 
 
 def wheel_copy_steps(facts: HostFacts, wheels: LocalWheels) -> list[Step]:
-    """Copy each wheel to the host; its bytes travel base64-encoded on stdin only."""
+    """Copy each wheel to the host; its bytes travel base64-encoded on stdin only.
+
+    On Windows the runner frames stdin (``$StepInput``, no EOF needed); the wheel is
+    written to ``.part``, its sha256 checked against the local wheel, then renamed.
+    """
     steps: list[Step] = []
     for wheel in wheels.files:
         shell: Shell
-        data = base64.b64encode(wheel.read_bytes()).decode("ascii")
+        raw = wheel.read_bytes()
+        data = base64.b64encode(raw).decode("ascii")
         if facts.os == "windows":
+            sha = hashlib.sha256(raw).hexdigest().upper()
             cmd = (
                 f"$d = Join-Path $env:USERPROFILE '{WINDOWS_WHEELS}/{wheels.digest}'; "
                 "New-Item -ItemType Directory -Force $d | Out-Null; "
-                f"[IO.File]::WriteAllBytes((Join-Path $d '{wheel.name}'), "
-                "[Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()))"
+                f"$f = Join-Path $d '{wheel.name}'; $t = $f + '.part'; "
+                f"[IO.File]::WriteAllBytes($t, [Convert]::FromBase64String({STEP_INPUT}.Trim())); "
+                "$h = (Get-FileHash -Algorithm SHA256 -LiteralPath $t).Hash; "
+                f"if ($h -ne '{sha}') {{ Remove-Item -Force -LiteralPath $t; "
+                f"[Console]::Error.WriteLine('{wheel.name}: sha256 mismatch (' + $h + ')'); "
+                "exit 1 }; "
+                "Move-Item -Force -LiteralPath $t -Destination $f"
             )
             shell = "powershell"
         else:
@@ -176,6 +188,7 @@ def wheel_copy_steps(facts: HostFacts, wheels: LocalWheels) -> list[Step]:
                 cmd,
                 shell,
                 stdin=data,
+                kind="copy",
             )
         )
     return steps
