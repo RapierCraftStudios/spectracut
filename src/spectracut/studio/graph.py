@@ -60,6 +60,9 @@ class RunResult(StrictModel):
 
 Runner = Callable[[RunContext], RunResult]
 
+Hold = Callable[[NodeSpec], str | None]
+"""``hold(spec) -> reason``: a reason keeps a ready node from building this run."""
+
 
 @dataclass
 class RunReport:
@@ -71,6 +74,9 @@ class RunReport:
     rejected: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)
+    held: list[str] = field(default_factory=list)
+    """Ready nodes the ``hold`` hook kept from building; they keep their status."""
+    held_reasons: dict[str, str] = field(default_factory=dict)
 
     @property
     def did_work(self) -> bool:
@@ -245,6 +251,17 @@ class ProductionGraph:
             self._pending.pop(nid, None)
         return affected
 
+    def remove_node(self, node_id: str) -> None:
+        """Remove a node no other node reads; its state, pending output and decision go too."""
+        self.spec(node_id)
+        readers = sorted(self._dependants[node_id])
+        if readers:
+            raise ValueError(f"node {node_id!r} is an input of {readers}; rewire them first")
+        self._install({nid: s for nid, s in self._specs.items() if nid != node_id})
+        self._states.pop(node_id, None)
+        self._pending.pop(node_id, None)
+        self._decisions.pop(node_id, None)
+
     def _install(self, specs: dict[str, NodeSpec]) -> None:
         dependants: dict[str, list[str]] = {nid: [] for nid in specs}
         for spec in specs.values():
@@ -350,18 +367,27 @@ class ProductionGraph:
     # ---- running -----------------------------------------------------------
 
     def run(
-        self, runner: Runner, *, critic: Critic | None = None, max_workers: int = 1
+        self,
+        runner: Runner,
+        *,
+        critic: Critic | None = None,
+        max_workers: int = 1,
+        hold: Hold | None = None,
     ) -> RunReport:
         """Build every pending or dirty node whose inputs are clean, in dependency order.
 
         With ``max_workers`` above 1, nodes whose inputs are clean are built at the
         same time on a thread pool, and dependants start as their inputs finish.
         Report lists are in dependency order either way.
+
+        ``hold`` is asked about each ready node that is not reused from the cache;
+        a returned reason keeps that node unbuilt (listed in ``report.held``) and
+        its dependants blocked.
         """
         if max_workers < 1:
             raise ValueError(f"max_workers must be at least 1, got {max_workers}")
         if max_workers > 1:
-            return self._run_parallel(runner, critic, max_workers)
+            return self._run_parallel(runner, critic, max_workers, hold)
         report = RunReport()
         for nid, spec in self._specs.items():
             if self._states[nid].status not in NEEDS_BUILD:
@@ -379,6 +405,11 @@ class ProductionGraph:
                 )
                 report.reused.append(nid)
                 continue
+            reason = hold(spec) if hold is not None else None
+            if reason is not None:
+                report.held.append(nid)
+                report.held_reasons[nid] = reason
+                continue
             report.executed.append(nid)
             status = self._build(spec, tier, key, runner, critic)
             if status is NodeStatus.AWAITING_APPROVAL:
@@ -389,14 +420,16 @@ class ProductionGraph:
                 report.failed.append(nid)
         return report
 
-    def _run_parallel(self, runner: Runner, critic: Critic | None, workers: int) -> RunReport:
+    def _run_parallel(
+        self, runner: Runner, critic: Critic | None, workers: int, hold: Hold | None = None
+    ) -> RunReport:
         report = RunReport()
         waiting = [nid for nid in self._specs if self._states[nid].status in NEEDS_BUILD]
         running: dict[Future[NodeStatus], str] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
             while True:
                 with self._lock:
-                    self._dispatch(waiting, running, report, pool, runner, critic)
+                    self._dispatch(waiting, running, report, pool, runner, critic, hold)
                 if not running:
                     break
                 done, _ = wait(running, return_when=FIRST_COMPLETED)
@@ -417,6 +450,7 @@ class ProductionGraph:
             report.rejected,
             report.failed,
             report.blocked,
+            report.held,
         ):
             ids.sort(key=rank.__getitem__)
         return report
@@ -429,8 +463,9 @@ class ProductionGraph:
         pool: ThreadPoolExecutor,
         runner: Runner,
         critic: Critic | None,
+        hold: Hold | None = None,
     ) -> None:
-        """Start, reuse or block every waiting node whose inputs are settled."""
+        """Start, reuse, hold or block every waiting node whose inputs are settled."""
         in_flight = set(running.values())
         progressed = True
         while progressed:
@@ -453,6 +488,11 @@ class ProductionGraph:
                         status=NodeStatus.CLEAN, tier=tier, key=key, output_hash=hit.output_hash
                     )
                     report.reused.append(nid)
+                    continue
+                reason = hold(spec) if hold is not None else None
+                if reason is not None:
+                    report.held.append(nid)
+                    report.held_reasons[nid] = reason
                     continue
                 report.executed.append(nid)
                 self._states[nid] = NodeState(status=NodeStatus.RUNNING, tier=tier, key=key)
