@@ -7,6 +7,7 @@ WORKDIR /src
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 COPY host ./host
+COPY scripts/flamenco_enable_gpu.py ./scripts/flamenco_enable_gpu.py
 RUN uv build --wheel --out-dir /dist \
     && uv build --wheel --package spectracut-host --out-dir /dist
 
