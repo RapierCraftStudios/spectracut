@@ -713,3 +713,10 @@ def test_cli_setup_creates_key_once_and_never_prints_or_ships_it(
     again = cli.invoke(app, ["setup"])
     assert again.exit_code == 0 and "nothing to do" in again.output
     assert key_file.read_text(encoding="utf-8").strip() == private
+
+
+def test_parse_probe_rejects_non_ip_address_so_it_never_reaches_a_shell() -> None:
+    evil = "address=1.2.3.4'; touch INJECTED; echo '\nlink=eth0\nfree=1\n"
+    assert parse_probe("rig", "linux", evil).address == "rig"
+    assert parse_probe("rig", "linux", "address=rig.tail.ts.net\n").address == "rig"
+    assert parse_probe("rig", "linux", "address=100.64.0.4\n").address == "100.64.0.4"

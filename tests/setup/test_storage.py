@@ -264,9 +264,9 @@ def test_linux_storage_path_is_served_and_bound_at_srv_flamenco() -> None:
         SetupState(storage_path="/data/flamenco"), target=StorageTarget(kind="host", host="rig")
     )
     assert "path = /data/flamenco\n" in (_step(plan, "storage:smb-conf").stdin or "")
-    assert "sudo chown spectracut-share '/data/flamenco'" in _step(plan, "storage:serve").command
+    assert "sudo chown spectracut-share /data/flamenco" in _step(plan, "storage:serve").command
     bind = _step(plan, "storage:bind")
-    assert bind.host == "rig" and "mount --bind '/data/flamenco' /srv/flamenco" in bind.command
+    assert bind.host == "rig" and "mount --bind /data/flamenco /srv/flamenco" in bind.command
     default = _plan(target=StorageTarget(kind="host", host="rig"))
     assert "path = /srv/flamenco\n" in (_step(default, "storage:smb-conf").stdin or "")
     assert "storage:bind" not in [s.id for s in default.steps]
@@ -314,6 +314,26 @@ def test_path_or_drive_change_replans_storage(tmp_path: Path) -> None:
     replan = _plan(moved.model_copy(update={"storage_path": D_PATH}))
     assert "storage:serve" in [s.id for s in replan.steps]
     assert "storage:restart-worker:legion" in [s.id for s in replan.steps]
+
+
+def test_mount_commands_quote_a_hostile_server_as_one_argument() -> None:
+    import shlex
+
+    from spectracut.setup.storage import _attach_steps, _migrate_steps
+
+    evil = "1.2.3.4'; touch INJECTED; echo '"
+    cmds = [
+        s.command
+        for s in (
+            *_attach_steps("rig", evil, "flamenco", CRED),
+            *_migrate_steps(evil, "flamenco", CRED),
+        )
+        if "cifs" in s.command
+    ]
+    assert len(cmds) == 2
+    for cmd in cmds:
+        assert f"//{evil}/flamenco" in shlex.split(cmd)
+        assert "touch" not in [t for t in shlex.split(cmd) if t != f"//{evil}/flamenco"]
 
 
 def _run_sh(cmd: str, stdin: str, home: Path, cwd: Path) -> None:
