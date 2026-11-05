@@ -36,5 +36,27 @@
     "edit": "auto",
     "render": "auto",
     "delivery": "auto"
+  },
+  "critique": {
+    "pass_score": 0.5,
+    "window": 2,
+    "best_of_n": {
+      "brief": 1,
+      "script": 1,
+      "template_shots": 1,
+      "voiceover": 1,
+      "edit": 1,
+      "render": 1,
+      "delivery": 1
+    },
+    "verify_samples": {
+      "brief": 1,
+      "script": 1,
+      "template_shots": 1,
+      "voiceover": 1,
+      "edit": 1,
+      "render": 1,
+      "delivery": 1
+    }
   }
 }
