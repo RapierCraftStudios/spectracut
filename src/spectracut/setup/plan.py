@@ -41,6 +41,7 @@ from spectracut.setup.storage import (
     CONTROL,
     GPU_SCRIPT,
     LINUX_TOOLS,
+    MANAGER_CONFIG_PATH,
     MANAGER_PORT,
     WINDOWS_DRIVE,
     WINDOWS_TOOLS,
@@ -49,6 +50,7 @@ from spectracut.setup.storage import (
     StorageLayout,
     StorageTarget,
     choose_default_host,
+    manager_config_steps,
     normalize_drive,
     plan_storage,
     storage_folder,
@@ -113,12 +115,51 @@ WINDOWS_PROBE = (
     "| ForEach-Object { $r = if ($sub[$_.Name]) { $sub[$_.Name] } "
     "else { [string]$_.DisplayRoot }; $_.Name + '=' + $r }) -join '|')"
 )
+MANAGER_UNIT_PATH = "$HOME/.config/systemd/user/flamenco-manager.service"
+# Missing-file tokens of the control-plane probe (``HostFacts.missing``).
+MISSING_UNIT = "manager-unit"
+MISSING_CONFIG = "manager-config"
+MISSING_JOB_TYPES = "job-types"
+# The Manager's folder: its unit's WorkingDirectory, else setup's own install (sh, sets $d).
+MANAGER_DIR_LINES = (
+    f"d=$(systemctl --user show -p WorkingDirectory --value {MANAGER_UNIT} 2>/dev/null || true)",
+    'd="${d#[-!]}"',
+    '[ "$d" != "~" ] || d="$HOME"',
+    f'[ -n "$d" ] || d="{MANAGER_DIR_DEFAULT}"',
+)
+# Credentials a Flamenco Worker keeps after registering; a Manager with a new database
+# answers them with "no such worker known" until they are deleted and the worker re-registers.
+WORKER_CREDENTIALS = "flamenco-worker-credentials.yaml"
+WINDOWS_CREDENTIALS = (
+    f"Join-Path $env:LOCALAPPDATA 'Blender Foundation\\Flamenco\\{WORKER_CREDENTIALS}'"
+)
+LINUX_CREDENTIALS = f"$HOME/.local/share/flamenco/{WORKER_CREDENTIALS}"
 LINUX_PROBE = (
     'echo "address=$(tailscale ip -4 2>/dev/null | head -1)"; '
     "echo \"link=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) "
     'if($i=="dev"){print $(i+1);exit}}\')"; '
     'echo "free=$(df -Pk "$HOME" | awk \'NR==2{print $4*1024}\')"'
 )
+
+
+def control_probe(job_types: Sequence[str]) -> str:
+    """sh printing ``missing=`` with the Manager files absent on disk (control plane only).
+
+    Setup state records what setup ran, not what is on disk: a file lost or written
+    elsewhere must still be rewritten. The job types are looked up where
+    :func:`job_types_step` installs them.
+    """
+    files = " ".join(shlex.quote(n) for n in sorted(job_types))
+    return "; ".join(
+        [
+            "m=",
+            f'[ -f "{MANAGER_UNIT_PATH}" ] || m="$m,{MISSING_UNIT}"',
+            f'[ -f "{MANAGER_CONFIG_PATH}" ] || m="$m,{MISSING_CONFIG}"',
+            *MANAGER_DIR_LINES,
+            f'for f in {files}; do [ -f "$d/scripts/$f" ] || m="$m,{MISSING_JOB_TYPES}"; done',
+            'echo "missing=${m#,}"',
+        ]
+    )
 
 
 class HostState(StrictModel):
@@ -281,7 +322,7 @@ def _service_steps(
                 "linux",
                 "service:manager-unit",
                 "write the Manager unit",
-                "$HOME/.config/systemd/user/flamenco-manager.service",
+                MANAGER_UNIT_PATH,
                 unit,
             ),
             Step(
@@ -474,6 +515,27 @@ def _worker_stop_start(f: HostFacts) -> tuple[Step, Step]:
     )
 
 
+def worker_credentials_reset_step(f: HostFacts) -> Step:
+    """Stop the worker, delete its Flamenco credentials and start it, so it registers anew.
+
+    For a worker the Manager does not know (its database is new): the old credentials
+    only get ``403 no such worker known``. No admin or sudo; no component, never recorded.
+    """
+    stop, start = _worker_stop_start(f)
+    if f.os == "windows":
+        delete = f"Remove-Item -Force -ErrorAction SilentlyContinue ({WINDOWS_CREDENTIALS})"
+    else:
+        delete = f'rm -f "{LINUX_CREDENTIALS}"'
+    return Step(
+        f.name,
+        f"worker:reset-credentials:{f.name}",
+        "reset the Flamenco Worker credentials (the Manager does not know it)",
+        f"{stop}; {delete}; {start}",
+        stop.shell,
+        kind="task",
+    )
+
+
 def _install_steps(
     manifest: Manifest,
     pins: Mapping[str, str],
@@ -558,11 +620,7 @@ def job_types_step(host: str, sources: Mapping[str, str]) -> Step:
     """
     lines = [
         "set -e",
-        f"d=$(systemctl --user show -p WorkingDirectory --value {MANAGER_UNIT} 2>/dev/null "
-        "|| true)",
-        'd="${d#[-!]}"',
-        '[ "$d" != "~" ] || d="$HOME"',
-        f'[ -n "$d" ] || d="{MANAGER_DIR_DEFAULT}"',
+        *MANAGER_DIR_LINES,
         's="$d/scripts"',
         'mkdir -p "$s"',
         "changed=",
@@ -673,15 +731,24 @@ def build_plan(
             if svc
             else {}
         )
-        if any(have.get(k) != v for k, v in want.items()):
+        lost = name == CONTROL and MISSING_UNIT in f.missing
+        if lost or any(have.get(k) != v for k, v in want.items()):
             steps += svc
             if name in workers and f.os == "windows" and not f.admin:
                 need_task.append(name)
         elif name in workers and f.os == "windows" and not f.admin and not f.task:
             need_task.append(name)
-        if name == CONTROL and have.get(JOBTYPES_PSEUDO) != job_types_version(job_types):
+        if name == CONTROL and (
+            MISSING_JOB_TYPES in f.missing
+            or have.get(JOBTYPES_PSEUDO) != job_types_version(job_types)
+        ):
             steps.append(job_types_step(name, job_types))
-    steps += plan_storage(target, state.storage, facts, workers, cred, layout, state.storage_layout)
+    storage_steps = plan_storage(
+        target, state.storage, facts, workers, cred, layout, state.storage_layout
+    )
+    if MISSING_CONFIG in facts[CONTROL].missing and not storage_steps:
+        storage_steps = manager_config_steps(facts, layout)
+    steps += storage_steps
     return Plan(
         set_id,
         tuple(steps),
@@ -943,6 +1010,8 @@ class CommandRunner:
             script = WINDOWS_PROBE
         else:
             script = LINUX_PROBE
+            if host == CONTROL:
+                script = f"{script}; {control_probe(list(job_type_sources()))}"
         shell = "powershell" if os == "windows" else "sh"
 
         def _probe() -> subprocess.CompletedProcess[str]:
@@ -992,7 +1061,8 @@ class CommandRunner:
         return cpus, mem
 
 
-_PROBE_LINE = re.compile(r"^(address|link|free|admin|home|task|drives)=(.*)$")
+_PROBE_LINE = re.compile(r"^(address|link|free|admin|home|task|drives|missing)=(.*)$")
+_MISSING = (MISSING_UNIT, MISSING_CONFIG, MISSING_JOB_TYPES)
 
 
 def _valid_address(value: str, fallback: str) -> str:
@@ -1010,7 +1080,9 @@ def parse_probe(name: str, os: Os, out: str) -> HostFacts:
     ``free`` (bytes). Windows adds ``admin`` (whether the SSH account is an Administrator),
     ``home`` (its profile path), ``task`` (whether the worker task exists; ``True``/``False``)
     and ``drives`` (drive letters in use as ``letter=root`` joined by ``|``; paths may hold
-    ``=`` and commas). Other lines are ignored; a missing key keeps its default.
+    ``=`` and commas). The control plane adds ``missing`` (comma-separated Manager files
+    absent on disk; unknown tokens ignored). Other lines are ignored; a missing key keeps
+    its default.
     """
     f: dict[str, str] = {}
     for raw in out.splitlines():
@@ -1031,4 +1103,9 @@ def parse_probe(name: str, os: Os, out: str) -> HostFacts:
         home=f.get("home", "") if win else "",
         task=f.get("task", "").lower() != "false" if win else True,
         drives=tuple(d for d in f.get("drives", "").split("|") if d.strip()) if win else (),
+        missing=tuple(
+            dict.fromkeys(
+                m for m in (x.strip() for x in f.get("missing", "").split(",")) if m in _MISSING
+            )
+        ),
     )

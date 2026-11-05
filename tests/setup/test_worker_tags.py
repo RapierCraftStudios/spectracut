@@ -22,6 +22,7 @@ from spectracut.setup.plan import (
     SetupError,
     SetupState,
     build_plan,
+    worker_credentials_reset_step,
     worker_name,
     worker_script_source,
 )
@@ -305,3 +306,131 @@ def test_cli_setup_fails_when_a_worker_never_registers(
     result = CliRunner().invoke(app, ["setup"])
     assert result.exit_code == 2
     assert "no Flamenco worker registered for rig" in result.output
+
+
+# ---- a worker the Manager does not know is reset once (#181) -------------------------
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += max(seconds, 0.01)
+
+
+def _register(manager: FakeManager, name: str) -> None:
+    worker = Worker(id=f"w-{name}", name=name, status="awake")
+    manager.workers.append(worker)
+    manager.members[worker.id] = []
+
+
+def test_unknown_worker_is_reset_once_then_registers_and_gets_its_tags() -> None:
+    manager = FakeManager(workers=("mrdubey-1",))  # legion's old credentials: unknown
+    clock = Clock()
+    resets: list[str] = []
+
+    def reset(host: str) -> None:
+        resets.append(host)
+        _register(manager, host)  # the restarted worker signs on afresh
+
+    sync_worker_tags(manager, _desired(), sleep=clock.sleep, clock=clock, reset=reset)
+    assert resets == ["legion"]  # mrdubey-1 is known: its credentials are untouched
+    assert manager.names("legion") == set(worker_tags(LEGION))
+    assert manager.names("mrdubey-1") == set(worker_tags(MRDUBEY))
+
+
+def test_known_worker_is_never_reset_even_while_waiting() -> None:
+    manager = FakeManager()  # both known (listed even when offline)
+    manager.workers[0] = Worker(id="w-legion", name="legion", status="offline")
+    resets: list[str] = []
+    clock = Clock()
+    sync_worker_tags(
+        manager, _desired(), sleep=clock.sleep, clock=clock, reset=resets.append, reset_after=0
+    )
+    assert resets == []
+
+
+def test_reset_waits_for_the_grace_period_first() -> None:
+    manager = FakeManager()
+    manager.hidden_polls = 2  # a first-install worker still signing on
+    resets: list[str] = []
+    clock = Clock()
+    sync_worker_tags(
+        manager, _desired(), sleep=clock.sleep, clock=clock, reset=resets.append, reset_after=60
+    )
+    assert resets == [] and clock.now < 60
+
+
+def test_unknown_worker_still_missing_after_reset_fails_naming_it() -> None:
+    manager = FakeManager(workers=("mrdubey-1",))
+    resets: list[str] = []
+    clock = Clock()
+    with pytest.raises(SetupError, match="legion.*credentials were reset"):
+        sync_worker_tags(
+            manager,
+            _desired(),
+            timeout=30,
+            sleep=clock.sleep,
+            clock=clock,
+            reset=resets.append,
+            reset_after=10,
+        )
+    assert resets == ["legion"]  # once, not on every poll
+
+
+def test_dry_run_never_resets() -> None:
+    manager = FakeManager(workers=("mrdubey-1",))
+    resets: list[str] = []
+    sync_worker_tags(manager, _desired(), dry_run=True, sleep=_no_sleep, reset=resets.append)
+    assert resets == []
+
+
+def test_worker_credentials_reset_step_deletes_the_credentials_and_restarts() -> None:
+    win = worker_credentials_reset_step(FACTS["legion"])
+    assert win.shell == "powershell" and win.component is None and win.kind == "task"
+    assert (
+        "Join-Path $env:LOCALAPPDATA 'Blender Foundation\\Flamenco\\"
+        "flamenco-worker-credentials.yaml'" in win.command
+    )
+    assert win.command.index("/end") < win.command.index("Remove-Item")
+    assert win.command.index("Remove-Item") < win.command.index("/run")
+    lin = worker_credentials_reset_step(FACTS["rig"])
+    assert lin.shell == "sh" and lin.component is None
+    assert 'rm -f "$HOME/.local/share/flamenco/flamenco-worker-credentials.yaml"' in lin.command
+    assert lin.command.index("stop") < lin.command.index("rm -f") < lin.command.index("start")
+
+
+def test_cli_setup_resets_only_the_unknown_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("SPECTRACUT_HOME", str(home))
+    manager = FakeManager(workers=("rig",))  # legion is unknown to the new Manager
+
+    class ResetRunner(FakeRunner):
+        def run(self, step: Step) -> str | None:
+            if step.id.startswith("worker:reset-credentials:"):
+                _register(manager, step.host)
+            return super().run(step)
+
+    runner = ResetRunner()
+    monkeypatch.setattr(setup_cli, "CommandRunner", lambda: runner)
+    monkeypatch.setattr(setup_cli, "build_wheels", lambda _out: WHEELS)
+    monkeypatch.setattr(setup_cli, "manager_client", lambda _url: manager)
+    monkeypatch.setattr("spectracut.setup.worker_tags.RESET_AFTER", 0.0)
+    hosts = [
+        {"name": "legion", "cpus": 8, "mem_gb": 32, "profile": LEGION.model_dump()},
+        {"name": "rig", "cpus": 8, "mem_gb": 32, "profile": MRDUBEY.model_dump()},
+    ]
+    (home / "hosts.json").write_text(json.dumps({"hosts": hosts}), encoding="utf-8")
+    result = CliRunner().invoke(app, ["setup"])
+    assert result.exit_code == 0, result.output
+    resets = [s.id for s in runner.ran if s.id.startswith("worker:reset-credentials:")]
+    assert resets == ["worker:reset-credentials:legion"]
+    assert "legion: reset the Flamenco Worker credentials" in result.output
+    assert manager.names("legion") == set(worker_tags(LEGION))

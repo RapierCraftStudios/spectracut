@@ -101,6 +101,9 @@ class HostFacts:
     # Windows: drive letters in use as ``letter=root`` (UNC of a network drive, folder of
     # a subst drive, empty for a local volume), read via Get-PSDrive and subst, not CIM.
     drives: tuple[str, ...] = ()
+    # Control plane: Manager files missing on disk (``manager-unit``, ``manager-config``,
+    # ``job-types``), so setup rewrites them whatever its state records. Empty: all there.
+    missing: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

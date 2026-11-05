@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import secrets
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Protocol
 
@@ -32,6 +32,7 @@ from spectracut.setup.plan import (
     build_plan,
     load_state,
     save_state,
+    worker_credentials_reset_step,
 )
 from spectracut.setup.storage import (
     CONTROL,
@@ -184,7 +185,7 @@ def setup_cmd(
             apply_plan(plan, runner, state, root)
         # Worker tags live in the Manager, so they are synced even when the hosts converged.
         url = f"http://{facts[CONTROL].address}:{MANAGER_PORT}"
-        _sync_tags(url, registered, dry_run)
+        _sync_tags(url, registered, dry_run, runner, facts)
         # Likewise the job types: the Manager must list every packaged one after setup.
         _check_job_types(url, dry_run)
         if dry_run or not plan.steps:
@@ -236,13 +237,33 @@ def _check_job_types(
     raise SetupError(message)
 
 
-def _sync_tags(url: str, hosts: Sequence[HostEntry], dry_run: bool) -> None:
-    """Create and assign each registered host's worker tags (a dry run only reads)."""
+def _sync_tags(
+    url: str,
+    hosts: Sequence[HostEntry],
+    dry_run: bool,
+    runner: StepRunner | None = None,
+    facts: Mapping[str, HostFacts] | None = None,
+) -> None:
+    """Create and assign each registered host's worker tags (a dry run only reads).
+
+    With ``runner`` and ``facts``, a host whose worker the Manager does not know (a new
+    Manager database) gets its worker credentials reset once so it registers again.
+    """
     desired = desired_tags(hosts)
     if not desired:
         return
+
+    def reset(host: str) -> None:
+        assert runner is not None and facts is not None
+        step = worker_credentials_reset_step(facts[host])
+        typer.echo(redact(f"{host}: {step.summary}"))
+        runner.run(step)
+
+    can_reset = not dry_run and runner is not None and facts is not None
     try:
-        actions = sync_worker_tags(manager_client(url), desired, dry_run=dry_run)
+        actions = sync_worker_tags(
+            manager_client(url), desired, dry_run=dry_run, reset=reset if can_reset else None
+        )
     except SetupError as exc:
         if not dry_run:
             raise
