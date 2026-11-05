@@ -453,9 +453,7 @@ def type_steps(
 # ---- events for sound ------------------------------------------------------------------
 
 
-def reveal_markers(
-    cards: Sequence[TypeCard], presets: Mapping[str, TypePreset]
-) -> list[Marker]:
+def reveal_markers(cards: Sequence[TypeCard], presets: Mapping[str, TypePreset]) -> list[Marker]:
     """Edit markers ``type:<card>:reveal`` (start, spanning the reveal) and ``type:<card>:hit``.
 
     Audio cues anchor on them by name (``Cue.marker``), so a title's whoosh and
@@ -475,7 +473,9 @@ def reveal_markers(
             )
         )
         markers.append(
-            Marker(name=f"type:{card.id}:hit", frame=card.start_frame + span, color="CYAN", note=note)
+            Marker(
+                name=f"type:{card.id}:hit", frame=card.start_frame + span, color="CYAN", note=note
+            )
         )
     return sorted(markers, key=lambda m: (m.frame, m.name))
 

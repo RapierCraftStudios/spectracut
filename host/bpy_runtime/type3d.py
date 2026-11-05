@@ -81,7 +81,12 @@ ARGS_3D = COMMON_ARGS | {"distance", "extrude", "bevel", "dof"}
 
 
 def pixel_scale(
-    lens_mm: float, sensor_width: float, sensor_height: float, fit: str, width: int, height: int,
+    lens_mm: float,
+    sensor_width: float,
+    sensor_height: float,
+    fit: str,
+    width: int,
+    height: int,
     distance: float,
 ) -> float:
     """Scene units per render pixel on a plane ``distance`` in front of the camera."""
@@ -262,8 +267,13 @@ def _build(bpy: Any, p: dict[str, Any], tool: str, dimension: str, extra: dict[s
     cam = camera.data
     distance = extra.get("distance", 1.0)
     scale = pixel_scale(
-        float(cam.lens), float(cam.sensor_width), float(cam.sensor_height),
-        str(cam.sensor_fit), width, height, distance,
+        float(cam.lens),
+        float(cam.sensor_width),
+        float(cam.sensor_height),
+        str(cam.sensor_fit),
+        width,
+        height,
+        distance,
     )
     curve = bpy.data.curves.new(p["name"], type="FONT")
     curve.body = p["text"]

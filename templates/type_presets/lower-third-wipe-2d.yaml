@@ -1,0 +1,15 @@
+# Lower third: flat body type wiped on from the left.
+id: lower-third-wipe-2d
+version: 1
+kind: lower_third
+dimension: 2d
+animation: mask_wipe
+easing: ease_in_out
+reveal_frames: 12
+font_role: body
+weight: 400
+size: 0.04
+layout:
+  "16:9": {x: 0.06, y: 0.76, w: 0.6, h: 0.12}
+  "9:16": {x: 0.06, y: 0.7, w: 0.88, h: 0.08}
+  "1:1": {x: 0.06, y: 0.76, w: 0.88, h: 0.12}

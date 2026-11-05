@@ -354,6 +354,8 @@ NEW_TOOLS = {
     "look.set_view",
     "render.set_output",
     "finish.apply_look",
+    "type.add_2d",
+    "type.add_3d",
 }
 
 
@@ -365,7 +367,7 @@ def test_registry_literal_matches_tools() -> None:
     names, same = got
     assert same is True
     assert set(names) == runtime_tool_names(RUNTIME / "tools.py")
-    assert NEW_TOOLS <= set(names) and len(names) == 21
+    assert NEW_TOOLS <= set(names) and len(names) == 23
 
 
 def test_error_codes_are_stable() -> None:
@@ -920,3 +922,113 @@ def test_apply_look_refusals(
     assert run.proc.returncode == 1
     assert f"[{code}]" in run.proc.stderr, run.proc.stderr
     assert not any("render.render" in c for c in run.state.get("calls", []))
+
+
+# --- motion typography (#56) -----------------------------------------------------------
+
+TYPE_ARGS: dict[str, Any] = {
+    "name": "type_title",
+    "text": "AlterLab",
+    "font": {"family": "Inter", "weight": 600},
+    "size_px": 76,
+    "box": [192, 410, 1536, 216],
+    "resolution": [1920, 1080],
+    "color": [1.0, 1.0, 1.0],
+    "animation": "tracking_reveal",
+    "easing": "expo_out",
+    "start": 0,
+    "reveal_frames": 24,
+}
+
+
+def test_pixel_maths_puts_one_layout_pixel_on_one_render_pixel() -> None:
+    got = pure(
+        "from bpy_runtime.type3d import pixel_scale, pixel_to_camera, reveal_keys\n"
+        "s = pixel_scale(50.0, 36.0, 24.0, 'AUTO', 1920, 1080, 2.0)\n"
+        "print(json.dumps([s, pixel_to_camera(0, 0, 1920, 1080, s, 2.0),"
+        " reveal_keys('glyph_stagger', 10, 8, 2, 3), reveal_keys('mask_wipe', 10, 8, 2, 3)]))\n"
+    )
+    scale, corner, stagger, wipe = got
+    assert scale == pytest.approx(36.0 / 50.0 * 2.0 / 1920)
+    # the frame is exactly 1920 px wide at the type's distance
+    assert -corner[0] * 2 == pytest.approx(36.0 / 50.0 * 2.0)
+    assert corner[2] == -2.0
+    assert stagger == [[10, 0.0], [18, pytest.approx(1 / 3)], [20, pytest.approx(2 / 3)], [22, 1.0]]
+    assert wipe == [[10, 0.0], [18, 1.0]]
+
+
+def test_type_ops_build_camera_parented_animated_text(blender: Path, tmp_path: Path) -> None:
+    three = {**TYPE_ARGS, "extrude": 0.1, "bevel": 0.02, "distance": 2.0, "dof": True}
+    flat = {
+        **TYPE_ARGS,
+        "name": "type_line",
+        "animation": "glyph_stagger",
+        "easing": "back_out",
+        "stagger_frames": 2,
+        "reveal_frames": 8,
+    }
+    cut = {
+        **TYPE_ARGS,
+        "name": "type_ui",
+        "animation": "match_cut",
+        "match_from": [576, 648, 384, 54],
+    }
+    run = run_steps(
+        blender,
+        tmp_path,
+        [CAM, ("type.add_3d", three), ("type.add_2d", flat), ("type.add_2d", cut)],
+    )
+    assert run.proc.returncode == 0, run.proc.stderr
+    reports = {s["report"]["name"]: s for s in run.reports}
+    title = reports["type_title"]
+    assert title["tool"] == "type.add_3d"
+    assert title["report"]["dimension"] == "3d" and title["report"]["dof_focus"] == "type_title"
+    assert title["report"]["keys"] == 4 and title["report"]["glyphs"] == 8
+    line = reports["type_line"]["report"]
+    assert line["dimension"] == "2d" and line["keys"] == 1 + 8 and "dof_focus" not in line
+    assert reports["type_ui"]["report"]["keys"] == 4
+    assert set(run.state["objects"]) >= {"Cam", "type_title", "type_line", "type_ui"}
+    calls = run.state["calls"]
+    assert any("curves.new('type_title', type='FONT')" in c for c in calls)
+    assert any("keyframe_insert('space_character', frame=24)" in c for c in calls)
+    assert any("keyframe_insert('default_value', frame=22)" in c for c in calls)
+    keys = [e for e in run.state["events"] if e[0] == "key"]
+    assert ["key", "type_ui", {"data_path": "location", "frame": 24}] in keys
+    assert ["key", "type_ui", {"data_path": "scale", "frame": 0}] in keys
+    assert (title["report"]["easing"], line["easing"]) == ("expo_out", "back_out")
+
+
+@pytest.mark.parametrize(
+    ("tool", "change", "code"),
+    [
+        ("type.add_2d", {"extrude": 0.1}, "args.invalid"),
+        ("type.add_2d", {"animation": "spin"}, "args.invalid"),
+        ("type.add_2d", {"easing": "bounce"}, "args.invalid"),
+        ("type.add_2d", {"text": ""}, "args.invalid"),
+        ("type.add_2d", {"box": [1800, 0, 400, 100]}, "args.invalid"),
+        ("type.add_2d", {"animation": "match_cut"}, "args.invalid"),
+        ("type.add_2d", {"resolution": [1080, 1920]}, "args.invalid"),
+        ("type.add_3d", {"extrude": 5}, "args.invalid"),
+        ("type.add_3d", {"script": "x"}, "args.invalid"),
+        ("type.add_3d", {"font": {"family": "Inter", "url": "http://x"}}, "args.invalid"),
+        (
+            "type.add_3d",
+            {"font": {"family": "Inter", "path": "../Inter.ttf", "sha256": "0" * 64}},
+            "asset.path_refused",
+        ),
+    ],
+)
+def test_type_ops_refuse_bad_args(
+    blender: Path, tmp_path: Path, tool: str, change: dict[str, Any], code: str
+) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    run = run_steps(blender, tmp_path, [CAM, (tool, {**TYPE_ARGS, **change})], assets_dir=assets)
+    assert run.proc.returncode == 1
+    assert f"[{code}]" in run.proc.stderr, run.proc.stderr
+    assert not any("render.render" in c for c in run.state.get("calls", []))
+
+
+def test_type_op_needs_a_camera(blender: Path, tmp_path: Path) -> None:
+    run = run_steps(blender, tmp_path, [("type.add_2d", TYPE_ARGS)])
+    assert run.proc.returncode == 1 and "[scene.no_camera]" in run.proc.stderr
