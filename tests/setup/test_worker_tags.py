@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -21,6 +22,7 @@ from spectracut.setup.plan import (
     WORKER_NAME_ENV,
     SetupError,
     SetupState,
+    _worker_stop_start,
     build_plan,
     worker_credentials_reset_step,
     worker_name,
@@ -396,12 +398,22 @@ def test_worker_credentials_reset_step_deletes_the_credentials_and_restarts() ->
         "Join-Path $env:LOCALAPPDATA 'Blender Foundation\\Flamenco\\"
         "flamenco-worker-credentials.yaml'" in win.command
     )
-    assert win.command.index("/end") < win.command.index("Remove-Item")
-    assert win.command.index("Remove-Item") < win.command.index("/run")
+    w_stop, w_start = _worker_stop_start(FACTS["legion"])
+    w_delete = (
+        "Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'Blender Foundation\\Flamenco\\"
+        "flamenco-worker-credentials.yaml') -Force -ErrorAction SilentlyContinue"
+    )
+    assert "Step(" not in win.command
+    assert win.command == f"{w_stop.command}; {w_delete}; {w_start.command}"
     lin = worker_credentials_reset_step(FACTS["rig"])
     assert lin.shell == "sh" and lin.component is None
     assert 'rm -f "$HOME/.local/share/flamenco/flamenco-worker-credentials.yaml"' in lin.command
-    assert lin.command.index("stop") < lin.command.index("rm -f") < lin.command.index("start")
+    l_stop, l_start = _worker_stop_start(FACTS["rig"])
+    l_delete = 'rm -f "$HOME/.local/share/flamenco/flamenco-worker-credentials.yaml"'
+    assert "Step(" not in lin.command
+    assert lin.command == f"{l_stop.command}; {l_delete}; {l_start.command}"
+    parsed = subprocess.run(["sh", "-n", "-c", lin.command], capture_output=True, text=True)
+    assert parsed.returncode == 0, parsed.stderr
 
 
 def test_cli_setup_resets_only_the_unknown_worker(
