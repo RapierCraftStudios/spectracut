@@ -2,7 +2,9 @@
 """Real-host check of ``hosts add`` bootstrap, run by the owner's M1 acceptance (#50).
 
 Opt in with ``SPECTRACUT_E2E_HOSTS=legion,mrdubey-1`` (SSH aliases of unregistered render
-hosts reachable from this machine). Without it the test is skipped; the same path runs
+hosts reachable from this machine); ``SPECTRACUT_E2E_ROLE`` and ``SPECTRACUT_E2E_GPU``
+pick the role and ``--gpu`` (a non-admin Windows host needs the elevated command that
+``spectracut setup`` prints run once first). Without it the test is skipped; the same path runs
 against a fake runner in ``test_bootstrap.py``.
 """
 
@@ -24,6 +26,9 @@ HOST_VERSION = {
 }
 
 ALIASES = [a for a in os.environ.get("SPECTRACUT_E2E_HOSTS", "").split(",") if a]
+# e.g. SPECTRACUT_E2E_ROLE=gpu-only SPECTRACUT_E2E_GPU="RTX 4070 Ti:12" for mrdubey-1 (#142)
+ROLE = os.environ.get("SPECTRACUT_E2E_ROLE", "general")
+GPU = ["--gpu", os.environ["SPECTRACUT_E2E_GPU"]] if os.environ.get("SPECTRACUT_E2E_GPU") else []
 
 pytestmark = pytest.mark.skipif(not ALIASES, reason="SPECTRACUT_E2E_HOSTS not set")
 
@@ -35,7 +40,7 @@ def test_hosts_add_bootstraps_real_hosts_and_setup_has_nothing_left_to_install(
     monkeypatch.setenv("SPECTRACUT_HOME", str(home))
     cli = CliRunner()
     for alias in ALIASES:
-        res = cli.invoke(app, ["hosts", "add", alias, "--role", "general"])
+        res = cli.invoke(app, ["hosts", "add", alias, "--role", ROLE, *GPU])
         assert res.exit_code == 0, res.output
     assert [s.name for s in load_hosts(home)] == ALIASES
     from spectracut.setup.plan import CommandRunner

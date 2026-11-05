@@ -45,15 +45,23 @@ WHEELS = _fake_wheels()
 
 
 class FakeHost:
-    def __init__(self, os: str = "linux", fail: str | None = None) -> None:
+    def __init__(self, os: str = "linux", fail: str | None = None, admin: bool = True) -> None:
         self.os = os
         self.fail = fail
+        self.admin = admin
         self.ran: list[Step] = []
 
     def probe(self, host: str) -> HostFacts:
         if self.fail:
             raise SetupError(f"cannot reach {host} over SSH: {self.fail}")
-        return HostFacts(host, self.os, "100.64.0.9", wired=True, free_gb=500)  # type: ignore[arg-type]
+        return HostFacts(
+            host,
+            self.os,
+            "100.64.0.9",
+            wired=True,
+            free_gb=500,
+            admin=self.admin,  # type: ignore[arg-type]
+        )
 
     def run(self, step: Step) -> str | None:
         self.ran.append(step)
@@ -109,6 +117,26 @@ def test_gpu_only_host_gets_4gb_cap_and_no_build_lanes(
     (slot,) = load_hosts(home)
     assert slot.name == "mrdubey-1"
     assert slot.mem_gb == 4.0 and slot.build_lanes is False
+
+
+def test_non_admin_windows_gpu_only_host_bootstraps_with_schtasks_only(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeHost(os="windows", admin=False)
+    _use(monkeypatch, fake)
+    res = CliRunner().invoke(
+        app, ["hosts", "add", "mrdubey-1", "--role", "gpu-only", "--gpu", "RTX 4070 Ti:12"]
+    )
+    assert res.exit_code == 0, res.output
+    by_id = {s.id: s for s in fake.ran}
+    for sid in ("worker:stop:mrdubey-1", "worker:start:mrdubey-1"):
+        cmd = by_id[sid].command
+        assert "ScheduledTask" not in cmd and "Cim" not in cmd, sid
+        assert "schtasks.exe /query /tn spectracut-worker" in cmd and "if ($has)" in cmd, sid
+    assert all("Cim" not in s.command and "ScheduledTask" not in s.command for s in fake.ran)
+    (slot,) = load_hosts(home)
+    assert (slot.mem_gb, slot.build_lanes) == (4.0, False)
+    assert [(g.name, g.vram_gb) for g in slot.gpus] == [("RTX 4070 Ti", 12)]
 
 
 def test_unreachable_host_fails_with_alias_and_error_and_registers_nothing(

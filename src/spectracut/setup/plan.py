@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 import shlex
 import subprocess
@@ -29,12 +30,16 @@ from spectracut.setup.storage import (
     WINDOWS_DRIVE,
     WINDOWS_LOCAL_PATH,
     WINDOWS_TOOLS,
+    WORKER_TASK,
     Credential,
     StorageTarget,
     choose_default_host,
     plan_storage,
     storage_notes,
     wifi_warnings,
+    windows_task_restart,
+    windows_task_start,
+    windows_task_stop,
     write_file_step,
 )
 from spectracut.setup.wheels import (
@@ -52,9 +57,10 @@ SERVICE_PSEUDO = "worker-service"
 MANAGER_SERVICE = "manager-service"
 HOST_PSEUDO = "host-profile"
 WORKER_SCRIPT = "windows_worker.ps1"
+TASK_SCRIPT = "windows_worker_task.ps1"
+WORKER_ARGS = "worker-args.json"
 PROFILE_DIR = "profiles"
 LINUX_BIN = "$HOME/.local/bin"
-WORKER_TASK = "spectracut-worker"
 # Components whose files the running worker holds open: replaced only with the worker stopped.
 WORKER_FILES = ("flamenco-worker", "spectracut-host")
 SSH_ERROR = 255
@@ -103,8 +109,31 @@ def gpu_script_source() -> str:
 
 
 def worker_script_source() -> str:
-    """``windows_worker.ps1``: the per-user logon script every Windows worker runs."""
+    """``windows_worker.ps1``: the script the ``spectracut-worker`` task runs on Windows."""
     return Path(__file__).with_name(WORKER_SCRIPT).read_text(encoding="utf-8")
+
+
+def task_script_source() -> str:
+    """``windows_worker_task.ps1``: the one-time elevated script that registers the task."""
+    return Path(__file__).with_name(TASK_SCRIPT).read_text(encoding="utf-8")
+
+
+def task_script_command(home: str) -> str:
+    """The one command the owner runs in an elevated PowerShell (no secrets in it)."""
+    path = f"{home or '<the SSH account profile>'}\\spectracut\\{TASK_SCRIPT}"
+    return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{path}"'
+
+
+def worker_task_notes(facts: Mapping[str, HostFacts], hosts: Sequence[str]) -> list[str]:
+    """One note per non-admin Windows worker: the elevated command that registers its task."""
+    return [
+        f"{h} needs a one-time admin step: its SSH account is not an Administrator, so after "
+        f"this setup run open an elevated PowerShell on {h} and run "
+        f"`{task_script_command(facts[h].home)}`; it registers the {WORKER_TASK} task to run "
+        "at startup as that account and lets the account start and stop it, so later setups "
+        "need no admin"
+        for h in hosts
+    ]
 
 
 def profile_write_step(host: str, step_id: str, summary: str, rel: str, content: str) -> Step:
@@ -133,12 +162,18 @@ def _pins(manifest: Manifest, set_id: str, wheels: LocalWheels) -> dict[str, str
 def _worker_args(
     manager_url: str, target: StorageTarget, facts: Mapping[str, HostFacts], name: str, user: str
 ) -> str:
-    """Arguments of ``windows_worker.ps1``: storage drive, share and the account that maps it."""
+    """``worker-args.json`` for ``windows_worker.ps1``: Manager, drive, share and its account.
+
+    Kept out of the task's action so the task is registered once (by an admin) and later
+    setups change the worker's settings without admin.
+    """
     server = facts[target.host].address if target.kind == "host" else target.host
-    args = f'-Manager "{manager_url}" -Drive "{WINDOWS_DRIVE}" -Share "{target.share}"'
+    args = {"Manager": manager_url, "Drive": WINDOWS_DRIVE, "Share": target.share}
     if target.kind == "host" and target.host == name:
-        return f'{args} -LocalPath "{WINDOWS_LOCAL_PATH}"'
-    return f'{args} -Server "{server}" -User "{user}"'
+        args["LocalPath"] = WINDOWS_LOCAL_PATH
+    else:
+        args |= {"Server": server, "User": user}
+    return json.dumps(args, sort_keys=True)
 
 
 def _service_steps(
@@ -175,31 +210,7 @@ def _service_steps(
             ),
         ]
     if facts.os == "windows":
-        # A per-user logon task needs no admin; at-startup tasks do.
-        cmd = (
-            f"$s = Join-Path $env:USERPROFILE 'spectracut/{WORKER_SCRIPT}'; "
-            "Unregister-ScheduledTask -TaskName spectracut-worker -Confirm:$false "
-            "-ErrorAction SilentlyContinue; "
-            "Register-ScheduledTask -TaskName spectracut-worker -Force "
-            "-Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "
-            "('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $s + '\" "
-            f"{worker_args}')) "
-            '-Trigger (New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\\$env:USERNAME") '
-            "-Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
-            "-DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0)) "
-            "| Out-Null; Start-ScheduledTask -TaskName spectracut-worker"
-        )
-        return [
-            Step(
-                name,
-                f"service:worker:{name}",
-                "register the Worker logon task",
-                cmd,
-                "powershell",
-                component=SERVICE_PSEUDO,
-                version=f"{pin}@{manager_url}#{script_hash}",
-            )
-        ]
+        return _windows_service_steps(facts, manager_url, pin, worker_args, script_hash)
     version = f"{pin}@{manager_url}#path"
     unit = (
         "[Unit]\nDescription=Flamenco Worker\n[Service]\nWorkingDirectory=%h/.local/opt/flamenco\n"
@@ -223,6 +234,61 @@ def _service_steps(
             "systemctl --user daemon-reload && systemctl --user enable --now spectracut-worker",
             component=SERVICE_PSEUDO,
             version=version,
+        ),
+    ]
+
+
+def _windows_service_steps(
+    facts: HostFacts, manager_url: str, pin: str, worker_args: str, script_hash: str
+) -> list[Step]:
+    """Worker settings and the task script under the profile, then register or restart the task.
+
+    Only an Administrator can register a task that runs at startup as this account; on
+    a standard account setup writes the files, the owner runs the task script once
+    elevated (see :func:`worker_task_notes`), and setup restarts it with schtasks.exe.
+    """
+    name = facts.name
+    write_task = (
+        f"$p = Join-Path $env:USERPROFILE 'spectracut/{TASK_SCRIPT}'; "
+        "New-Item -ItemType Directory -Force (Split-Path $p) | Out-Null; "
+        "$id = [Security.Principal.WindowsIdentity]::GetCurrent(); "
+        "$t = [Console]::In.ReadToEnd().Replace('__ACCOUNT__', $id.Name)"
+        ".Replace('__SID__', $id.User.Value).Replace('__HOME__', $env:USERPROFILE); "
+        "[IO.File]::WriteAllText($p, $t)"
+    )
+    if facts.admin:
+        cmd = (
+            f"powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
+            f"(Join-Path $env:USERPROFILE 'spectracut/{TASK_SCRIPT}'); exit $LASTEXITCODE"
+        )
+        summary = "register the Worker startup task"
+    else:
+        cmd = windows_task_restart()
+        summary = "restart the Worker task (registered by the one-time admin step)"
+    return [
+        profile_write_step(
+            name,
+            f"worker-args:{name}",
+            "write the Worker settings",
+            f"spectracut/{WORKER_ARGS}",
+            worker_args,
+        ),
+        Step(
+            name,
+            f"worker-task-script:{name}",
+            "install the one-time Worker task script",
+            write_task,
+            "powershell",
+            stdin=task_script_source(),
+        ),
+        Step(
+            name,
+            f"service:worker:{name}",
+            summary,
+            cmd,
+            "powershell",
+            component=SERVICE_PSEUDO,
+            version=f"{pin}@{manager_url}#{script_hash}",
         ),
     ]
 
@@ -286,17 +352,14 @@ def _worker_stop_start(f: HostFacts) -> tuple[Step, Step]:
     """
     if f.os == "windows":
         stop = (
-            f"Stop-ScheduledTask -TaskName {WORKER_TASK} -ErrorAction SilentlyContinue; "
+            f"{windows_task_stop()}; "
             "$root = Join-Path $env:USERPROFILE ''; "
             "$p = @(Get-Process -Name flamenco-worker, spectracut-host -ErrorAction "
             "SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($root) }); "
             "$p | Stop-Process -Force -ErrorAction SilentlyContinue; "
             "$p | ForEach-Object { $_.WaitForExit(15000) | Out-Null }; $true | Out-Null"
         )
-        start = (
-            f"if (Get-ScheduledTask -TaskName {WORKER_TASK} -ErrorAction SilentlyContinue) "
-            f"{{ Start-ScheduledTask -TaskName {WORKER_TASK} }}"
-        )
+        start = windows_task_start()
         shell: Shell = "powershell"
     else:
         stop = f"systemctl --user stop {WORKER_TASK} 2>/dev/null || true"
@@ -400,8 +463,9 @@ def build_plan(
     manager_url = f"http://{facts[CONTROL].address}:{MANAGER_PORT}"
     gpu_src = gpu_script_source()
     gpu_hash = hashlib.sha256(gpu_src.encode("utf-8")).hexdigest()[:12]
-    worker_src = worker_script_source()
+    worker_src = worker_script_source() + task_script_source()
     steps: list[Step] = []
+    need_task: list[str] = []
     for name in [CONTROL, *workers]:
         f = facts[name]
         have = state.hosts.get(name, HostState()).components
@@ -427,12 +491,20 @@ def build_plan(
         )
         if any(have.get(k) != v for k, v in want.items()):
             steps += svc
+            if name in workers and f.os == "windows" and not f.admin:
+                need_task.append(name)
+        elif name in workers and f.os == "windows" and not f.admin and not f.task:
+            need_task.append(name)
     steps += plan_storage(target, state.storage, facts, workers, cred)
     return Plan(
         set_id,
         tuple(steps),
         target,
-        tuple(storage_notes(target, facts) + wifi_warnings(facts, target)),
+        tuple(
+            storage_notes(target, facts)
+            + wifi_warnings(facts, target)
+            + worker_task_notes(facts, need_task)
+        ),
     )
 
 
@@ -569,9 +641,19 @@ class CommandRunner:
             if first.returncode != 0:
                 os = "windows"
         if os == "windows":
+            # No CIM or WMI cmdlets: a network-logon standard user is
+            # denied WMI. Admin comes from the SSH token, the NICs from .NET.
             script = (
-                "(tailscale ip -4)[0]; (Get-NetAdapter -Physical | Where-Object Status -eq Up "
-                "| ForEach-Object PhysicalMediaType) -join ','; (Get-PSDrive C).Free"
+                "(tailscale ip -4)[0]; "
+                "(@([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() "
+                "| Where-Object { $_.OperationalStatus -eq 'Up' -and "
+                "$_.NetworkInterfaceType -notin 'Loopback', 'Tunnel' }) | ForEach-Object { "
+                "if ($_.NetworkInterfaceType -eq 'Wireless80211') { '802.11' } "
+                "else { [string]$_.NetworkInterfaceType } }) -join ','; (Get-PSDrive C).Free; "
+                "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]"
+                "::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); "
+                f"$env:USERPROFILE; schtasks.exe /query /tn {WORKER_TASK} *> $null; "
+                "$LASTEXITCODE -eq 0"
             )
         else:
             script = (
@@ -588,7 +670,8 @@ class CommandRunner:
         if os == "windows":
             script = (
                 "[Environment]::ProcessorCount; "
-                "[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB, 1)"
+                "Add-Type -AssemblyName Microsoft.VisualBasic; [math]::Round((New-Object "
+                "Microsoft.VisualBasic.Devices.ComputerInfo).TotalPhysicalMemory/1GB, 1)"
             )
         else:
             script = "nproc; awk '/MemTotal/{printf \"%.1f\\n\", $2/1048576}' /proc/meminfo"
@@ -603,10 +686,25 @@ class CommandRunner:
 
 
 def parse_probe(name: str, os: Os, out: str) -> HostFacts:
-    """Probe output: Tailscale address, network device or media type, free bytes."""
+    """Probe output: Tailscale address, network device or media type, free bytes.
+
+    Windows adds: whether the SSH account is an Administrator, its profile path and
+    whether the worker task exists (``True``/``False``; a missing line keeps the default).
+    """
     lines = [ln.strip() for ln in out.splitlines()]
-    lines += [""] * (3 - len(lines))
-    address, link, free = lines[:3]
+    lines += [""] * (6 - len(lines))
+    address, link, free, admin, home, task = lines[:6]
     wired = "802.11" not in link if os == "windows" else not link.startswith("wl")
     gb = float(free) / 1e9 if free.replace(".", "", 1).isdigit() else 0.0
-    return HostFacts(name=name, os=os, address=address or name, wired=wired, free_gb=gb)
+    if os != "windows":
+        admin = home = task = ""
+    return HostFacts(
+        name=name,
+        os=os,
+        address=address or name,
+        wired=wired,
+        free_gb=gb,
+        admin=admin.lower() != "false",
+        home=home,
+        task=task.lower() != "false",
+    )

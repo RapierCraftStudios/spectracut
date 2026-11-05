@@ -91,6 +91,11 @@ class HostFacts:
     address: str
     wired: bool
     free_gb: float
+    # Windows: whether the SSH account is an Administrator, so it can register scheduled
+    # tasks (read from its token, not CIM); its %USERPROFILE%; whether the worker task exists.
+    admin: bool = True
+    home: str = ""
+    task: bool = True
 
 
 @dataclass(frozen=True)
