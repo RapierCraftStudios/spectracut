@@ -1,0 +1,36 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+:root {
+  color-scheme: dark;
+  --bg: #16181c; --panel: #1f2227; --line: #30343b; --text: #e7e9ec; --muted: #9aa1ab;
+  --accent: #4c8dff; --ok: #2fa86b; --bad: #d9534f;
+  font: 14px/1.45 system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+.bar { display: flex; gap: 16px; align-items: baseline; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.hint, .muted { color: var(--muted); }
+.hint { margin-left: auto; font-size: 12px; }
+.layout { display: grid; grid-template-columns: 260px 1fr 300px; height: calc(100vh - 42px); }
+.queue, .panel { background: var(--panel); padding: 12px; overflow: auto; }
+.queue { border-right: 1px solid var(--line); }
+.panel { border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 0; }
+#queue { list-style: none; margin: 0; padding: 0; }
+#queue button { width: 100%; text-align: left; padding: 8px; margin-bottom: 4px; background: var(--bg); }
+#queue button.selected { border-color: var(--accent); }
+#queue small { display: block; color: var(--muted); }
+.viewer { display: flex; flex-direction: column; padding: 12px; gap: 8px; min-width: 0; }
+.stage { flex: 1; display: flex; align-items: center; justify-content: center; background: #000; min-height: 240px; }
+.stage video, .stage img { max-width: 100%; max-height: 100%; image-rendering: auto; }
+.transport { display: flex; gap: 8px; align-items: center; }
+.tc { font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
+.output { max-height: 160px; overflow: auto; background: var(--panel); padding: 8px; margin: 0; font-size: 12px; }
+button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; cursor: pointer; font: inherit; }
+button:disabled { opacity: .5; cursor: default; }
+button.approve { background: var(--ok); border-color: var(--ok); }
+button.reject { background: var(--bad); border-color: var(--bad); }
+.buttons { display: flex; gap: 8px; }
+textarea { width: 100%; min-height: 56px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 6px; font: inherit; }
+#notes { padding-left: 18px; margin: 0; }
+#notes li { margin-bottom: 6px; cursor: pointer; }
+#notes .tc { color: var(--accent); }

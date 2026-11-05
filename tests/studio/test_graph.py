@@ -406,3 +406,61 @@ def test_ledger_rejects_negative_cost() -> None:
         Usage(gpu_minutes=-1.0)
     with pytest.raises(ValidationError):
         Usage(elevenlabs_characters=-5)
+
+
+# ---- revision notes (#35) ---------------------------------------------------
+
+NOTE_AT = datetime(2026, 11, 5, tzinfo=UTC)
+
+
+def _reviewed_board() -> tuple[ProductionGraph, FakeRunner]:
+    g = ProductionGraph("p", gates=GatePolicy(defaults={"board": GateMode.HUMAN}))
+    g.add_nodes([node("board"), node("render", "board")])
+    runner = FakeRunner()
+    g.run(runner)
+    assert g.status("board") is NodeStatus.AWAITING_APPROVAL
+    return g, runner
+
+
+def test_frame_note_reaches_the_department_on_rebuild() -> None:
+    from spectracut.studio import RevisionNote
+
+    g, runner = _reviewed_board()
+    note = RevisionNote(
+        node_id="board", frame=12, timecode="00:00:00:12", text="logo too small", created_at=NOTE_AT
+    )
+    g.add_note(note)
+    g.reject("board", "see notes")
+    g.invalidate("board")
+    runner.contexts.clear()
+    g.run(runner)
+    ctx = next(c for c in runner.contexts if c.spec.id == "board")
+    assert ctx.notes == (note,)
+    assert ctx.notes[0].frame == 12 and ctx.notes[0].text == "logo too small"
+
+
+def test_notes_survive_snapshot_and_old_snapshots_load() -> None:
+    from spectracut.studio import RevisionNote
+    from spectracut.studio.graph import GraphSnapshot
+
+    g, _ = _reviewed_board()
+    g.add_note(RevisionNote(node_id="board", frame=3, text="warmer key", created_at=NOTE_AT))
+    snap = GraphSnapshot.model_validate_json(g.snapshot().model_dump_json())
+    again = ProductionGraph.from_snapshot(snap)
+    assert [n.text for n in again.notes("board")] == ["warmer key"]
+
+    legacy = json.loads(g.snapshot().model_dump_json())
+    del legacy["notes"]
+    old = ProductionGraph.from_snapshot(GraphSnapshot.model_validate(legacy))
+    assert old.notes("board") == ()
+
+
+def test_approve_clears_notes_and_unknown_node_note_fails() -> None:
+    from spectracut.studio import RevisionNote
+
+    g, _ = _reviewed_board()
+    g.add_note(RevisionNote(node_id="board", frame=0, text="ok after fix", created_at=NOTE_AT))
+    g.approve("board")
+    assert g.notes("board") == ()
+    with pytest.raises(KeyError):
+        g.add_note(RevisionNote(node_id="nope", text="x", created_at=NOTE_AT))

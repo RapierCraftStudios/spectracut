@@ -7,7 +7,8 @@ each node it:
 1. resolves the node's department and checks the department produces its kind;
 2. validates the node's inputs against the department's declared input models;
 3. assembles the task context from canon, brief, the node's declared inputs, its
-   params and the Critic's feedback, and nothing else;
+   params, the Critic's feedback and reviewers' revision notes (frame-pinned
+   comments from the review page), and nothing else;
 4. calls the provider with the skill pack's ``prompt.md`` as the system prompt,
    holding a GPU lease (GPU departments) and an AI slot (always), each bounded by
    :class:`CapacityLimits`;
@@ -33,15 +34,16 @@ from spectracut.spec._base import StrictModel, canonical_json
 from spectracut.spec.brief import Brief, CreativeBrief
 from spectracut.studio.department import Department
 from spectracut.studio.gates import Critic, CriticVerdict
-from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
+from spectracut.studio.graph import ProductionGraph, RevisionNote, RunContext, RunResult
 from spectracut.studio.ledger import Usage
 from spectracut.studio.node import NodeSpec
 
 #: Prepended to the task context in every department prompt.
 TASK_INSTRUCTION = (
     "Produce this node's output as JSON matching the given schema. Use only the task "
-    "context below: the canon, the brief, the node's inputs, its params and any Critic "
-    "feedback on the previous attempt."
+    "context below: the canon, the brief, the node's inputs, its params, any Critic "
+    "feedback on the previous attempt and any reviewer revision notes (pinned to frames); "
+    "address every revision note."
 )
 
 #: Ledger ``ai_usage`` metric: UTF-8 bytes of the assembled task context.
@@ -69,18 +71,21 @@ class TaskContext(StrictModel):
     """Accepted outputs of the node's declared inputs, by input id."""
     params: dict[str, JsonValue]
     feedback: CriticVerdict | None
+    notes: tuple[RevisionNote, ...] = ()
+    """Reviewer revision notes on the node, oldest first."""
 
 
 def assemble_context(
     ctx: RunContext, *, canon: Canon | None, brief: Brief | CreativeBrief | None
 ) -> TaskContext:
-    """The task context for ``ctx``: canon, brief, declared inputs, params, feedback."""
+    """The task context for ``ctx``: canon, brief, declared inputs, params, feedback, notes."""
     return TaskContext(
         canon=canon,
         brief=brief,
         inputs={i: ctx.inputs[i] for i in ctx.spec.inputs if i in ctx.inputs},
         params=dict(ctx.spec.params),
         feedback=ctx.feedback,
+        notes=ctx.notes,
     )
 
 

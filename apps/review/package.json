@@ -2,6 +2,14 @@
   "name": "@spectracut/review",
   "version": "0.0.0",
   "private": true,
-  "description": "Local review page served by `spectracut serve` (placeholder).",
-  "license": "AGPL-3.0-or-later"
+  "description": "Local review page served by `spectracut serve`: gate queue, frame-accurate player, approve/reject and frame notes.",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "test:e2e": "SPECTRACUT_E2E=1 vitest run test/review.e2e.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "playwright-core": "1.62.1"
+  }
 }

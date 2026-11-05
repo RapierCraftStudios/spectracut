@@ -27,7 +27,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from pydantic import Field, JsonValue
+from pydantic import AwareDatetime, Field, JsonValue
 
 from spectracut.spec._base import ContentHash, Slug, StrictModel, content_hash
 from spectracut.studio.gates import Critic, CriticVerdict, GateDecision, GateMode, GatePolicy
@@ -36,6 +36,23 @@ from spectracut.studio.node import NEEDS_BUILD, NodeSpec, NodeState, NodeStatus,
 from spectracut.studio.profiles import QualityProfile
 
 DEFAULT_TIER = Tier.PREVIEW
+
+
+class RevisionNote(StrictModel):
+    """A reviewer's note on a node, optionally pinned to one frame of its media.
+
+    Notes are kept on the graph, handed to the node's department on every
+    rebuild (:attr:`RunContext.notes`) and cleared when a person approves it.
+    """
+
+    node_id: Slug
+    frame: int | None = Field(default=None, ge=0)
+    """Zero-based frame the note is pinned to; ``None`` for the whole node."""
+    timecode: str | None = None
+    """``HH:MM:SS:FF`` of ``frame`` as shown to the reviewer."""
+    text: str = Field(min_length=1, max_length=4000)
+    author: str = Field(default="reviewer", min_length=1, max_length=100)
+    created_at: AwareDatetime
 
 
 class RunContext(StrictModel):
@@ -49,6 +66,8 @@ class RunContext(StrictModel):
     attempt: int
     feedback: CriticVerdict | None = None
     """The Critic's verdict on the previous attempt, when revising."""
+    notes: tuple[RevisionNote, ...] = ()
+    """Reviewer revision notes on this node (frame-pinned comments), oldest first."""
 
 
 class RunResult(StrictModel):
@@ -119,6 +138,8 @@ class GraphSnapshot(StrictModel):
     """Outputs awaiting a person, by node id."""
     decisions: dict[str, GateDecision] = Field(default_factory=dict)
     ledger: tuple[LedgerEntry, ...] = ()
+    notes: dict[str, tuple[RevisionNote, ...]] = Field(default_factory=dict)
+    """Reviewer revision notes, by node id."""
 
 
 class ProductionGraph:
@@ -148,6 +169,7 @@ class ProductionGraph:
         self._cache: dict[str, _Accepted] = {}
         self._pending: dict[str, tuple[str, _Accepted]] = {}
         self._decisions: dict[str, GateDecision] = {}
+        self._notes: dict[str, tuple[RevisionNote, ...]] = {}
         self._lock = threading.RLock()
 
     # ---- persistence -------------------------------------------------------
@@ -171,6 +193,7 @@ class ProductionGraph:
                 },
                 decisions=dict(self._decisions),
                 ledger=self.ledger.entries(),
+                notes={nid: n for nid, n in self._notes.items() if n},
             )
 
     @classmethod
@@ -197,6 +220,7 @@ class ProductionGraph:
             ("states", snap.states),
             ("pending", snap.pending),
             ("decisions", snap.decisions),
+            ("notes", snap.notes),
         ):
             unknown = sorted(set(table) - ids)
             if unknown:
@@ -207,6 +231,7 @@ class ProductionGraph:
             nid: (p.key, _Accepted(p.output, p.output_hash)) for nid, p in snap.pending.items()
         }
         graph._decisions = dict(snap.decisions)
+        graph._notes = {nid: tuple(n) for nid, n in snap.notes.items() if n}
         return graph
 
     # ---- structure ---------------------------------------------------------
@@ -261,6 +286,7 @@ class ProductionGraph:
         self._states.pop(node_id, None)
         self._pending.pop(node_id, None)
         self._decisions.pop(node_id, None)
+        self._notes.pop(node_id, None)
 
     def _install(self, specs: dict[str, NodeSpec]) -> None:
         dependants: dict[str, list[str]] = {nid: [] for nid in specs}
@@ -336,12 +362,29 @@ class ProductionGraph:
             return 0
         return self.profile.revision_budget.get(spec.kind, 0)
 
+    # ---- revision notes ----------------------------------------------------
+
+    def add_note(self, note: RevisionNote) -> None:
+        """Pin a reviewer's note to ``note.node_id``; its department sees it on rebuild."""
+        self.spec(note.node_id)
+        with self._lock:
+            self._notes[note.node_id] = (*self._notes.get(note.node_id, ()), note)
+
+    def notes(self, node_id: str) -> tuple[RevisionNote, ...]:
+        """Reviewer notes on ``node_id``, oldest first."""
+        self.spec(node_id)
+        return self._notes.get(node_id, ())
+
     # ---- human gate --------------------------------------------------------
 
     def approve(self, node_id: str, comment: str = "") -> None:
-        """Approve a node awaiting a person; its dependants run on the next run."""
+        """Approve a node awaiting a person; its dependants run on the next run.
+
+        The node's revision notes are cleared: the approved output answers them.
+        """
         key, accepted = self._awaiting(node_id)
         self._cache[key] = accepted
+        self._notes.pop(node_id, None)
         self._decide(node_id, human="approved", comment=comment)
         self._states[node_id] = self._states[node_id].model_copy(
             update={"status": NodeStatus.CLEAN, "output_hash": accepted.output_hash}
@@ -512,6 +555,7 @@ class ProductionGraph:
         max_attempts = 1 + (self.revision_budget(spec) if reviewed is not None else 0)
         with self._lock:
             inputs = {i: self._cache[self._states[i].key or ""].output for i in spec.inputs}
+            notes = self._notes.get(spec.id, ())
         feedback: CriticVerdict | None = None
         for attempt in range(1, max_attempts + 1):
             with self._lock:
@@ -519,7 +563,13 @@ class ProductionGraph:
                     status=NodeStatus.RUNNING, tier=tier, key=key, attempts=attempt
                 )
             ctx = RunContext(
-                spec=spec, tier=tier, key=key, inputs=inputs, attempt=attempt, feedback=feedback
+                spec=spec,
+                tier=tier,
+                key=key,
+                inputs=inputs,
+                attempt=attempt,
+                feedback=feedback,
+                notes=notes,
             )
             started_at, start = self._now(), self._clock()
             try:

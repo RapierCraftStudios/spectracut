@@ -1086,6 +1086,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "starlette" },
     { name = "typer" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -1107,6 +1108,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "starlette", specifier = ">=1.10,<2" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", specifier = ">=0.30,<1" },
 ]
 
 [package.metadata.requires-dev]
