@@ -523,14 +523,16 @@ def worker_credentials_reset_step(f: HostFacts) -> Step:
     """
     stop, start = _worker_stop_start(f)
     if f.os == "windows":
-        delete = f"Remove-Item -Force -ErrorAction SilentlyContinue ({WINDOWS_CREDENTIALS})"
+        delete = (
+            f"Remove-Item -LiteralPath ({WINDOWS_CREDENTIALS}) -Force -ErrorAction SilentlyContinue"
+        )
     else:
         delete = f'rm -f "{LINUX_CREDENTIALS}"'
     return Step(
         f.name,
         f"worker:reset-credentials:{f.name}",
         "reset the Flamenco Worker credentials (the Manager does not know it)",
-        f"{stop}; {delete}; {start}",
+        f"{stop.command}; {delete}; {start.command}",
         stop.shell,
         kind="task",
     )
