@@ -165,7 +165,7 @@ export function parseArgs(argv) {
 }
 
 /** Drop credentials, query and fragment from a URL before logging it. */
-export function redact(url) {
+export function redactUrl(url) {
   try {
     const u = new URL(url);
     return `${u.origin}${u.pathname}`;
@@ -262,7 +262,7 @@ export async function main(argv, deps = {}) {
   try {
     const outDir = join(work, "capture");
     const url = resolveUrl(args.stagingUrl, demo.path);
-    log(`spectracut-demo: capturing ${redact(url)} at ${demo.fps} fps`);
+    log(`spectracut-demo: capturing ${redactUrl(url)} at ${demo.fps} fps`);
     const { launchAndCapture } = await loadCapture();
     await launchAndCapture({
       url,

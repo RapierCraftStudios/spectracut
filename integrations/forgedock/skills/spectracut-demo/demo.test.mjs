@@ -16,7 +16,7 @@ import {
   main,
   parseArgs,
   parseDemoBlock,
-  redact,
+  redactUrl,
   resolveScript,
   resolveUrl,
 } from "./demo.mjs";
@@ -104,7 +104,7 @@ describe("helpers", () => {
   });
 
   it("redacts credentials and query strings", () => {
-    expect(redact("https://u:p@s.test/a?token=1#f")).toBe("https://s.test/a");
+    expect(redactUrl("https://u:p@s.test/a?token=1#f")).toBe("https://s.test/a");
   });
 });
 
