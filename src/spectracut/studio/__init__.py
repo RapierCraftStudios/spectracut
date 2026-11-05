@@ -10,7 +10,14 @@ from spectracut.studio.department import (
     SkillPack,
 )
 from spectracut.studio.gates import Critic, CriticVerdict, GateDecision, GateMode, GatePolicy
-from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
+from spectracut.studio.graph import (
+    ProductionGraph,
+    RevisionNote,
+    RunContext,
+    Runner,
+    RunReport,
+    RunResult,
+)
 from spectracut.studio.ledger import Ledger, LedgerEntry, LedgerTotals, Usage
 from spectracut.studio.node import NodeSpec, NodeState, NodeStatus, Tier, node_key
 from spectracut.studio.producer import BudgetCaps, Producer, ProducerReport, ProductionPlan
@@ -40,6 +47,7 @@ __all__ = [
     "ProductionGraph",
     "ProductionPlan",
     "QualityProfile",
+    "RevisionNote",
     "RunContext",
     "RunReport",
     "RunResult",

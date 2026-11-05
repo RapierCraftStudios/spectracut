@@ -69,6 +69,13 @@ jobs:
         run: npx playwright-core install --with-deps --only-shell chromium
       - name: Capture e2e (headless Chromium)
         run: SPECTRACUT_E2E=1 npx vitest run packages/capture/test/capture.e2e.test.ts
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python env for review e2e
+        run: uv sync --locked
+      - name: Review page e2e (headless Chromium against spectracut serve)
+        run: SPECTRACUT_E2E=1 npx vitest run apps/review/test/review.e2e.test.ts
 
   docker:
     runs-on: ubuntu-latest

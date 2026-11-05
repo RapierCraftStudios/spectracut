@@ -1,0 +1,55 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SpectraCut review</title>
+  <link rel="stylesheet" href="/review/review.css">
+  <script type="module" src="/review/review.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <strong>SpectraCut review</strong>
+    <span id="current" data-testid="current">Nothing selected</span>
+    <span class="hint">Local, no account. Start and steer productions from the CLI or Claude Code.</span>
+  </header>
+  <main class="layout">
+    <aside class="queue">
+      <h2>Waiting for you</h2>
+      <ul id="queue" data-testid="queue"></ul>
+      <p id="queue-empty" class="muted" hidden>No gates are waiting.</p>
+    </aside>
+    <section class="viewer">
+      <div class="stage">
+        <video id="video" data-testid="video" preload="auto" playsinline muted hidden></video>
+        <img id="still" data-testid="still" alt="" hidden>
+        <audio id="audio" data-testid="audio" preload="auto" hidden></audio>
+        <p id="no-media" class="muted">Select a node to review.</p>
+      </div>
+      <div class="transport">
+        <button id="prev" data-testid="prev" title="Previous frame (Left)">&#9664; Frame</button>
+        <button id="play" data-testid="play" title="Play / pause (Space)">Play</button>
+        <button id="next" data-testid="next" title="Next frame (Right)">Frame &#9654;</button>
+        <span class="tc">TC <output id="timecode" data-testid="timecode">00:00:00:00</output></span>
+        <span class="tc">Frame <output id="frame" data-testid="frame">0</output></span>
+        <span class="tc muted" id="fps" data-testid="fps"></span>
+      </div>
+      <pre id="output" class="output" data-testid="output"></pre>
+    </section>
+    <aside class="panel">
+      <h2>Decision</h2>
+      <textarea id="decision-comment" data-testid="decision-comment" placeholder="Comment for the gate (optional)"></textarea>
+      <div class="buttons">
+        <button id="approve" data-testid="approve" class="approve" disabled>Approve</button>
+        <button id="reject" data-testid="reject" class="reject" disabled>Request changes</button>
+      </div>
+      <h2>Notes on frames</h2>
+      <textarea id="note-text" data-testid="note-text" placeholder="Note pinned to the current frame"></textarea>
+      <button id="add-note" data-testid="add-note" disabled>Pin note to frame</button>
+      <ol id="notes" data-testid="notes"></ol>
+      <p id="status" class="muted" data-testid="status" role="status"></p>
+    </aside>
+  </main>
+</body>
+</html>

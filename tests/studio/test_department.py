@@ -336,7 +336,8 @@ def test_context_is_canon_brief_and_declared_inputs_only(monkeypatch: pytest.Mon
     g.run(runner)
     prompt = provider.prompts[-1]
     ctx = context_of(prompt)
-    assert set(ctx) == {"canon", "brief", "inputs", "params", "feedback"}
+    assert set(ctx) == {"canon", "brief", "inputs", "params", "feedback", "notes"}
+    assert ctx["notes"] == []
     assert ctx["canon"]["id"] == "spellwise-canon"
     assert ctx["brief"]["product"] == "Spellwise"
     assert ctx["inputs"] == {"l0": g.output("l0")}
