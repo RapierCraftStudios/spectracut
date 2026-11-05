@@ -244,16 +244,35 @@ def manager_config(listen: str, windows_drive: str = WINDOWS_DRIVE) -> str:
     return yaml.safe_dump(doc, sort_keys=False)
 
 
+HOME_PREFIX = "$HOME/"
+UNSAFE_PATH_CHARS = ('"', "`", "\\", "$", "\n")
+
+
 def write_file_step(
     host: str, os: str, step_id: str, summary: str, path: str, content: str, mode: str = "644"
 ) -> Step:
-    """Write ``content`` to ``path`` on the host, content via stdin (framed on Windows)."""
+    """Write ``content`` to ``path`` on the host, content via stdin (framed on Windows).
+
+    A Linux ``$HOME/...`` path is expanded by the remote shell and written without sudo;
+    any other Linux path is a literal system path written with sudo.
+    """
     if os == "windows":
         cmd = (
             f"$d = Split-Path '{path}'; New-Item -ItemType Directory -Force $d | Out-Null; "
             f"[IO.File]::WriteAllText('{path}', {STEP_INPUT})"
         )
         return Step(host, step_id, summary, cmd, "powershell", stdin=content, kind="write")
+    if path.startswith(HOME_PREFIX):
+        # Under the SSH user's home: expand $HOME (double quotes) and write as that user, so
+        # the folders stay user-owned for ``systemctl --user`` and later user-run steps.
+        rest = path[len(HOME_PREFIX) :]
+        if not rest or any(c in rest for c in UNSAFE_PATH_CHARS):
+            raise ValueError(f"unsafe path under $HOME: {path!r}")
+        q = f'"{path}"'
+        cmd = f'd=$(dirname {q}); mkdir -p "$d" && tee {q} >/dev/null && chmod {mode} {q}'
+        return Step(host, step_id, summary, cmd, "sh", stdin=content, kind="write")
+    if "$" in path or "'" in path:
+        raise ValueError(f"path must be absolute or start with $HOME/: {path!r}")
     cmd = (
         f"d=$(dirname '{path}'); sudo mkdir -p \"$d\" && sudo tee '{path}' >/dev/null "
         f"&& sudo chmod {mode} '{path}'"
