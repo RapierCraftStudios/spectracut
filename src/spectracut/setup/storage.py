@@ -14,6 +14,7 @@ forward slashes (Flamenco eats backslashes). Passwords travel on stdin only.
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -369,6 +370,7 @@ def _serve_steps(
         f"   hosts allow = {TAILSCALE_RANGE} 127.0.0.1\n   hosts deny = 0.0.0.0/0\n"
         "   server min protocol = SMB3\n"
     )
+    qfolder, quser = shlex.quote(folder), shlex.quote(cred.user)
     steps = [
         write_file_step(
             target.host,
@@ -382,12 +384,12 @@ def _serve_steps(
             target.host,
             "storage:serve",
             "serve the Samba share (Tailscale-only)",
-            f"sudo mkdir -p '{folder}' && id -u {cred.user} >/dev/null 2>&1 "
-            f"|| sudo useradd --system --no-create-home --shell /usr/bin/nologin {cred.user}; "
-            f"sudo chown {cred.user} '{folder}'; "
+            f"sudo mkdir -p {qfolder} && id -u {quser} >/dev/null 2>&1 "
+            f"|| sudo useradd --system --no-create-home --shell /usr/bin/nologin {quser}; "
+            f"sudo chown {quser} {qfolder}; "
             "grep -q 'spectracut.d' /etc/samba/smb.conf "
             "|| echo 'include = /etc/samba/spectracut.d/flamenco.conf' | sudo tee -a /etc/samba/smb.conf >/dev/null; "  # noqa: E501
-            f'read -r pw; printf \'%s\\n%s\\n\' "$pw" "$pw" | sudo smbpasswd -s -a {cred.user}; '
+            f'read -r pw; printf \'%s\\n%s\\n\' "$pw" "$pw" | sudo smbpasswd -s -a {quser}; '
             "sudo systemctl enable --now smb && sudo systemctl restart smb",
             "sh",
             stdin=cred.password + "\n",
@@ -402,7 +404,7 @@ def _serve_steps(
                 f"bind {folder} at {LINUX_PATH}",
                 f"sudo mkdir -p {LINUX_PATH}; "
                 f"mountpoint -q {LINUX_PATH} && sudo umount {LINUX_PATH}; "
-                f"sudo mount --bind '{folder}' {LINUX_PATH}",
+                f"sudo mount --bind {qfolder} {LINUX_PATH}",
             )
         )
     return steps
@@ -431,7 +433,7 @@ def _attach_steps(name: str, server: str, share: str, cred: Credential) -> list[
             f"storage:attach:{name}",
             f"mount the share at {LINUX_PATH}",
             f"sudo mkdir -p {LINUX_PATH}; mountpoint -q {LINUX_PATH} && sudo umount {LINUX_PATH}; "
-            f"sudo mount -t cifs '//{server}/{share}' {LINUX_PATH} "
+            f"sudo mount -t cifs {shlex.quote(f'//{server}/{share}')} {LINUX_PATH} "
             f"-o credentials={CRED_FILE},vers=3.0,uid=$(id -u),gid=$(id -g)",
         ),
     ]
@@ -524,7 +526,8 @@ def _migrate_steps(server: str, share: str, cred: Credential) -> list[Step]:
             CONTROL,
             "storage:migrate",
             "copy existing files to the new storage",
-            f"sudo mkdir -p {MIGRATE_MOUNT} && sudo mount -t cifs '//{server}/{share}' "
+            f"sudo mkdir -p {MIGRATE_MOUNT} && sudo mount -t cifs "
+            f"{shlex.quote(f'//{server}/{share}')} "
             f"{MIGRATE_MOUNT} -o credentials={CRED_FILE},vers=3.0,uid=$(id -u),gid=$(id -g) "
             f"&& rsync -a {LINUX_PATH}/ {MIGRATE_MOUNT}/; rc=$?; "
             f"sudo umount {MIGRATE_MOUNT}; exit $rc",

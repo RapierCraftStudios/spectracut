@@ -995,6 +995,14 @@ class CommandRunner:
 _PROBE_LINE = re.compile(r"^(address|link|free|admin|home|task|drives)=(.*)$")
 
 
+def _valid_address(value: str, fallback: str) -> str:
+    """The probed address only when it is an IP: remote output never reaches a shell as text."""
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return fallback
+
+
 def parse_probe(name: str, os: Os, out: str) -> HostFacts:
     """Probe output: labelled ``key=value`` lines, so a missing field never shifts the rest.
 
@@ -1016,7 +1024,7 @@ def parse_probe(name: str, os: Os, out: str) -> HostFacts:
     return HostFacts(
         name=name,
         os=os,
-        address=f.get("address") or name,
+        address=_valid_address(f.get("address", ""), name),
         wired=wired,
         free_gb=gb,
         admin=f.get("admin", "").lower() != "false" if win else True,
