@@ -31,6 +31,15 @@ _EXPORTS: dict[str, str] = {
     "SessionError": "ardour",
     "build_lua": "ardour",
     "reload_export_lua": "ardour",
+    "SoundEvent": "events",
+    "capture_events": "events",
+    "collect_events": "events",
+    "edit_events": "events",
+    "recipe_events": "events",
+    "cue_recipe": "cues",
+    "cues_for_events": "cues",
+    "ProceduralGenerator": "procedural.synth",
+    "SuperColliderGenerator": "procedural.supercollider",
 }
 
 
