@@ -82,7 +82,9 @@ def test_compiles_one_exec_task_per_chunk() -> None:
 
 def test_job_type_declares_settings() -> None:
     keys = [s["key"] for s in _compile(SETTINGS)["jobType"]["settings"]]
-    assert keys == ["job_file", "frames", "chunk_size", "output_dir"]
+    assert keys == ["job_file", "frames", "chunk_size", "output_dir", "assets_dir"]
+    (assets,) = [s for s in _compile(SETTINGS)["jobType"]["settings"] if s["key"] == "assets_dir"]
+    assert assets["subtype"] == "dir_path" and assets["required"] is False
 
 
 def test_single_frame() -> None:
@@ -95,3 +97,12 @@ def test_single_frame() -> None:
 )
 def test_rejects_bad_settings(change: dict[str, Any]) -> None:
     assert "error" in _compile({**SETTINGS, **change})
+
+
+def test_assets_dir_is_passed_to_the_host_when_set() -> None:
+    tasks = _compile({**SETTINGS, "assets_dir": "/shared/assets"})["tasks"]
+    for task in tasks:
+        (cmd,) = task["commands"]
+        assert cmd["params"]["args"][-2:] == ["--assets-dir", "/shared/assets"]
+    (cmd,) = _compile({**SETTINGS, "assets_dir": ""})["tasks"][0]["commands"]
+    assert "--assets-dir" not in cmd["params"]["args"]

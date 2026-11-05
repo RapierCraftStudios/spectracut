@@ -30,7 +30,7 @@ from bpy_runtime.ops.camera import (
 )
 from bpy_runtime.ops.inspect import inspect_bounds, inspect_framing
 from bpy_runtime.ops.look import look_set_view
-from bpy_runtime.ops.material import material_apply_preset
+from bpy_runtime.ops.material import material_apply_preset, material_apply_screen
 from bpy_runtime.ops.props import render_set_property
 from bpy_runtime.ops.scene import object_import_gltf
 
@@ -42,6 +42,7 @@ TOOL_NAMES = frozenset(
         "object.add_primitive",
         "object.import_gltf",
         "material.apply_preset",
+        "material.apply_screen",
         "camera.add",
         "camera.set_lens",
         "camera.set_transform",
@@ -161,6 +162,7 @@ TOOLS: dict[str, Callable[[Any, dict[str, Any]], Report]] = {
     "render.set_resolution": render_set_resolution,
     "object.import_gltf": object_import_gltf,
     "material.apply_preset": material_apply_preset,
+    "material.apply_screen": material_apply_screen,
     "camera.set_dof": camera_set_dof,
     "camera.move": camera_move,
     "camera.add_aspect": camera_add_aspect,

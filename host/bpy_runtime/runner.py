@@ -13,7 +13,9 @@ directory, then renders the requested frames. It never evaluates code.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -46,15 +48,200 @@ def load_manifest(path: Path, env: dict[str, str]) -> dict[str, Any]:
     return manifest
 
 
-def write_report(output_dir: Path, reports: list[dict[str, Any]]) -> Path:
-    """Write the steps' JSON reports to ``output_dir/report.json``."""
+def write_report(
+    output_dir: Path, reports: list[dict[str, Any]], scene_graph_hash: str | None = None
+) -> Path:
+    """Write the steps' reports and the scene-graph hash to ``output_dir/report.json``.
+
+    The write is atomic: Flamenco chunk tasks of one job share the output dir.
+    """
+    body: dict[str, Any] = {"steps": reports}
+    if scene_graph_hash is not None:
+        body["scene_graph_hash"] = scene_graph_hash
     try:
-        text = json.dumps({"steps": reports}, sort_keys=True, allow_nan=False, indent=2)
+        text = json.dumps(body, sort_keys=True, allow_nan=False, indent=2)
     except (TypeError, ValueError) as exc:
         raise RunnerRefused(f"[runtime.error] step reports are not JSON: {exc}") from exc
     path = output_dir / "report.json"
-    path.write_text(text + "\n", encoding="utf-8")
+    tmp = output_dir / f".report-{os.getpid()}.json.tmp"
+    tmp.write_text(text + "\n", encoding="utf-8")
+    os.replace(tmp, path)
     return path
+
+
+# --- scene-graph hash -------------------------------------------------------------------
+
+ROUND_DIGITS = 6
+_MAX_DEPTH = 4
+
+
+def plain(value: Any, depth: int = 0) -> Any:
+    """Turn a bpy value into canonical JSON data (floats rounded, vectors as lists).
+
+    Anything that is not a number, string or sequence becomes its type name, so
+    the result never depends on memory addresses.
+    """
+    if value is None or isinstance(value, bool | str):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return str(value)
+        rounded = round(value, ROUND_DIGITS)
+        return 0.0 if rounded == 0 else rounded
+    if depth < _MAX_DEPTH:
+        try:
+            items = list(value)
+        except TypeError:
+            items = None
+        if items is not None:
+            return [plain(v, depth + 1) for v in items]
+    return type(value).__name__
+
+
+def canonical_scene_hash(state: Any) -> str:
+    """sha256 of the canonical JSON of ``state`` (sorted keys, compact, rounded floats)."""
+    text = json.dumps(plain_tree(state), sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def plain_tree(state: Any) -> Any:
+    if isinstance(state, dict):
+        return {str(k): plain_tree(v) for k, v in state.items()}
+    if isinstance(state, list | tuple):
+        return [plain_tree(v) for v in state]
+    return plain(state)
+
+
+def _name(obj: Any) -> str | None:
+    name = getattr(obj, "name", None) if obj is not None else None
+    return name if isinstance(name, str) else None
+
+
+def _items(collection: Any) -> list[Any]:
+    try:
+        items = list(collection)
+    except TypeError:
+        return []
+    return sorted(items, key=lambda o: _name(o) or "")
+
+
+def _file_sha256(path: str) -> str | None:
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.file_digest(fh, "sha256").hexdigest()
+    except OSError:
+        return None
+
+
+def _image_path(image: Any) -> str | None:
+    path = getattr(image, "filepath", None)
+    if not isinstance(path, str) or not path or path.startswith("//"):
+        return None
+    return path
+
+
+def scene_state(bpy: Any) -> dict[str, Any]:
+    """Collect what the frames depend on: objects, materials, images, camera, render.
+
+    Image *contents* are hashed, never their paths, so hosts that mount the assets
+    dir at different places (``S:`` on Windows) agree.
+    """
+    scene = bpy.context.scene
+    objects = []
+    for obj in _items(bpy.data.objects):
+        entry: dict[str, Any] = {
+            "name": _name(obj),
+            "type": getattr(obj, "type", None),
+            "parent": _name(getattr(obj, "parent", None)),
+            "matrix_world": getattr(obj, "matrix_world", None),
+            "materials": [_name(s) for s in _items(getattr(obj, "material_slots", []))],
+        }
+        if entry["type"] == "LIGHT":
+            data = obj.data
+            entry["light"] = {
+                "type": getattr(data, "type", None),
+                "energy": getattr(data, "energy", None),
+                "color": getattr(data, "color", None),
+            }
+        objects.append(entry)
+    materials = []
+    for mat in _items(bpy.data.materials):
+        nodes = []
+        tree = getattr(mat, "node_tree", None) if getattr(mat, "use_nodes", False) else None
+        for node in _items(getattr(tree, "nodes", [])):
+            inputs = {}
+            for sock in getattr(node, "inputs", []):
+                if hasattr(sock, "default_value"):
+                    key = getattr(sock, "identifier", None) or _name(sock)
+                    inputs[str(key)] = sock.default_value
+            nodes.append(
+                {
+                    "name": _name(node),
+                    "type": getattr(node, "bl_idname", None),
+                    "image": _name(getattr(node, "image", None)),
+                    "inputs": inputs,
+                }
+            )
+        materials.append(
+            {
+                "name": _name(mat),
+                "diffuse_color": getattr(mat, "diffuse_color", None),
+                "nodes": nodes,
+            }
+        )
+    images = {}
+    for image in _items(bpy.data.images):
+        path = _image_path(image)
+        images[_name(image) or ""] = _file_sha256(path) if path else None
+    camera = scene.camera
+    cam: dict[str, Any] | None = None
+    if camera is not None:
+        data = camera.data
+        dof = data.dof
+        cam = {
+            "name": _name(camera),
+            "matrix_world": camera.matrix_world,
+            "lens": data.lens,
+            "sensor_width": data.sensor_width,
+            "sensor_height": data.sensor_height,
+            "sensor_fit": data.sensor_fit,
+            "dof": {
+                "use_dof": dof.use_dof,
+                "focus_object": _name(dof.focus_object),
+                "focus_distance": dof.focus_distance,
+                "aperture_fstop": dof.aperture_fstop,
+            },
+        }
+    render = scene.render
+    view = scene.view_settings
+    settings = {
+        "engine": render.engine,
+        "resolution": [render.resolution_x, render.resolution_y, render.resolution_percentage],
+        "fps": render.fps,
+        "film_transparent": render.film_transparent,
+        "use_motion_blur": render.use_motion_blur,
+        "motion_blur_shutter": render.motion_blur_shutter,
+        "cycles_samples": scene.cycles.samples,
+        "eevee_samples": scene.eevee.taa_render_samples,
+        "view_transform": view.view_transform,
+        "look": view.look,
+        "exposure": view.exposure,
+        "gamma": view.gamma,
+    }
+    return {
+        "objects": objects,
+        "materials": materials,
+        "images": images,
+        "camera": cam,
+        "render": settings,
+    }
+
+
+def scene_graph_hash(bpy: Any) -> str:
+    """The deterministic hash of the built scene (frame range excluded: chunks share it)."""
+    return canonical_scene_hash(scene_state(bpy))
 
 
 def run(manifest: dict[str, Any], bpy: Any) -> None:
@@ -73,10 +260,9 @@ def run(manifest: dict[str, Any], bpy: Any) -> None:
             raise RunnerRefused(f"step {i} ({step.get('tool')}) [{code}]: {exc}") from exc
         if report is not None:
             reports.append({"index": i, "tool": step["tool"], "report": report})
-    if reports:
-        # Only ops that return data produce a report; plain build steps leave the
-        # output dir with frames only.
-        write_report(Path(manifest["output_dir"]), reports)
+    # Only ops that return data are listed under "steps"; the scene-graph hash is
+    # always written so replays can be compared.
+    write_report(Path(manifest["output_dir"]), reports, scene_graph_hash(bpy))
     scene = bpy.context.scene
     scene.frame_start = int(manifest["frame_start"])
     scene.frame_end = int(manifest["frame_end"])

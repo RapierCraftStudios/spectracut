@@ -19,6 +19,7 @@ ERROR_CODES = (
     "scene.object_not_found",
     "asset.path_refused",
     "framing.subject_out_of_frame",
+    "asset.hash_mismatch",
 )
 
 Report = dict[str, Any] | None

@@ -215,3 +215,30 @@ def test_status_mapping() -> None:
     assert map_status("canceled") is JobStatus.FAILED
     assert map_status("paused") is JobStatus.QUEUED
     assert map_status("something-new") is JobStatus.RUNNING
+
+
+def test_run_reports_gpu_minutes_submit_to_complete() -> None:
+    client = FakeFlamenco(["queued", "active", "completed"])
+    ticks = iter([100.0, 100.0 + 90.0])
+    executor = FlamencoExecutor(
+        client, output_dir="/shared/frames", sleep=lambda _s: None, clock=lambda: next(ticks)
+    )
+    result = executor.run(_blender_job())
+    assert result.usage.gpu_minutes == pytest.approx(1.5)
+
+
+def test_assets_dir_reaches_the_flamenco_job() -> None:
+    client = FakeFlamenco(["completed"])
+    executor = FlamencoExecutor(
+        client, output_dir="/shared/frames", sleep=lambda _s: None, assets_dir="/shared/assets"
+    )
+    executor.run(_blender_job())
+    job = _blender_job("shot-2")
+    job.payload["assets_dir"] = "/shared/brand-assets"
+    executor.run(job)
+    first, second = client.submitted
+    assert first["settings"]["assets_dir"] == "/shared/assets"
+    assert second["settings"]["assets_dir"] == "/shared/brand-assets"
+    plain = FakeFlamenco(["completed"])
+    FlamencoExecutor(plain, output_dir="/o", sleep=lambda _s: None).run(_blender_job())
+    assert "assets_dir" not in plain.submitted[0]["settings"]

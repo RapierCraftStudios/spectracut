@@ -23,6 +23,8 @@ const JOB_TYPE = {
       description: "Frames per task" },
     { key: "output_dir", type: "string", subtype: "dir_path", required: true,
       description: "Where the host writes frames and result.json" },
+    { key: "assets_dir", type: "string", subtype: "dir_path", required: false,
+      description: "Assets root on shared storage (two-way variables map it per platform)" },
   ],
 };
 
@@ -61,17 +63,16 @@ function compileJob(job) {
   for (const chunk of chunks) {
     const frames = chunk.start + "-" + chunk.end;
     const task = author.Task("render-" + frames, "blender");
-    task.addCommand(
-      author.Command("exec", {
-        exe: "spectracut-host",
-        args: [
-          "run",
-          "--job-file", settings.job_file,
-          "--frames", frames,
-          "--output", settings.output_dir,
-        ],
-      }),
-    );
+    const args = [
+      "run",
+      "--job-file", settings.job_file,
+      "--frames", frames,
+      "--output", settings.output_dir,
+    ];
+    if (typeof settings.assets_dir === "string" && settings.assets_dir !== "") {
+      args.push("--assets-dir", settings.assets_dir);
+    }
+    task.addCommand(author.Command("exec", { exe: "spectracut-host", args: args }));
     job.addTask(task);
   }
 }

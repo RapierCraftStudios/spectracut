@@ -10,6 +10,7 @@ boxes, custom properties) on top of a recording ``MagicMock``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -231,11 +232,11 @@ CAM = ("camera.add", {"name": "Cam", "location": [0, -10, 0], "rotation": [1.570
 CUBE = ("object.add_primitive", {"kind": "cube", "name": "Box"})
 
 
-def pure(code: str) -> Any:
+def pure(code: str, *argv: str) -> Any:
     """Run ``code`` with only ``host/`` importable and return its printed JSON."""
     prelude = "import json, sys; sys.path.insert(0, sys.argv[1])\n"
     result = subprocess.run(
-        [sys.executable, "-I", "-c", prelude + code, str(HOST)],
+        [sys.executable, "-I", "-c", prelude + code, str(HOST), *argv],
         capture_output=True,
         text=True,
         check=False,
@@ -342,6 +343,7 @@ def test_aspect_resolution_is_even() -> None:
 NEW_TOOLS = {
     "object.import_gltf",
     "material.apply_preset",
+    "material.apply_screen",
     "camera.set_dof",
     "camera.move",
     "camera.add_aspect",
@@ -361,7 +363,7 @@ def test_registry_literal_matches_tools() -> None:
     names, same = got
     assert same is True
     assert set(names) == runtime_tool_names(RUNTIME / "tools.py")
-    assert NEW_TOOLS <= set(names) and len(names) == 18
+    assert NEW_TOOLS <= set(names) and len(names) == 19
 
 
 def test_error_codes_are_stable() -> None:
@@ -378,6 +380,7 @@ def test_error_codes_are_stable() -> None:
             "scene.object_not_found",
             "asset.path_refused",
             "framing.subject_out_of_frame",
+            "asset.hash_mismatch",
         ],
         "args.invalid",
         True,
@@ -569,10 +572,13 @@ def test_refusals_print_stable_codes(
     assert not (run.out / "report.json").exists()
 
 
-def test_no_report_file_without_reports(blender: Path, tmp_path: Path) -> None:
+def test_report_has_scene_hash_without_step_reports(blender: Path, tmp_path: Path) -> None:
     run = run_steps(blender, tmp_path, [CAM, CUBE])
     assert run.proc.returncode == 0, run.proc.stderr
-    assert sorted(p.name for p in run.out.iterdir()) == ["frame_0001.png"]
+    assert sorted(p.name for p in run.out.iterdir()) == ["frame_0001.png", "report.json"]
+    report = json.loads((run.out / "report.json").read_text())
+    assert report["steps"] == []
+    assert re.fullmatch(r"[0-9a-f]{64}", report["scene_graph_hash"])
 
 
 def test_look_rendered_and_auto_camera(blender: Path, tmp_path: Path) -> None:
@@ -615,3 +621,129 @@ def test_guard_puts_assets_dir_in_manifest(
     assert seen[0]["manifest"]["assets_dir"] == str(assets.resolve())
     assert seen[1]["manifest"]["assets_dir"] is None
     assert set(seen[0]["env"]) == {"PATH", "SPECTRACUT_EXECUTION_TOKEN"}
+
+
+# --- material.apply_screen -------------------------------------------------------------
+
+SCREEN_PNG = b"\x89PNG\r\n\x1a\nalterlab-ui"
+SCREEN_SHA = hashlib.sha256(SCREEN_PNG).hexdigest()
+
+
+def _screen_assets(tmp_path: Path) -> Path:
+    assets = tmp_path / "assets"
+    (assets / "ui").mkdir(parents=True)
+    (assets / "ui" / "home.png").write_bytes(SCREEN_PNG)
+    return assets
+
+
+def test_apply_screen_emits_the_checked_image(blender: Path, tmp_path: Path) -> None:
+    assets = _screen_assets(tmp_path)
+    step = {"object": "Box", "image": "ui/home.png", "image_sha256": SCREEN_SHA, "strength": 2}
+    run = run_steps(blender, tmp_path, [CUBE, ("material.apply_screen", step)], assets_dir=assets)
+    assert run.proc.returncode == 0, run.proc.stderr
+    assert run.report("material.apply_screen") == {
+        "object": "Box",
+        "material": "screen.Box",
+        "image": "ui/home.png",
+        "image_sha256": SCREEN_SHA,
+        "strength": 2.0,
+    }
+    calls = run.state["calls"]
+    image = str((assets / "ui" / "home.png").resolve())
+    assert any(f"images.load({image!r}, check_existing=True)" in c for c in calls), calls
+    assert any("nodes.new('ShaderNodeEmission')" in c for c in calls)
+    assert any("nodes.new('ShaderNodeTexImage')" in c for c in calls)
+
+
+@pytest.mark.parametrize(
+    ("args", "code"),
+    [
+        ({"image": "ui/home.png", "image_sha256": "0" * 64}, "asset.hash_mismatch"),
+        ({"image": "../home.png", "image_sha256": SCREEN_SHA}, "asset.path_refused"),
+        ({"image": "/etc/home.png", "image_sha256": SCREEN_SHA}, "asset.path_refused"),
+        ({"image": "ui/home.txt", "image_sha256": SCREEN_SHA}, "asset.path_refused"),
+        ({"image": "ui/home.png", "image_sha256": "XYZ"}, "args.invalid"),
+        ({"image": "ui/home.png", "image_sha256": SCREEN_SHA, "strength": -1}, "args.invalid"),
+    ],
+)
+def test_apply_screen_refusals(
+    blender: Path, tmp_path: Path, args: dict[str, Any], code: str
+) -> None:
+    assets = _screen_assets(tmp_path)
+    (tmp_path / "home.png").write_bytes(SCREEN_PNG)
+    step = ("material.apply_screen", {"object": "Box", **args})
+    run = run_steps(blender, tmp_path, [CUBE, step], assets_dir=assets)
+    assert run.proc.returncode == 1
+    assert f"[{code}]" in run.proc.stderr, run.proc.stderr
+    assert not any("images.load" in c for c in run.state.get("calls", []))
+
+
+# --- scene_graph_hash ------------------------------------------------------------------
+
+
+def _hash_of(blender: Path, tmp_path: Path, steps: list[tuple[str, dict[str, Any]]]) -> str:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    run = run_steps(blender, tmp_path, steps)
+    assert run.proc.returncode == 0, run.proc.stderr
+    found: str = json.loads((run.out / "report.json").read_text())["scene_graph_hash"]
+    return found
+
+
+def test_scene_graph_hash_same_recipe_same_hash(blender: Path, tmp_path: Path) -> None:
+    steps = [("scene.clear", {}), CAM, CUBE, ("inspect.bounds", {})]
+    first = _hash_of(blender, tmp_path / "a", steps)
+    assert re.fullmatch(r"[0-9a-f]{64}", first)
+    assert _hash_of(blender, tmp_path / "b", steps) == first
+    moved = [("scene.clear", {}), CAM, ("object.add_primitive", {"kind": "cube", "location": [1, 0, 0]})]
+    assert _hash_of(blender, tmp_path / "c", moved) != first
+
+
+def test_scene_graph_hash_canonical_and_content_addressed(tmp_path: Path) -> None:
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "ui.png").write_bytes(SCREEN_PNG)
+    (b / "ui.png").write_bytes(SCREEN_PNG)
+    (b / "other.png").write_bytes(b"different")
+    got = pure(
+        "from types import SimpleNamespace as N\n"
+        "from bpy_runtime.runner import canonical_scene_hash, scene_graph_hash\n"
+        "def bpy(path, x):\n"
+        "    cube = N(name='Box', type='MESH', parent=None, material_slots=[N(name='screen')],\n"
+        "             matrix_world=[[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, 0.0],\n"
+        "                           [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]])\n"
+        "    sock = N(identifier='Strength', name='Strength', default_value=2.0)\n"
+        "    node = N(name='Emission', bl_idname='ShaderNodeEmission', image=None, inputs=[sock])\n"
+        "    mat = N(name='screen', use_nodes=True, diffuse_color=(1.0, 1.0, 1.0, 1.0),\n"
+        "            node_tree=N(nodes=[node]))\n"
+        "    cam_data = N(lens=50.0, sensor_width=36.0, sensor_height=24.0, sensor_fit='AUTO',\n"
+        "                 dof=N(use_dof=False, focus_object=None, focus_distance=10.0,\n"
+        "                       aperture_fstop=2.8))\n"
+        "    cam = N(name='Cam', data=cam_data, matrix_world=cube.matrix_world)\n"
+        "    render = N(engine='CYCLES', resolution_x=64, resolution_y=36,\n"
+        "               resolution_percentage=100, fps=24, film_transparent=False,\n"
+        "               use_motion_blur=False, motion_blur_shutter=0.5)\n"
+        "    scene = N(camera=cam, render=render, cycles=N(samples=64),\n"
+        "              eevee=N(taa_render_samples=16),\n"
+        "              view_settings=N(view_transform='AgX', look='None', exposure=0.0,\n"
+        "                              gamma=1.0))\n"
+        "    images = [N(name='ui.png', filepath=path)]\n"
+        "    return N(context=N(scene=scene),\n"
+        "             data=N(objects=[cube], materials=[mat], images=images))\n"
+        "a, b = sys.argv[2], sys.argv[3]\n"
+        "print(json.dumps([\n"
+        "    scene_graph_hash(bpy(a + '/ui.png', 1.0)),\n"
+        "    scene_graph_hash(bpy(b + '/ui.png', 1.0)),\n"
+        "    scene_graph_hash(bpy(b + '/other.png', 1.0)),\n"
+        "    scene_graph_hash(bpy(a + '/ui.png', 1.0000000001)),\n"
+        "    scene_graph_hash(bpy(a + '/ui.png', 1.001)),\n"
+        "    canonical_scene_hash({'b': [1.0, -0.0], 'a': 1}),\n"
+        "    canonical_scene_hash({'a': 1, 'b': [1.0000000001, 0.0]}),\n"
+        "]))\n",
+        str(a),
+        str(b),
+    )
+    same_a, same_b, other_image, rounded, moved, canon_1, canon_2 = got
+    assert same_a == same_b == rounded  # image content, not its path; rounded matrices
+    assert other_image != same_a and moved != same_a
+    assert canon_1 == canon_2
