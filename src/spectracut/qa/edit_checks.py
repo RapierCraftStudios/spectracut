@@ -38,7 +38,7 @@ def check_safe_areas(platform: str, aspect: str, overlays: Sequence[Overlay]) ->
 
 
 @dataclass(frozen=True)
-class Shot:
+class EditShot:
     """A shot of the edit: its id, a representative frame and how it was framed."""
 
     id: str
@@ -57,7 +57,7 @@ def signature_distance(a: Sequence[float], b: Sequence[float]) -> float:
 
 
 def check_repetition(
-    shots: Sequence[Shot],
+    shots: Sequence[EditShot],
     *,
     window: int = REPEAT_WINDOW,
     tolerance: float = REPEAT_TOLERANCE,

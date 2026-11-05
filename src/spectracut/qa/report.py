@@ -23,7 +23,7 @@ from spectracut.qa.audio import DeliverySpec, check_audio
 from spectracut.qa.brand_safety import ReferenceMark, check_logos, check_text
 from spectracut.qa.common import BBox, Gray, QACheck, downscale, gray_png, load_gray
 from spectracut.qa.copy_ocr import OCRError, TextBox, TextReader, check_copy
-from spectracut.qa.edit_checks import Shot, check_repetition, check_safe_areas
+from spectracut.qa.edit_checks import EditShot, check_repetition, check_safe_areas
 from spectracut.qa.legibility import TextRegion, check_legibility, check_read_time
 from spectracut.spec._base import StrictModel
 from spectracut.spec.brand import BrandKit, Look
@@ -162,7 +162,7 @@ def run_qa(
     allowed_domains: Sequence[str] = (),
     allowed_marks: Sequence[str] = (),
     cuts: Sequence[int] = (),
-    shots: Sequence[Shot] = (),
+    shots: Sequence[EditShot] = (),
     overlays: Sequence[Overlay] = (),
     platform: str | None = None,
     aspect: str | None = None,

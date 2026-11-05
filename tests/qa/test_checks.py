@@ -19,7 +19,7 @@ from spectracut.qa.audio import DELIVERY_SPECS, check_audio, integrated_loudness
 from spectracut.qa.brand_safety import ReferenceMark, check_logos, check_text
 from spectracut.qa.common import BBox, Gray, load_gray
 from spectracut.qa.copy_ocr import TextBox, check_copy, parse_tsv
-from spectracut.qa.edit_checks import Shot, check_repetition, check_safe_areas
+from spectracut.qa.edit_checks import EditShot, check_repetition, check_safe_areas
 from spectracut.qa.legibility import TextRegion, check_legibility, check_read_time
 from spectracut.spec.brand import Look, QAThresholds
 
@@ -212,9 +212,9 @@ def test_repeated_shots_fail_within_the_window() -> None:
     close = ShotLook(scale="cu", lens_mm=85, move="push")
     rows = check_repetition(
         [
-            Shot(id="a", frame=earth, look=wide),
-            Shot(id="b", frame=clean, look=close),
-            Shot(id="c", frame=earth, look=close, frame_index=9),
+            EditShot(id="a", frame=earth, look=wide),
+            EditShot(id="b", frame=clean, look=close),
+            EditShot(id="c", frame=earth, look=close, frame_index=9),
         ]
     )
     assert [r.detail for r in rows] == [
@@ -222,7 +222,10 @@ def test_repeated_shots_fail_within_the_window() -> None:
         "shot c repeats shot b: same scale, lens and move",
     ]
     assert rows[0].frame == 9
-    assert failed(check_repetition([Shot(id="a", frame=earth), Shot(id="b", frame=clean)])) == []
+    assert (
+        failed(check_repetition([EditShot(id="a", frame=earth), EditShot(id="b", frame=clean)]))
+        == []
+    )
 
 
 def test_text_read_time() -> None:

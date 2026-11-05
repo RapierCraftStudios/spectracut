@@ -68,7 +68,7 @@ URL_RE = re.compile(
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
 
-def redact(secret: str) -> str:
+def redact_secret(secret: str) -> str:
     """A preview that identifies a secret's kind without revealing it."""
     return secret[:4] + "…" if len(secret) > 4 else "…"
 
@@ -103,7 +103,12 @@ def check_text(
                 match = pattern.search(text)
                 if match:
                     secret_hit = True
-                    fail("brand_safety.secret", f"{kind} leaked: {redact(match.group(0))}", i, box)
+                    fail(
+                        "brand_safety.secret",
+                        f"{kind} leaked: {redact_secret(match.group(0))}",
+                        i,
+                        box,
+                    )
                     break
             if secret_hit:
                 continue
