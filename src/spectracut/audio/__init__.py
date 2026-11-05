@@ -1,2 +1,48 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""AudioRecipe, session writer, cues, music editing, mix, audio critic and captions."""
+"""AudioRecipe, session writer, cues, music editing, mix, audio critic and captions.
+
+The public names are resolved lazily from their defining modules, so each name
+has exactly one definition site and importing the package stays cheap.
+"""
+
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+_EXPORTS: dict[str, str] = {
+    "AudioRecipe": "recipe",
+    "AutomationCurve": "recipe",
+    "AutomationPoint": "recipe",
+    "Bus": "recipe",
+    "Cue": "recipe",
+    "Layer": "recipe",
+    "Provenance": "recipe",
+    "SoundSpec": "recipe",
+    "place_cues": "recipe",
+    "sound_key": "recipe",
+    "ArdourError": "render",
+    "ArdourRunner": "render",
+    "MixResult": "render",
+    "SoundCache": "render",
+    "SoundGenerator": "render",
+    "ToneGenerator": "render",
+    "render_mix": "render",
+    "SessionError": "ardour",
+    "build_lua": "ardour",
+    "reload_export_lua": "ardour",
+}
+
+
+__all__ = sorted(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(import_module(f"spectracut.audio.{module}"), name)
+
+
+def __dir__() -> list[str]:
+    return sorted(_EXPORTS)
