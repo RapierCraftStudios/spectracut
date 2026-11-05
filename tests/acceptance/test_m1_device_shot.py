@@ -27,7 +27,8 @@ from typer.testing import CliRunner
 from spectracut.cli import studio as studio_mod
 from spectracut.cli.app import app
 from spectracut.providers.base import VisionScore
-from spectracut.queue.flamenco import WorkerTag
+from spectracut.queue.flamenco import WorkerTag, gpu_slug, worker_tags
+from spectracut.queue.profile import RenderProfile
 from spectracut.queue.signing import (
     generate_keypair,
     load_private_key,
@@ -48,7 +49,16 @@ ROOT = Path(__file__).resolve().parents[2]
 KIT = ROOT / "brands" / "alterlab" / "brand-kit.yaml"
 SCREEN = ROOT / "brands" / "alterlab" / "assets" / "ui" / "dashboard.png"
 SIDECAR = SCREEN.with_name("dashboard.png.license.json")
-TAG = "legion-rtx3070"
+# The farm's legion host (registered render profile); its job tag is its GPU slug, the tag
+# `spectracut-host tags` prints and `spectracut setup` assigns, never the worker's name.
+LEGION = RenderProfile(
+    blender_version="4.5.15",
+    gpu_model="NVIDIA GeForce RTX 3070 Laptop GPU",
+    gpu_driver="581.80",
+    vram_gb=8,
+    os="windows",
+)
+TAG = "3070laptopgpu"
 
 runner = CliRunner()
 
@@ -182,6 +192,12 @@ def test_signed_job_lands_in_shared_jobs_and_verifies(tmp_path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     assert private not in text
     assert verify_job(parse_signed_job(text), load_public_key(public)) == envelope
+
+
+def test_tag_is_the_legion_gpu_slug_setup_assigns_not_a_worker_name() -> None:
+    assert gpu_slug(LEGION.gpu_model) == TAG
+    assert worker_tags(LEGION)[0] == TAG
+    assert TAG not in {"legion", "legion-rtx3070", "mrdubey-rtx4070ti"}
 
 
 def test_config_from_env_needs_farm_settings() -> None:

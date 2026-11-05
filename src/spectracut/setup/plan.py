@@ -78,6 +78,8 @@ HOST_REG_REL = ".config/spectracut/host.json"
 WORKER_SCRIPT = "windows_worker.ps1"
 TASK_SCRIPT = "windows_worker_task.ps1"
 WORKER_ARGS = "worker-args.json"
+# Flamenco Worker reads its name from this variable (else it uses the OS hostname).
+WORKER_NAME_ENV = "FLAMENCO_WORKER_NAME"
 PROFILE_DIR = "profiles"
 LINUX_BIN = "$HOME/.local/bin"
 # Components whose files the running worker holds open: replaced only with the worker stopped.
@@ -216,6 +218,15 @@ def _pins(manifest: Manifest, set_id: str, wheels: LocalWheels) -> dict[str, str
     return {c: wheels.pin if v == CONTROL_PLANE_PIN else v for c, v in pins.items()}
 
 
+def worker_name(host: str) -> str:
+    """The Flamenco worker name setup gives a registered host: the registered name itself.
+
+    Setup sets it through :data:`WORKER_NAME_ENV` and matches Manager workers to
+    hosts by this exact name when it assigns worker tags.
+    """
+    return host
+
+
 def _worker_args(
     manager_url: str,
     target: StorageTarget,
@@ -231,7 +242,12 @@ def _worker_args(
     """
     layout = layout or StorageLayout()
     server = facts[target.host].address if target.kind == "host" else target.host
-    args = {"Manager": manager_url, "Drive": normalize_drive(layout.drive), "Share": target.share}
+    args = {
+        "Manager": manager_url,
+        "Drive": normalize_drive(layout.drive),
+        "Share": target.share,
+        "Name": worker_name(name),
+    }
     if target.kind == "host" and target.host == name:
         args["LocalPath"] = storage_folder(target, facts, layout)
     else:
@@ -274,10 +290,11 @@ def _service_steps(
         ]
     if facts.os == "windows":
         return _windows_service_steps(facts, manager_url, pin, worker_args, script_hash)
-    version = f"{pin}@{manager_url}#path"
+    version = f"{pin}@{manager_url}#path#name"
     unit = (
         "[Unit]\nDescription=Flamenco Worker\n[Service]\nWorkingDirectory=%h/.local/opt/flamenco\n"
         "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin\n"
+        f"Environment={WORKER_NAME_ENV}={worker_name(name)}\n"
         f"ExecStart=%h/.local/opt/flamenco/flamenco-worker -manager {manager_url}\n"
         "Restart=on-failure\n[Install]\nWantedBy=default.target\n"
     )

@@ -6,7 +6,8 @@ Blender jobs are dispatched by Flamenco. The control plane submits a
 type compiler (``flamenco_jobtypes/spectracut-shot.js``) turns it into tasks that
 run ``spectracut-host run`` on the workers. Each job carries one worker tag
 (a card such as ``4070ti`` or a capability such as ``eevee``), so it only runs
-on workers that have that tag.
+on workers that have that tag. :func:`worker_tags` derives a host's tags from its
+render profile; ``spectracut setup`` creates them in the Manager and assigns them.
 """
 
 from __future__ import annotations
@@ -15,17 +16,21 @@ import json
 import re
 import urllib.error
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 from typing import Any, Final, cast
 
+from spectracut.queue.profile import RenderProfile
 from spectracut.queue.signing import JobEnvelope
 
 JOB_TYPE: Final = "spectracut-shot"
 JOB_TYPE_SCRIPT: Final = "spectracut-shot.js"
 DEFAULT_CHUNK_SIZE: Final = 10
+DEFAULT_CAPABILITIES: tuple[str, ...] = ("eevee", "cycles", "workbench")
+
+_VENDOR_WORDS = re.compile(r"\b(nvidia|geforce|quadro|amd|radeon|intel|arc|rtx|gtx)\b")
 
 
 class NoMatchingWorkerTag(LookupError):
@@ -43,6 +48,46 @@ class WorkerTag:
     id: str
     name: str
     description: str = ""
+
+
+@dataclass(frozen=True)
+class Worker:
+    """A Flamenco worker as listed by ``GET /api/v3/worker-mgt/workers``."""
+
+    id: str
+    name: str
+    status: str = ""
+
+
+def gpu_slug(gpu_model: str) -> str | None:
+    """``NVIDIA GeForce RTX 4070 Ti`` -> ``4070ti``; ``None`` when unknown."""
+    if gpu_model == "unknown":
+        return None
+    slug = re.sub(r"[^a-z0-9]", "", _VENDOR_WORDS.sub("", gpu_model.lower()))
+    return slug or None
+
+
+def worker_tags(
+    profile: RenderProfile, capabilities: Iterable[str] = DEFAULT_CAPABILITIES
+) -> list[str]:
+    """Flamenco worker tags for a host: GPU model, VRAM and capabilities."""
+    tags: list[str] = []
+    slug = gpu_slug(profile.gpu_model)
+    if slug:
+        tags.append(slug)
+    if profile.vram_gb > 0:
+        tags.append(f"vram-{profile.vram_gb}gb")
+    for cap in capabilities:
+        cap = cap.strip().lower()
+        if cap and cap not in tags:
+            tags.append(cap)
+    return tags
+
+
+def _tag(t: dict[str, Any]) -> WorkerTag:
+    return WorkerTag(
+        id=str(t["id"]), name=str(t["name"]), description=str(t.get("description", ""))
+    )
 
 
 def normalize_tag(name: str) -> str:
@@ -140,12 +185,35 @@ class FlamencoClient:
 
     def list_tags(self) -> list[WorkerTag]:
         payload = cast(dict[str, Any], self._request("GET", "/api/v3/worker-mgt/tags") or {})
+        return [_tag(t) for t in payload.get("tags", [])]
+
+    def create_tag(self, name: str, description: str = "") -> None:
+        self._request("POST", "/api/v3/worker-mgt/tags", {"name": name, "description": description})
+
+    def delete_tag(self, tag_id: str) -> None:
+        self._request("DELETE", f"/api/v3/worker-mgt/tag/{tag_id}")
+
+    def list_workers(self) -> list[Worker]:
+        payload = cast(dict[str, Any], self._request("GET", "/api/v3/worker-mgt/workers") or {})
         return [
-            WorkerTag(
-                id=str(t["id"]), name=str(t["name"]), description=str(t.get("description", ""))
-            )
-            for t in payload.get("tags", [])
+            Worker(id=str(w["id"]), name=str(w["name"]), status=str(w.get("status", "")))
+            for w in payload.get("workers", [])
         ]
+
+    def worker_tags_of(self, worker_id: str) -> list[WorkerTag]:
+        """The tags a worker is a member of (``GET /api/v3/worker-mgt/workers/{id}``)."""
+        worker = cast(
+            dict[str, Any], self._request("GET", f"/api/v3/worker-mgt/workers/{worker_id}") or {}
+        )
+        return [_tag(t) for t in worker.get("tags") or []]
+
+    def set_worker_tags(self, worker_id: str, tag_ids: Sequence[str]) -> None:
+        """Replace the worker's tag membership (``POST .../workers/{id}/settags``)."""
+        self._request(
+            "POST",
+            f"/api/v3/worker-mgt/workers/{worker_id}/settags",
+            {"tag_ids": list(tag_ids)},
+        )
 
     def submit(self, job: dict[str, Any]) -> dict[str, Any]:
         return cast(dict[str, Any], self._request("POST", "/api/v3/jobs", job))

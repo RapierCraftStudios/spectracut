@@ -221,6 +221,7 @@ def test_other_windows_hosts_map_the_unc_share_in_the_task_session() -> None:
         "Share": "flamenco",
         "Server": "100.64.0.2",
         "User": CRED.user,
+        "Name": "mrdubey",
     }
     assert _step(plan, "worker-cred:mrdubey").stdin == CRED.password + "\n"
     assert not [s for s in plan.steps if "New-SmbMapping" in s.command]

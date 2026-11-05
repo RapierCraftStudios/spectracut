@@ -11,7 +11,8 @@ param(
   [string]$Share = '',
   [string]$Server = '',
   [string]$User = '',
-  [string]$LocalPath = ''
+  [string]$LocalPath = '',
+  [string]$Name = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $env:USERPROFILE 'spectracut'
@@ -23,6 +24,7 @@ if (-not $Manager) {
   if (-not $Server) { $Server = [string]$cfg.Server }
   if (-not $User) { $User = [string]$cfg.User }
   if (-not $LocalPath) { $LocalPath = [string]$cfg.LocalPath }
+  if (-not $Name) { $Name = [string]$cfg.Name }
 }
 if (-not $Drive) { throw 'worker-args.json has no Drive; re-run spectracut setup' }
 if (-not $Share) { $Share = 'flamenco' }
@@ -41,4 +43,6 @@ if ($LocalPath) {
 $blender = Get-ChildItem $root -Directory -Filter 'blender-*-windows-x64' | Sort-Object Name | Select-Object -Last 1
 $env:PATH = $blender.FullName + ';' + $env:PATH
 Set-Location $root
+# The registered host name: setup matches this worker to its host (and its tags) by it.
+if ($Name) { $env:FLAMENCO_WORKER_NAME = $Name }
 & .\flamenco-worker.exe -manager $Manager *>> (Join-Path $root 'worker.log')
