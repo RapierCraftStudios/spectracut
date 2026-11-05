@@ -35,7 +35,7 @@ fixture packs). `Department.pack()` loads and caches the pack,
 
 ## Story departments
 
-The Discovery and Development departments (`spectracut.studio.departments`)
+The Discovery and Development departments (`spectracut.studio.departments.discovery` and `.writer`)
 keep their packs together under `skills/story/<department>/`: `intake`,
 `product-understanding`, `strategist`, `concept-writer` and `script-writer`.
 Each of those classes sets `skill_pack` to its folder.

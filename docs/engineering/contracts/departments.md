@@ -126,7 +126,7 @@ order.
 
 ## Discovery and Development
 
-Code: `src/spectracut/studio/departments/` (re-exported from the package),
+Code: `src/spectracut/studio/departments/` (import from `discovery` and `writer`),
 packs under `src/spectracut/skills/story/<department>/` (each class sets
 `skill_pack`), and the copy gate in `src/spectracut/writer/copy_gate.py`.
 

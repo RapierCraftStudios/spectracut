@@ -36,13 +36,12 @@ from spectracut.studio import (
     NodeStatus,
     ProductionGraph,
 )
-from spectracut.studio.departments import (
+from spectracut.studio.departments.discovery import DISCOVERY_DEPARTMENTS, discovery_nodes
+from spectracut.studio.departments.writer import (
     DEVELOPMENT_DEPARTMENTS,
-    DISCOVERY_DEPARTMENTS,
     Concept,
     Script,
     development_nodes,
-    discovery_nodes,
     pick_concept,
 )
 from spectracut.writer.copy_gate import guarded

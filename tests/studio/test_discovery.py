@@ -28,14 +28,16 @@ from spectracut.studio import (
     ProductionGraph,
     SkillPack,
 )
-from spectracut.studio.departments import (
-    DEVELOPMENT_DEPARTMENTS,
+from spectracut.studio.departments.discovery import (
     DISCOVERY_DEPARTMENTS,
     STORY_SKILLS,
+    discovery_nodes,
+)
+from spectracut.studio.departments.writer import (
+    DEVELOPMENT_DEPARTMENTS,
     Concept,
     Script,
     development_nodes,
-    discovery_nodes,
     pick_concept,
 )
 from spectracut.writer.copy_gate import CopyGateError, check_brief, check_script, guarded
@@ -284,7 +286,7 @@ def test_forbidden_word_matches_whole_words_only() -> None:
 
 
 def test_check_brief_flags_sources_product_notes_did_not_declare() -> None:
-    from spectracut.studio.departments import ProductNotes
+    from spectracut.studio.departments.discovery import ProductNotes
 
     product = ProductNotes.model_validate(
         {**PRODUCT, "sources": SOURCES[:1], "features": PRODUCT["features"][:1]}
