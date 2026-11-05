@@ -21,6 +21,7 @@ from spectracut.studio.department import Department
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
 from spectracut.studio.node import NodeSpec
+from spectracut.studio.producer import BudgetCaps, Producer, scheduled
 from spectracut.studio.profiles import available_profiles, load_profile
 from spectracut.studio.runner import DepartmentRunner
 from spectracut.studio.store import ProductionError, ProductionStore
@@ -177,8 +178,24 @@ def new(
         Path | None,
         typer.Option("--brand-kit", help="brand-kit.yaml (required for profile device-shot)."),
     ] = None,
+    duration: Annotated[
+        float, typer.Option("--duration", min=0.1, help="Film length in seconds.")
+    ] = 60.0,
+    cap_elevenlabs: Annotated[
+        int | None,
+        typer.Option("--cap-elevenlabs-characters", min=0, help="ElevenLabs character cap."),
+    ] = None,
+    cap_gpu: Annotated[
+        float | None, typer.Option("--cap-gpu-minutes", min=0, help="GPU minutes cap.")
+    ] = None,
+    cap_ai: Annotated[
+        int | None, typer.Option("--cap-ai-requests", min=0, help="AI requests cap.")
+    ] = None,
 ) -> None:
-    """Create a production from a brief file and print its estimate."""
+    """Create a production from a brief file and print its estimate.
+
+    Over-cap nodes are held by ``studio run`` until ``studio approve-budget``.
+    """
     brief = _load_brief(brief_file)
     try:
         quality = load_profile(profile)
@@ -191,13 +208,16 @@ def new(
         shot_params = _device_shot_params(brand_kit)
     pid = production_id or brief.id
     store = ProductionStore(home)
+    caps = BudgetCaps(elevenlabs_characters=cap_elevenlabs, gpu_minutes=cap_gpu, ai_requests=cap_ai)
     try:
         graph = ProductionGraph(pid, profile=quality)
-        specs = breakdown(brief, quality)
         if shot_params is not None:
+            specs = breakdown(brief, quality)
             specs = [_with_params(s, shot_params) if s.kind == ds.SHOT_STAGE else s for s in specs]
+        else:
+            specs = list(Producer(DEPARTMENTS).breakdown(brief, quality, duration_s=duration).nodes)
         graph.add_nodes(specs)
-        path = store.create(pid, brief, graph, force=force)
+        path = store.create(pid, brief, graph, force=force, caps=caps if caps.limits() else None)
     except (ProductionError, ValueError) as exc:
         raise _fail(str(exc)) from exc
     typer.echo(f"production {pid} created at {path}")
@@ -263,9 +283,24 @@ def run_cmd(
         if graph.profile is None or graph.profile.name != ds.PROFILE:
             raise
         raise _fail(str(exc)) from exc  # device-shot farm config or signing key missing
-    report = graph.run(runner, max_workers=workers)
+    holds: list[str] = []
+    if graph.profile is not None and graph.profile.name == ds.PROFILE:
+        report = graph.run(runner, max_workers=workers)
+    else:
+        meta = store.meta(production_id)
+        result = Producer(DEPARTMENTS).run(
+            graph,
+            scheduled(runner, departments=DEPARTMENTS),
+            caps=meta.caps,
+            approved=meta.budget_approvals,
+            max_workers=workers,
+        )
+        report = result.run
+        holds = [f"needs approval: {h.text()}" for h in result.needs_approval]
     _save(store, production_id, graph)
     for line in _report_lines(report):
+        typer.echo(line)
+    for line in holds:
         typer.echo(line)
     for nid in report.failed:
         typer.echo(f"{nid}: {graph.state(nid).error}", err=True)
@@ -332,6 +367,26 @@ def reject(
 ) -> None:
     """Reject a node at its human gate; its dependants do not build."""
     _decide(production_id, node, comment, home, approve=False)
+
+
+@studio_app.command("approve-budget")
+def approve_budget(production_id: IdArg, node: NodeArg, home: HomeOpt = None) -> None:
+    """Let a node held by a budget cap build on the next ``studio run``."""
+    store = ProductionStore(home)
+    graph = _load(store, production_id)
+    try:
+        graph.spec(node)
+        meta = store.meta(production_id)
+        if node not in meta.budget_approvals:
+            approvals = (*meta.budget_approvals, node)
+            store.update_meta(
+                production_id, meta.model_copy(update={"budget_approvals": approvals})
+            )
+    except KeyError as exc:
+        raise _fail(str(exc.args[0]) if exc.args else str(exc)) from exc
+    except ProductionError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"{node}: budget approved")
 
 
 ReplayNodeArg = Annotated[str, typer.Argument(metavar="NODE", help="Render node to replay.")]

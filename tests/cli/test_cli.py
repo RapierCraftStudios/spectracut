@@ -148,6 +148,59 @@ def test_studio_run_without_departments_fails_clearly(home: Path, brief_file: Pa
     assert "no department registered for 'brief'" in result.output
 
 
+def test_studio_new_duration_prints_gpu_hours_and_wall_time(home: Path, brief_file: Path) -> None:
+    result = runner.invoke(app, ["studio", "new", str(brief_file), "--duration", "60"])
+    assert result.exit_code == 0, result.output
+    assert "60 s, 15 shots" in result.output
+    total = next(line for line in result.output.splitlines() if line.startswith("total:"))
+    assert "gpu_hours=" in total and "wall_minutes=" in total and "human gates=5" in total
+
+
+def _voice_runner(ctx: RunContext) -> RunResult:
+    chars = 900 if ctx.spec.kind == "voiceover" else 0
+    return RunResult(
+        output={"node": ctx.spec.id},
+        usage=Usage(ai_usage={"claude_requests": 1}, elevenlabs_characters=chars),
+    )
+
+
+def test_studio_budget_cap_holds_node_until_approve_budget(
+    home: Path, brief_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(studio_mod, "runner_factory", lambda production, graph: _voice_runner)
+    created = runner.invoke(
+        app, ["studio", "new", str(brief_file), "--cap-elevenlabs-characters", "1000"]
+    )
+    assert created.exit_code == 0, created.output
+    store = ProductionStore(home)
+    held = None
+    for _ in range(20):
+        result = runner.invoke(app, ["studio", "run", "spellwise"])
+        assert result.exit_code == 0, result.output
+        if "needs approval:" in result.output:
+            held = result.output
+            break
+        graph, _ = store.load("spellwise")
+        for nid in graph.order():
+            if graph.status(nid) is NodeStatus.AWAITING_APPROVAL:
+                assert runner.invoke(app, ["studio", "approve", "spellwise", nid]).exit_code == 0
+    assert held is not None
+    assert "needs approval: voiceover elevenlabs_characters projected=" in held
+    assert "limit=1000" in held
+    graph, _ = store.load("spellwise")
+    assert graph.status("voiceover") is NodeStatus.PENDING
+    assert graph.ledger.totals().elevenlabs_characters == 0
+
+    approved = runner.invoke(app, ["studio", "approve-budget", "spellwise", "voiceover"])
+    assert approved.exit_code == 0 and "voiceover: budget approved" in approved.output
+    unknown = runner.invoke(app, ["studio", "approve-budget", "spellwise", "nope"])
+    assert unknown.exit_code == 2 and "error:" in unknown.output
+    again = runner.invoke(app, ["studio", "run", "spellwise"])
+    assert again.exit_code == 0, again.output
+    assert "voiceover" in again.output.split("executed:")[1].splitlines()[0]
+    assert "needs approval" not in again.output
+
+
 # ---- (c, d) doctor ----------------------------------------------------------
 
 
