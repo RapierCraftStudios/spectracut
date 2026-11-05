@@ -300,7 +300,7 @@ def test_every_comp_graph_keeps_the_screen_legible(comp_id: str, case: str) -> N
 def test_scene_ops_never_touch_the_screen_model() -> None:
     scene_only = comp.CompGraph(
         id="scene-only",
-        ops=[comp.Glints(strength=1.0), comp.LightWrap(amount=0.5), comp.Lens(dispersion=0.05)],
+        ops=[comp.Glints(strength=1.0), comp.LightWrap(amount=0.5), comp.LensOp(dispersion=0.05)],
     )
     patch = comp.ui_text_patch(0.012, 0.85)
     assert comp.screen_transfer(scene_only, patch) == patch

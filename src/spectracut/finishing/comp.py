@@ -125,7 +125,7 @@ class LightWrap(StrictModel):
     blur: Annotated[float, Field(ge=0.0, le=64.0)] = 8.0
 
 
-class Lens(StrictModel):
+class LensOp(StrictModel):
     """Lens distortion and dispersion (chromatic aberration) outside the screen."""
 
     op: Literal["lens"] = "lens"
@@ -134,7 +134,7 @@ class Lens(StrictModel):
 
 
 CompOp = Annotated[
-    ScreenGrade | UiSharpen | ScreenGlow | Glints | LightWrap | Lens, Field(discriminator="op")
+    ScreenGrade | UiSharpen | ScreenGlow | Glints | LightWrap | LensOp, Field(discriminator="op")
 ]
 SCREEN_OPS = frozenset({"screen_grade", "ui_sharpen", "screen_glow"})
 SCENE_OPS = frozenset({"glints", "light_wrap", "lens"})
