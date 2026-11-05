@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import re
 import tempfile
 from pathlib import Path
@@ -16,11 +18,15 @@ from spectracut.cli import setup as setup_cli
 from spectracut.cli.app import app
 from spectracut.setup.manifest import HostFacts, Step, load_manifest
 from spectracut.setup.plan import (
+    CommandRunner,
     SetupState,
     apply_plan,
     build_plan,
     gpu_script_source,
     load_state,
+    parse_probe,
+    task_script_source,
+    worker_script_source,
 )
 from spectracut.setup.storage import (
     CONTROL,
@@ -235,11 +241,18 @@ def test_spectracut_host_installed_and_profiled_on_every_worker(tmp_path: Path) 
     assert {s.host for s in copies} == set(WORKERS) and all(s.component is None for s in copies)
 
 
-def test_windows_worker_is_a_per_user_logon_task_under_the_profile() -> None:
+def _args(plan, host: str = "legion") -> dict:  # type: ignore[no-untyped-def]
+    step = next(s for s in plan.steps if s.id == f"worker-args:{host}")
+    assert "worker-args.json" in step.command
+    return json.loads(step.stdin or "")
+
+
+def test_windows_worker_is_a_startup_task_under_the_profile() -> None:
     plan = _plan(SetupState())
     task = next(s for s in plan.steps if s.id == "service:worker:legion")
-    assert "-AtLogOn" in task.command and "AtStartup" not in task.command
-    assert "windows_worker.ps1" in task.command and '-Drive "F:"' in task.command
+    assert "windows_worker_task.ps1" in task.command  # legion's account is an admin
+    assert _args(plan)["Drive"] == "F:" and _args(plan)["User"] == CRED.user
+    assert "BootTrigger" in task_script_source() and "S4U" in task_script_source()
     for step in plan.steps:
         if step.host == "legion" and step.id.startswith(
             ("install:blender", "install:flamenco", "install:uv", "install:spectracut-host")
@@ -254,8 +267,7 @@ def test_windows_worker_is_a_per_user_logon_task_under_the_profile() -> None:
 
 def test_local_storage_host_substs_instead_of_mapping() -> None:
     plan = _plan(SetupState(), StorageTarget(kind="host", host="legion"))
-    task = next(s for s in plan.steps if s.id == "service:worker:legion")
-    assert '-LocalPath "C:/spectracut/storage"' in task.command
+    assert _args(plan)["LocalPath"] == "C:/spectracut/storage"
     assert "worker-cred:legion" not in [s.id for s in plan.steps]
 
 
@@ -312,8 +324,116 @@ def test_worker_stopped_before_files_are_replaced_and_started_after(component: s
             assert by_id[sid].shell == shell and by_id[sid].component is None
             assert "sudo" not in by_id[sid].command and "RunAs" not in by_id[sid].command
             assert CRED.password not in by_id[sid].command
-    assert "Stop-ScheduledTask" in by_id["worker:stop:legion"].command
-    assert "Get-ScheduledTask" in by_id["worker:start:legion"].command
+    assert "schtasks.exe /end" in by_id["worker:stop:legion"].command
+    assert "schtasks.exe /run" in by_id["worker:start:legion"].command
     assert "systemctl --user stop spectracut-worker" in by_id["worker:stop:rig"].command
     assert "is-enabled" in by_id["worker:start:rig"].command
     assert CONTROL not in {s.host for s in _plan(state).steps if s.id.startswith("worker:")}
+
+
+CIM = ("ScheduledTask", "Cim", "Get-NetAdapter")  # all denied to a network-logon standard user
+USER_FACTS = {
+    **FACTS,
+    "legion": HostFacts(
+        "legion",
+        "windows",
+        "100.64.0.2",
+        wired=True,
+        free_gb=500,
+        admin=False,
+        home="C:\\Users\\artac-remote",
+        task=False,
+    ),
+}
+
+
+def _user_plan(state: SetupState, storage: StorageTarget | None = None):  # type: ignore[no-untyped-def]
+    return build_plan(
+        load_manifest(), "2026.11", USER_FACTS, WORKERS, state, CRED, storage, wheels=WHEELS
+    )
+
+
+@pytest.mark.parametrize("plan_of", [_plan, _user_plan])
+def test_windows_steps_never_use_cim_cmdlets(tmp_path: Path, plan_of) -> None:  # type: ignore[no-untyped-def]
+    state = load_state(tmp_path)
+    first = plan_of(state)
+    apply_plan(first, FakeRunner(), state, tmp_path)
+    move = plan_of(load_state(tmp_path), StorageTarget(kind="host", host="legion"))
+    steps = [s for s in (*first.steps, *move.steps) if s.host == "legion"]
+    assert {"storage:restart-worker:legion", "worker:stop:legion"} <= {s.id for s in steps}
+    for step in steps:
+        for word in CIM:
+            assert word not in step.command, (step.id, word)
+    for sid in ("worker:stop:legion", "worker:start:legion", "storage:restart-worker:legion"):
+        cmd = next(s for s in steps if s.id == sid).command
+        assert "schtasks.exe /query /tn spectracut-worker" in cmd and "if ($has)" in cmd, sid
+    for word in CIM:
+        assert word not in task_script_source() + worker_script_source()
+
+
+def test_non_admin_windows_host_gets_one_elevated_command_and_no_admin_steps() -> None:
+    plan = _user_plan(SetupState())
+    notes = [n for n in plan.notes if n.startswith("legion needs a one-time admin step")]
+    assert len(notes) == 1
+    cmd = "C:\\Users\\artac-remote\\spectracut\\windows_worker_task.ps1"
+    assert f'`powershell -NoProfile -ExecutionPolicy Bypass -File "{cmd}"`' in notes[0]
+    assert CRED.password not in notes[0] and CRED.user not in notes[0]
+    task = next(s for s in plan.steps if s.id == "service:worker:legion")
+    assert "windows_worker_task.ps1" not in task.command  # cannot register without admin
+    assert "schtasks.exe /end" in task.command and "schtasks.exe /run" in task.command
+    script = next(s for s in plan.steps if s.id == "worker-task-script:legion")
+    assert "__SID__" in (script.stdin or "") and "$id.User.Value" in script.command
+    assert CRED.password not in (script.stdin or "") + json.dumps(_args(plan))
+    src = task_script_source()
+    assert "GRGX" in src and "SetSecurityDescriptor" in src and "/xml" in src
+    assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in src
+    assert "-File" in src and "worker-args" not in src  # the action never changes
+    assert not [n for n in _plan(SetupState()).notes if "one-time admin step" in n]
+
+
+def test_non_admin_note_repeats_until_the_task_exists(tmp_path: Path) -> None:
+    state = load_state(tmp_path)
+    apply_plan(_user_plan(state), FakeRunner(), state, tmp_path)
+    again = _user_plan(load_state(tmp_path))
+    assert again.steps == ()
+    assert any(n.startswith("legion needs a one-time admin step") for n in again.notes)
+    registered = {**USER_FACTS, "legion": dataclasses.replace(USER_FACTS["legion"], task=True)}
+    done = build_plan(
+        load_manifest(), "2026.11", registered, WORKERS, load_state(tmp_path), CRED,
+        wheels=WHEELS,
+    )  # fmt: skip
+    assert done.steps == () and not [n for n in done.notes if "admin step" in n]
+
+
+def test_parse_probe_reads_admin_profile_and_task_without_cim() -> None:
+    out = "100.64.0.2\nEthernet\n5000000000\nFalse\nC:\\Users\\artac-remote\nFalse\n"
+    f = parse_probe("mrdubey-1", "windows", out)
+    assert (f.admin, f.home, f.task, f.wired) == (False, "C:\\Users\\artac-remote", False, True)
+    admin = parse_probe("legion", "windows", "100.64.0.3\n802.11,Ethernet\n1\nTrue\nC:\\U\nTrue")
+    assert (admin.admin, admin.task, admin.wired) == (True, True, False)
+    linux = parse_probe("rig", "linux", "100.64.0.4\neth0\n100\n")
+    assert (linux.admin, linux.home, linux.task) == (True, "", True)
+
+
+def test_windows_probe_and_resources_scripts_use_no_cim(monkeypatch: pytest.MonkeyPatch) -> None:
+    scripts: list[str] = []
+
+    class Proc:
+        def __init__(self, rc: int, out: str) -> None:
+            self.returncode, self.stdout, self.stderr = rc, out, ""
+
+    def fake_exec(host: str, cmd: str, shell: str, stdin: str | None) -> Proc:
+        scripts.append(cmd)
+        if cmd == "uname -s":
+            return Proc(1, "")
+        return Proc(0, "16\n31.8\n" if "ProcessorCount" in cmd else "100.64.0.2\nEthernet\n1\n")
+
+    runner = CommandRunner()
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    assert runner.probe("mrdubey-1").os == "windows"
+    assert runner.resources("mrdubey-1", "windows") == (16.0, 31.8)
+    probe, resources = scripts[1], scripts[2]
+    for word in CIM:
+        assert word not in probe and word not in resources
+    assert "IsInRole" in probe and "$env:USERPROFILE" in probe and "schtasks.exe /query" in probe
+    assert "ComputerInfo" in resources

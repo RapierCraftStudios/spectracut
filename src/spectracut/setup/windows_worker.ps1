@@ -1,17 +1,30 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# SpectraCut Flamenco worker, run by the per-user logon task `spectracut-worker` (no admin needed).
+# SpectraCut Flamenco worker, run by the task `spectracut-worker` at startup as the render
+# host's SSH account (registered once by windows_worker_task.ps1). Its settings come from
+# worker-args.json next to it, which setup rewrites without admin; parameters override it.
 # Maps the shared storage on -Drive (subst when this PC holds the storage itself), puts the
 # profile's Blender on PATH and runs the worker. Installed to %USERPROFILE%\spectracut by setup.
 param(
-  [Parameter(Mandatory)][string]$Manager,
-  [string]$Drive = 'F:',
-  [string]$Share = 'flamenco',
+  [string]$Manager = '',
+  [string]$Drive = '',
+  [string]$Share = '',
   [string]$Server = '',
   [string]$User = '',
   [string]$LocalPath = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $env:USERPROFILE 'spectracut'
+if (-not $Manager) {
+  $cfg = Get-Content (Join-Path $root 'worker-args.json') -Raw | ConvertFrom-Json
+  $Manager = [string]$cfg.Manager
+  if (-not $Drive) { $Drive = [string]$cfg.Drive }
+  if (-not $Share) { $Share = [string]$cfg.Share }
+  if (-not $Server) { $Server = [string]$cfg.Server }
+  if (-not $User) { $User = [string]$cfg.User }
+  if (-not $LocalPath) { $LocalPath = [string]$cfg.LocalPath }
+}
+if (-not $Drive) { $Drive = 'F:' }
+if (-not $Share) { $Share = 'flamenco' }
 $letter = $Drive.TrimEnd(':')
 cmd /c "net use $Drive /delete /y >nul 2>&1"
 cmd /c "subst $Drive /d >nul 2>&1"

@@ -35,6 +35,28 @@ MIGRATE_MOUNT = "/mnt/spectracut-migrate"
 MANAGER_PORT = 8085
 ADMIN_SCRIPT = "windows_storage.ps1"
 WINDOWS_MARKER = f"{WINDOWS_LOCAL_PATH}/.spectracut-share"
+WORKER_TASK = "spectracut-worker"
+# Whether the worker task exists, via schtasks.exe: the CIM task cmdlets are
+# denied to a network-logon standard user, schtasks.exe is not.
+_TASK_EXISTS = f"schtasks.exe /query /tn {WORKER_TASK} *> $null; $has = $LASTEXITCODE -eq 0"
+
+
+def windows_task_stop() -> str:
+    """PowerShell that ends the worker task if it is registered; a missing task is a no-op."""
+    return f"{_TASK_EXISTS}; if ($has) {{ schtasks.exe /end /tn {WORKER_TASK} *> $null }}"
+
+
+def windows_task_start() -> str:
+    """PowerShell that runs the worker task if it is registered; a missing task is a no-op."""
+    return (
+        f"{_TASK_EXISTS}; if ($has) {{ schtasks.exe /run /tn {WORKER_TASK} | Out-Null; "
+        "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }; exit 0"
+    )
+
+
+def windows_task_restart() -> str:
+    """End then run the worker task (schtasks.exe only, no admin once access is granted)."""
+    return f"{windows_task_stop()}; {windows_task_start()}"
 
 
 class StorageTarget(StrictModel):
@@ -367,8 +389,7 @@ def plan_storage(
                 name,
                 f"storage:restart-worker:{name}",
                 "restart the Flamenco Worker",
-                "Stop-ScheduledTask -TaskName spectracut-worker -ErrorAction SilentlyContinue; "
-                "Start-ScheduledTask -TaskName spectracut-worker"
+                windows_task_restart()
                 if facts[name].os == "windows"
                 else "systemctl --user restart spectracut-worker",
                 "powershell" if facts[name].os == "windows" else "sh",

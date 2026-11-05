@@ -88,6 +88,19 @@ def test_gpu_only_role_caps_ram_at_4gb_and_drops_build_lanes() -> None:
     assert slot.build_lanes is False
     capped = HostEntry(name="x", cpus=4, mem_gb=64, profile=PROFILE, role="gpu-only", ram_cap_gb=2)
     assert capped.slot().mem_gb == 2
+    doc = (Path(__file__).parents[2] / "docs" / "setup" / "render-hosts.md").read_text("utf-8")
+    assert "4 GB" in doc and "--ram-cap-gb" in doc and "gpu-only" in doc
+
+
+def test_windows_worker_restart_uses_schtasks_and_tolerates_a_missing_task() -> None:
+    restart = next(s for s in _plan().steps if s.id == "storage:restart-worker:legion")
+    assert restart.shell == "powershell"
+    assert "ScheduledTask" not in restart.command and "Cim" not in restart.command
+    assert "schtasks.exe /query /tn spectracut-worker" in restart.command
+    assert "if ($has) { schtasks.exe /end" in restart.command
+    assert "if ($has) { schtasks.exe /run" in restart.command
+    rig = next(s for s in _plan().steps if s.id == "storage:restart-worker:rig")
+    assert rig.command == "systemctl --user restart spectracut-worker"
 
 
 def test_general_host_keeps_all_memory_and_build_lanes() -> None:
