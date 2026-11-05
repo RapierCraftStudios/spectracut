@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Audio tool check (issue #48): builds the pinned audio image and runs the headless
+# Ardour / SuperCollider / Pedalboard / plugin-set check inside it. Separate from
+# ci.yml because the image build pulls more than 1 GB and takes minutes.
+name: Audio tool check
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - host/docker/audio.Dockerfile
+      - scripts/audio_tool_check.sh
+      - .github/workflows/audio-tool-check.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audio-tool-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audio-tool-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build audio image
+        run: docker build -f host/docker/audio.Dockerfile -t spectracut-audio-check host/docker
+      - name: Run audio tool check
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/audio-check"
+          docker run --rm \
+            -v "$PWD/scripts:/opt/check:ro" \
+            -v "$RUNNER_TEMP/audio-check:/out" \
+            spectracut-audio-check bash /opt/check/audio_tool_check.sh --out /out \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-tool-check
+          path: ${{ runner.temp }}/audio-check

@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Control-plane image: the spectracut package only. Blender and bpy run only on
+# registered render hosts, so this image must never install them.
+
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS build
+WORKDIR /src
+COPY pyproject.toml uv.lock README.md LICENSE ./
+COPY src ./src
+COPY host/pyproject.toml ./host/pyproject.toml
+COPY scripts/flamenco_enable_gpu.py ./scripts/flamenco_enable_gpu.py
+RUN uv build --wheel --out-dir /dist
+
+FROM python:3.12-slim
+LABEL org.opencontainers.image.title="spectracut-api" \
+      org.opencontainers.image.description="SpectraCut control plane (API and CLI)" \
+      org.opencontainers.image.source="https://github.com/RapierCraftStudios/SpectraCut" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later"
+COPY --from=build /dist /tmp/dist
+RUN pip install --no-cache-dir /tmp/dist/spectracut-*.whl && rm -rf /tmp/dist \
+    && useradd --create-home --uid 10001 spectracut
+USER spectracut
+ENTRYPOINT ["spectracut"]
+CMD ["--help"]

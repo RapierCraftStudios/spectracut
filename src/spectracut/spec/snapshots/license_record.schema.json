@@ -1,0 +1,50 @@
+{
+  "additionalProperties": false,
+  "description": "Per asset: source, licence and whether it is commercial-safe.",
+  "properties": {
+    "attribution": {
+      "default": "",
+      "title": "Attribution",
+      "type": "string"
+    },
+    "commercial_safe": {
+      "title": "Commercial Safe",
+      "type": "boolean"
+    },
+    "licence": {
+      "minLength": 1,
+      "title": "Licence",
+      "type": "string"
+    },
+    "non_commercial": {
+      "default": false,
+      "title": "Non Commercial",
+      "type": "boolean"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "url": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Url"
+    }
+  },
+  "required": [
+    "source",
+    "licence",
+    "commercial_safe"
+  ],
+  "title": "LicenseRecord",
+  "type": "object"
+}

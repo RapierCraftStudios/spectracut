@@ -1,0 +1,7 @@
+{
+  "name": "@spectracut/review",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local review page served by `spectracut serve` (placeholder).",
+  "license": "AGPL-3.0-or-later"
+}

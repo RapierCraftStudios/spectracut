@@ -1,0 +1,40 @@
+{
+  "name": "draft",
+  "description": "Quick social posts and internal videos: brief, script and template shots at preview tier with automatic gates.",
+  "stages": [
+    "brief",
+    "script",
+    "template_shots",
+    "voiceover",
+    "edit",
+    "render",
+    "delivery"
+  ],
+  "revision_budget": {
+    "brief": 0,
+    "script": 0,
+    "template_shots": 0,
+    "voiceover": 0,
+    "edit": 0,
+    "render": 0,
+    "delivery": 0
+  },
+  "tier": {
+    "brief": "preview",
+    "script": "preview",
+    "template_shots": "preview",
+    "voiceover": "preview",
+    "edit": "preview",
+    "render": "preview",
+    "delivery": "preview"
+  },
+  "gates": {
+    "brief": "auto",
+    "script": "auto",
+    "template_shots": "auto",
+    "voiceover": "auto",
+    "edit": "auto",
+    "render": "auto",
+    "delivery": "auto"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "@spectracut/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Hosted service web app (M5 placeholder).",
+  "license": "AGPL-3.0-or-later"
+}

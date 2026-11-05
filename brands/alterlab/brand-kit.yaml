@@ -1,0 +1,39 @@
+# AlterLab brand kit. Original AlterLab content only: no third-party marks.
+id: alterlab
+name: AlterLab
+palette:
+  swatches:
+    ink: "#0b1220"
+    surface: "#f5f7fa"
+    accent: "#2f6bff"
+    signal: "#18b47b"
+    warm: "#f2a33a"
+    slate: "#3a475c"
+typography:
+  families:
+    display: Inter
+    body: Inter
+  weights: [400, 600]
+tone: Clear, precise and calm; the product's interface is the hero and stays legible.
+looks:
+  - id: clean
+    version: 1
+    bloom: 0.02
+    grain: 0.01
+    motion_blur: false
+    depth_of_field: false
+    lens:
+      vignette: 0.05
+    qa_thresholds:
+      grain_max: 0.05
+      haze_max: 0.05
+      bloom_max: 0.05
+default_look_id: clean
+forbidden_words:
+  - revolutionary
+  - guaranteed
+  - best-in-class
+claim_sources:
+  - id: alterlab-site
+    title: AlterLab website
+    ref: https://alterlab.io

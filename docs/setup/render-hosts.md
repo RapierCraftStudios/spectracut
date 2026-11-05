@@ -1,0 +1,124 @@
+# Render hosts
+
+Render hosts run Blender and the Flamenco worker. The control plane reaches them over SSH
+(Tailscale) and installs everything itself. You never need admin rights on the control plane.
+
+## Registering a host
+
+```sh
+spectracut hosts add <ssh-alias> [--role general|gpu-only] [--gpu "MODEL:VRAM_GB"] [--ram-cap-gb N]
+spectracut setup
+```
+
+`hosts add` installs `spectracut-host`, Blender and the Flamenco worker on the host, reads
+its render profile and registers it. `spectracut setup` then configures shared storage and
+the worker task or service.
+
+### Roles
+
+- `general` (default): GPU work and CPU build lanes, using all of the host's memory.
+- `gpu-only`: for a machine the owner also uses day to day. It gets GPU work only and no
+  build lanes, and the scheduler caps it at **4 GB of system RAM** by default (owner rule).
+  Jobs that need more memory than that never go to it. `--ram-cap-gb N` changes the cap.
+
+```sh
+spectracut hosts add mrdubey-1 --role gpu-only --gpu "RTX 4070 Ti:12"
+```
+
+### Worker names and worker tags
+
+Setup names each host's Flamenco worker after its registered host name (`legion`,
+`mrdubey-1`). It does this through `FLAMENCO_WORKER_NAME`: the `Environment=` line of the
+Linux unit, or `Name` in `worker-args.json` on Windows. Setup then finds a host's worker in
+the Manager by that exact name. Workers whose names match no registered host, such as a CPU
+worker on the control plane, are left alone.
+
+Each host's worker tags come from its registered render profile and match what
+`spectracut-host tags` prints: the GPU slug (`RTX 3070 Laptop GPU` gives `3070laptopgpu`,
+`RTX 4070 Ti` gives `4070ti`), `vram-<N>gb`, and the capabilities `eevee`, `cycles` and
+`workbench`. On every run, `spectracut setup` does the following, also when nothing else
+changed:
+
+- waits for each host's worker to register, then fails naming the host if it never does;
+- creates the missing tags in the Manager, with the description `managed by spectracut setup`;
+- sets each worker's tags to its host's tags, keeping any tag you added by hand;
+- deletes managed tags that no host uses any more, for example after a GPU change.
+
+`--dry-run` lists these changes and writes nothing. A job's worker tag (for example
+`SPECTRACUT_FLAMENCO_TAG=4070ti`) must be one of these tags, not a worker name.
+
+## Windows hosts
+
+On Windows, the worker runs as the scheduled task `spectracut-worker`. It starts at boot and
+runs as the host's SSH account, with no password stored (S4U logon). The task runs
+`%USERPROFILE%\spectracut\windows_worker.ps1`, which reads its settings (Manager URL, storage
+drive and share) from `worker-args.json` next to it. Setup rewrites that file whenever the
+settings change, so the task itself is registered only once.
+
+Setup never uses CIM/WMI (`*-ScheduledTask`, `Get-CimInstance`, `Get-NetAdapter`). A standard
+account signed in over SSH is denied those. Setup uses `schtasks.exe` to start and stop the
+task, and does nothing if the task is not registered yet.
+
+### SSH account is an Administrator
+
+Setup registers the task itself. Nothing else is needed.
+
+### SSH account is a standard user (recommended for a PC you use daily)
+
+A standard account cannot register a task that starts at boot. `spectracut setup` writes
+`windows_worker_task.ps1` under the account's profile and prints one warning with the
+command to run:
+
+```
+warning: mrdubey-1 needs a one-time admin step: ... run
+`powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\<account>\spectracut\windows_worker_task.ps1"`
+```
+
+On that PC, open PowerShell with **Run as administrator** and run the command once. It
+registers `spectracut-worker` to run at startup as the SSH account. It also gives that account
+the right to start and end the task, then starts the worker. The command and the script
+contain no secrets: the storage password stays in the account's `spectracut\smb.pw` file.
+
+After that, `spectracut setup` and `spectracut hosts add` stop and start the worker with
+`schtasks.exe` and need no admin. Setup repeats the warning until the task exists.
+
+## Shared storage location and drive letter
+
+`spectracut setup --storage-host <host>` puts Flamenco's shared storage on a host. Two more
+options set where it lives and how Windows hosts see it. Setup keeps both for later runs:
+
+- `--storage-path <folder>`: the folder the storage host serves, for example
+  `D:/SpectraCut/flamenco` on Windows or `/data/flamenco` on Linux. The default is
+  `C:/spectracut/storage` on Windows and `/srv/flamenco` on Linux. On a Linux storage host
+  with another folder, setup bind-mounts that folder at `/srv/flamenco`, so the Manager and
+  every Linux machine still use `/srv/flamenco`.
+- `--windows-drive <letter>`: the drive letter every Windows host uses for storage (default
+  `F:`). The two-way `storage` variable uses it. Setup checks the letter on every Windows host
+  before mapping. If the letter is already a disk or another mapping, setup stops (even with
+  `--dry-run`) and asks for a free letter. A letter that already points to the share is fine.
+
+```
+spectracut setup --storage-host mrdubey-1 --storage-path D:/SpectraCut/flamenco --windows-drive S:
+```
+
+Storage is mapped by the worker task, so the drive is visible to the worker, not only to an
+SSH session. On the Windows storage host, `windows_worker.ps1` runs
+`subst <drive> <storage path>` (local, no SMB loopback). Other Windows hosts map
+`\\<storage host>\flamenco` with the share account.
+
+### Windows storage host
+
+Creating the SMB share and its account needs an Administrator. Setup writes
+`windows_storage.ps1` and an ACL'd password file under the SSH account's `spectracut`
+folder. The password is passed on stdin and never appears on a command line.
+
+- If the SSH account is an Administrator, setup runs the script itself.
+- If the SSH account is a standard user, setup prints the elevated command (including
+  `-Path`) and stops. Run that command once, then re-run `spectracut setup`.
+
+If a share named `flamenco` already exists, the script compares its folder with the storage
+path:
+
+- **Same folder:** the share is adopted.
+- **Different folder:** the script fails and names both folders. Either re-run setup with
+  `--storage-path <existing folder>` or remove the share.

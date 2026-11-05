@@ -1,0 +1,4 @@
+# Third-party reference footage stays local (see benchmarks/references.md)
+references
+outputs/
+results/
