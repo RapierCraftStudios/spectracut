@@ -356,7 +356,9 @@ def test_studio_run_renders_preview_and_final_and_status_shows_ledger(
         assert isinstance(frames, dict) and set(frames) == {"frame_0001.png"}
         frame = Path(str(out["output_dir"])) / "frame_0001.png"
         assert frames["frame_0001.png"] == _sha(frame)
-        assert out["frame_files"]["frame_0001.png"] == _sha(frame)
+        frame_files = out["frame_files"]
+        assert isinstance(frame_files, dict)
+        assert frame_files["frame_0001.png"] == _sha(frame)
         assert Path(str(out["output_dir"])).parent == shared / "out"
         assert out["worker_tag"] == TAG
         job_file = shared / "jobs" / f"{out['job_id']}.json"
