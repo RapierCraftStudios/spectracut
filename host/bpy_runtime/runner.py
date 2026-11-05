@@ -323,7 +323,14 @@ def run(manifest: dict[str, Any], bpy: Any) -> None:
     scene.render.use_file_extension = True
     disable_run_metadata(scene)
     bpy.ops.render.render(animation=True)
-    for frame in sorted(Path(manifest["output_dir"]).glob("frame_*.png")):
+    from bpy_runtime.ops.finish import apply_pending_lut
+
+    frames = sorted(p for p in Path(manifest["output_dir"]).glob("frame_*") if p.is_file())
+    masters = [p for p in frames if p.suffix.lower() == ".png"]
+    # A finish job's LUT grade runs on the display-referred masters; EXR frames are
+    # left as written (run metadata is already off scene-wide).
+    apply_pending_lut(bpy, masters)
+    for frame in masters:
         strip_png_metadata(frame)
 
 

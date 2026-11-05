@@ -1,0 +1,24 @@
+# Cinematic: a warm CDL with lens character (chromatic aberration, vignette,
+# halation), stronger bloom and grain, within its own higher QA thresholds.
+# Its render rules match clean's, so the two Looks share one render.
+id: cinematic
+version: 1
+grade:
+  cdl:
+    slope: [1.06, 1.0, 0.92]
+    offset: [0.004, 0.0, -0.006]
+    power: [0.98, 1.0, 1.03]
+    saturation: 1.08
+lens:
+  chromatic_aberration: 0.15
+  vignette: 0.25
+  distortion: 0.0
+  halation: 0.2
+bloom: 0.08
+grain: 0.06
+motion_blur: false
+depth_of_field: false
+qa_thresholds:
+  grain_max: 0.1
+  haze_max: 0.08
+  bloom_max: 0.12
