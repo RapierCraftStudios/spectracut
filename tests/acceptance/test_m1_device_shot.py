@@ -17,7 +17,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -537,6 +539,73 @@ def test_stage_assets_copies_once_and_is_content_addressed(tmp_path: Path) -> No
     refs2 = {"ui/a.png": hashlib.sha256(b"two").hexdigest()}
     assert ds.stage_assets(source, shared, refs2) != sha
     assert ds.storage_assets_dir(sha) == f"{{storage}}/assets/{sha}"
+
+
+def _big_kit(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
+    source, shared = tmp_path / "src", tmp_path / "shared"
+    for i in range(50):
+        d = source / f"d{i % 5}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"f{i}.png").write_bytes(f"payload-{i}".encode())
+    refs = {"d0/f0.png": hashlib.sha256(b"payload-0").hexdigest()}
+    return source, shared, refs
+
+
+def test_stage_assets_is_safe_under_concurrent_threads(tmp_path: Path) -> None:
+    source, shared, refs = _big_kit(tmp_path)
+    barrier = threading.Barrier(8)
+    results: list[str] = []
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            barrier.wait()
+            results.append(ds.stage_assets(source, shared, refs))
+        except BaseException as exc:  # noqa: BLE001 - surfaced below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert len(set(results)) == 1
+    sha = results[0]
+    assert [p.name for p in (shared / "assets").iterdir()] == [sha]  # no .tmp-* leftovers
+    staged = shared / "assets" / sha
+    got = {
+        p.relative_to(staged).as_posix(): p.read_bytes() for p in staged.rglob("*") if p.is_file()
+    }
+    want = {
+        p.relative_to(source).as_posix(): p.read_bytes() for p in source.rglob("*") if p.is_file()
+    }
+    assert got == want
+
+
+def test_stage_assets_overlapping_calls_use_distinct_temp_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, shared, refs = _big_kit(tmp_path)
+    real_copy = shutil.copyfile
+    seen: set[Path] = set()
+    both_copying = threading.Barrier(2, timeout=10)
+    waited: set[int] = set()
+
+    def copy(src: Path, dst: Path) -> str | os.PathLike[str]:
+        tmp = next(p for p in Path(dst).parents if p.name.startswith(".tmp-"))
+        seen.add(tmp)
+        if threading.get_ident() not in waited:  # each call waits once, mid-copy
+            waited.add(threading.get_ident())
+            both_copying.wait()
+        return real_copy(src, dst)
+
+    monkeypatch.setattr(shutil, "copyfile", copy)
+    with ThreadPoolExecutor(2) as pool:
+        shas = list(pool.map(lambda _: ds.stage_assets(source, shared, refs), range(2)))
+    assert shas[0] == shas[1]
+    assert len(seen) == 2  # one temp dir per call
+    assert [p.name for p in (shared / "assets").iterdir()] == [shas[0]]
 
 
 def test_stage_assets_refuses_missing_or_mismatched_referenced_files(tmp_path: Path) -> None:

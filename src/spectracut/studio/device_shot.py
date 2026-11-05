@@ -38,6 +38,7 @@ import math
 import os
 import re
 import shutil
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -353,10 +354,11 @@ def stage_assets(source: Path, shared: Path, referenced: Mapping[str, str]) -> s
     """Stage ``source`` once under ``<shared>/assets/<sha>/`` and return ``<sha>``.
 
     ``<sha>`` is the sha256 of the sorted ``(relpath, file sha256)`` manifest of
-    the whole tree (licence sidecars included). The copy lands in a temp dir and
-    is renamed into place, so concurrent renders copy at most once each and an
-    existing staged dir is never rewritten. Every ``referenced`` relpath must
-    then exist in the staged dir with its pinned sha256, else :class:`ValueError`.
+    the whole tree (licence sidecars included). The copy lands in a temp dir
+    unique to this call (threads and hosts never share one) and is renamed into
+    place, so concurrent renders copy at most once each and an existing staged
+    dir is never rewritten. Every ``referenced`` relpath must then exist in the
+    staged dir with its pinned sha256, else :class:`ValueError`.
     """
     source = Path(source)
     manifest = _asset_manifest(source)
@@ -367,8 +369,7 @@ def stage_assets(source: Path, shared: Path, referenced: Mapping[str, str]) -> s
     staged = root / sha
     if not staged.is_dir():
         root.mkdir(parents=True, exist_ok=True)
-        tmp = root / f".tmp-{sha}-{os.getpid()}"
-        shutil.rmtree(tmp, ignore_errors=True)
+        tmp = Path(tempfile.mkdtemp(dir=root, prefix=f".tmp-{sha}-"))
         try:
             for rel, _digest in manifest:
                 dest = tmp.joinpath(*PurePosixPath(rel).parts)
