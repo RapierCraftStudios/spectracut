@@ -54,8 +54,8 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from importlib import resources
 from datetime import UTC, datetime, timedelta
+from importlib import resources
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 

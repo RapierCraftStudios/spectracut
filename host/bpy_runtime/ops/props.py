@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""``render.set_property`` (a fixed allowlist of render and colour settings) and ``render.set_output``.
+"""``render.set_property`` (an allowlist of render and colour settings) and ``render.set_output``.
 
 Each allowed key maps to a typed validator and a setter written out in code;
 the user-supplied key only selects a row in the table. Nothing here evaluates

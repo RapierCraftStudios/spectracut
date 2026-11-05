@@ -103,12 +103,12 @@ class ColorPipeline(StrictModel):
 
 def rec709_encode(linear: float) -> float:
     """Inverse BT.1886 (gamma 2.4): linear 0..1 to the Rec.709 SDR master's code value."""
-    return min(max(linear, 0.0), 1.0) ** (1.0 / 2.4)
+    return float(min(max(linear, 0.0), 1.0) ** (1.0 / 2.4))
 
 
 def rec709_decode(encoded: float) -> float:
     """BT.1886 EOTF (gamma 2.4, black 0): code value 0..1 to linear light."""
-    return min(max(encoded, 0.0), 1.0) ** 2.4
+    return float(min(max(encoded, 0.0), 1.0) ** 2.4)
 
 
 def srgb_encode(linear: float) -> float:
