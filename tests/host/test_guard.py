@@ -194,3 +194,19 @@ def test_guard_tool_list_matches_runtime_registry() -> None:
         env={k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
     )
     assert set(result.stdout.split()) == runtime_tool_names(RUNTIME / "tools.py")
+
+
+@pytest.mark.parametrize("missing", ["tools.py", "runner.py"])
+def test_missing_runtime_files_name_the_path_and_the_override(
+    keypair: tuple[str, str], tmp_path: Path, missing: str
+) -> None:
+    runtime = tmp_path / "bpy_runtime"
+    runtime.mkdir()
+    for name in ("tools.py", "runner.py"):
+        if name != missing:
+            (runtime / name).write_text((RUNTIME / name).read_text())
+    with pytest.raises(OSError) as err:
+        ExecutionGuard(HostRegistration("legion", keypair[1]), PROFILE, runtime=runtime)
+    assert str(runtime) in str(err.value)
+    assert missing in str(err.value)
+    assert "SPECTRACUT_BPY_RUNTIME" in str(err.value)

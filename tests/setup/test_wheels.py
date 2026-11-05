@@ -13,6 +13,7 @@ import base64
 import os
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -58,9 +59,12 @@ def _workspace(root: Path, host_version: str | None = None) -> Path:
     )
     (root / "host" / "spectracut_host").mkdir(parents=True)
     (root / "host" / "spectracut_host" / "__init__.py").write_text("")
+    (root / "host" / "bpy_runtime").mkdir()
+    (root / "host" / "bpy_runtime" / "__init__.py").write_text("")
+    (root / "host" / "bpy_runtime" / "tools.py").write_text('TOOL_NAMES = frozenset(["a"])\n')
     (root / "host" / "pyproject.toml").write_text(
         f'[project]\nname = "spectracut-host"\nversion = "{host_version or v}"\n{build}'
-        '[tool.hatch.build.targets.wheel]\npackages = ["spectracut_host"]\n'
+        '[tool.hatch.build.targets.wheel]\npackages = ["spectracut_host", "bpy_runtime"]\n'
     )
     return root
 
@@ -88,6 +92,30 @@ def test_repo_wheels_match_the_control_plane_version_and_rebuild_identically(
     assert first.spectracut.parent == tmp_path / "wheels" / first.digest
     again = build_wheels(tmp_path / "wheels")
     assert again == first  # same code, same digest, same staged files
+    with zipfile.ZipFile(first.host) as whl:
+        assert "bpy_runtime/tools.py" in whl.namelist()  # #161: hosts need the runtime
+
+
+def test_changing_only_the_bpy_runtime_reinstalls_spectracut_host_on_every_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _workspace(tmp_path / "src-tree")
+    monkeypatch.setenv(REPO_ENV, str(root))
+    before = build_wheels(tmp_path / "wheels")
+    with zipfile.ZipFile(before.host) as whl:
+        assert "bpy_runtime/tools.py" in whl.namelist()
+    state = _converged(before)
+    assert not [s.id for s in _plan(state, before).steps if "spectracut-host" in s.id]
+
+    tools = root / "host" / "bpy_runtime" / "tools.py"
+    tools.write_text('TOOL_NAMES = frozenset(["a", "b"])\n')
+    after = build_wheels(tmp_path / "wheels")
+    assert after.pin != before.pin and after.version == before.version
+    ids = [s.id for s in _plan(state, after).steps]
+    for host in WORKERS:
+        assert f"install:spectracut-host:{host}" in ids
+        assert f"wheel:{after.host.name}:{host}" in ids
+    assert "install:spectracut-host:control" not in ids
 
 
 def test_changing_the_code_changes_the_digest_and_reinstalls_on_every_host(

@@ -34,6 +34,7 @@ from spectracut.queue.signing import (
 
 HOST_CONFIG_ENV = "SPECTRACUT_HOST_CONFIG"
 RUNTIME_DIR_ENV = "SPECTRACUT_BPY_RUNTIME"
+RUNTIME_FILES = ("tools.py", "runner.py")  # what the guard needs from the runtime
 TOKEN_ENV = "SPECTRACUT_EXECUTION_TOKEN"
 ASSETS_DIR_ENV = "SPECTRACUT_ASSETS_DIR"
 _SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", re.IGNORECASE)
@@ -133,6 +134,12 @@ class ExecutionGuard:
         self.registration = registration
         self.profile = profile
         self.runtime = runtime or runtime_dir()
+        missing = [n for n in RUNTIME_FILES if not (self.runtime / n).is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"bpy runtime at {self.runtime} lacks {', '.join(missing)}; reinstall "
+                f"spectracut-host or set {RUNTIME_DIR_ENV} to a bpy_runtime directory"
+            )
         self.tool_names = runtime_tool_names(self.runtime / "tools.py")
 
     def check(
