@@ -1,0 +1,16 @@
+# Kinetic line: flat type revealed glyph by glyph.
+id: kinetic-stagger-2d
+version: 1
+kind: kinetic
+dimension: 2d
+animation: glyph_stagger
+easing: back_out
+reveal_frames: 8
+stagger_frames: 2
+font_role: display
+weight: 600
+size: 0.06
+layout:
+  "16:9": {x: 0.1, y: 0.4, w: 0.8, h: 0.18}
+  "9:16": {x: 0.06, y: 0.44, w: 0.88, h: 0.1}
+  "1:1": {x: 0.06, y: 0.4, w: 0.88, h: 0.18}
