@@ -153,6 +153,8 @@ def wheel_copy_steps(facts: HostFacts, wheels: LocalWheels) -> list[Step]:
 
     On Windows the runner frames stdin (``$StepInput``, no EOF needed); the wheel is
     written to ``.part``, its sha256 checked against the local wheel, then renamed.
+    The copies only stage files under a digest-named directory, so setup runs them
+    before it stops the worker.
     """
     steps: list[Step] = []
     for wheel in wheels.files:
