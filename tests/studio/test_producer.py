@@ -16,12 +16,10 @@ from spectracut.queue.executors.base import JobStatus
 from spectracut.spec.brief import AudienceProfile, Brief, ClaimSource, Persona, ProofPoint
 from spectracut.spec.spec import Shot, Spec
 from spectracut.studio import (
-    BudgetCaps,
     CapacityLimits,
     Department,
     NodeSpec,
     NodeStatus,
-    Producer,
     ProductionGraph,
     RunContext,
     RunResult,
@@ -29,7 +27,7 @@ from spectracut.studio import (
     load_profile,
 )
 from spectracut.studio.estimate import BRIEF_PARAM, PLAN_PARAM
-from spectracut.studio.producer import ProducerReport, TaskState, scheduled
+from spectracut.studio.producer import BudgetCaps, Producer, ProducerReport, TaskState, scheduled
 from spectracut.studio.store import ProductionMeta, ProductionStore
 
 
