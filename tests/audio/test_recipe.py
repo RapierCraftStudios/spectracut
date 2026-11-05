@@ -61,7 +61,7 @@ def cue(cid: str, bus: str = "fx", **kw: object) -> Cue:
 @pytest.mark.parametrize("rate", RATES, ids=lambda r: f"{float(r):.3f}")
 def test_every_cue_is_placed_within_one_frame_of_its_event(rate: FrameRate) -> None:
     ten_min = int(600 * rate.fps)
-    frames = [0, 1, 7, 1001, 1439, ten_min - 3]
+    frames = [0, 1, 7, 1001, 1439, ten_min - 12]
     edit = Edit(
         id="film",
         rate=rate,
@@ -86,7 +86,10 @@ def test_offset_frames_shift_by_exact_frames(rate: FrameRate) -> None:
         id="mix",
         rate=rate,
         duration_frames=1000,
-        cues=[cue("early", marker="hit", offset_frames=-2), cue("late", marker="hit", offset_frames=3)],
+        cues=[
+            cue("early", marker="hit", offset_frames=-2),
+            cue("late", marker="hit", offset_frames=3),
+        ],
     )
     placed = place_cues(recipe, edit)
     sr = recipe.sample_rate
@@ -194,7 +197,9 @@ class FakeArdour:
             return "\n".join([*lines, BUILD_OK])
         silent = array("f", [0.0]) * rec.duration_samples
         for name in ("master", "dx", "mx", "fx"):
-            write_wav(workdir / "export" / name / "mix.wav", [silent, silent], sr, float_format=False)
+            write_wav(
+                workdir / "export" / name / "mix.wav", [silent, silent], sr, float_format=False
+            )
         return "SPECTRACUT_ROUTING_OK\nSPECTRACUT_AUTOMATION_OK\n" + EXPORT_OK
 
 

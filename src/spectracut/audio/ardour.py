@@ -89,6 +89,8 @@ def _automation(recipe: AudioRecipe, cue: Cue) -> list[tuple[int, float]]:
 def build_lua(recipe: AudioRecipe, placements: Mapping[str, int], session_dir: Path) -> str:
     """Lua program that creates, saves and closes the session for ``recipe``."""
     lines = [
+        # Tracks are routed to their bus by hand: no auto-connect to the master.
+        "ARDOUR.config():set_output_auto_connect(0)",
         'AudioEngine:set_backend("None (Dummy)", "", "")',
         f"local s = create_session({lua_str(session_dir)}, {lua_str(SESSION_NAME)}, "
         f"{recipe.sample_rate})",
@@ -103,16 +105,21 @@ def build_lua(recipe: AudioRecipe, placements: Mapping[str, int], session_dir: P
         "  b:amp():gain_control():set_value(gain, ND)",
         "  buses[name] = b",
         "end",
+        "local layer_bus = {}",
+        "local function route_to_bus(tr, bus)",
+        "  tr:output():disconnect_all(nil)",
+        "  for c = 0, 1 do",
+        "    tr:output():audio(c):connect(buses[bus]:input():audio(c):name())",
+        "  end",
+        "end",
         "local function new_layer(name, bus, start, len, region_gain, fader, auto)",
         "  local tl = s:new_audio_track(2, 2, nil, 1, name, ARDOUR.PresentationInfo.max_order,",
         "    ARDOUR.TrackMode.Normal, true, false)",
         '  assert(tl:size() == 1, "track " .. name .. " not created")',
         "  local tr = tl:front():to_track()",
         "  assert(tr:name() == name, 'track renamed to ' .. tr:name())",
-        "  tr:output():disconnect_all(nil)",
-        "  for c = 0, 1 do",
-        "    tr:output():audio(c):connect(buses[bus]:input():audio(c):name())",
-        "  end",
+        "  layer_bus[name] = bus",
+        "  route_to_bus(tr, bus)",
         "  -- placeholder source of the exact length; swapped for the real sound afterwards",
         '  local gen = ARDOUR.LuaAPI.new_luaproc(s, "SinGen")',
         '  assert(not gen:isnil(), "SinGen Lua DSP not found")',
@@ -159,6 +166,32 @@ def build_lua(recipe: AudioRecipe, placements: Mapping[str, int], session_dir: P
                 f"{_num(cue.fader)}, {{{auto}}})"
             )
     lines += [
+        # A racing auto-connect leaves a stale record on the master's input that the
+        # track side cannot clear and that load restores: reset the master input to the
+        # three buses, route the tracks again and check before saving.
+        f"ARDOUR.LuaAPI.usleep({_SETTLE_US})",
+        "local master = s:master_out()",
+        "master:input():disconnect_all(nil)",
+        "for _, b in pairs(buses) do",
+        "  for c = 0, 1 do",
+        "    b:output():audio(c):connect(master:input():audio(c):name())",
+        "  end",
+        "end",
+        "for name, bus in pairs(layer_bus) do",
+        "  local tr = s:route_by_name(name)",
+        "  route_to_bus(tr, bus)",
+        "  for c = 0, 1 do",
+        "    local p = tr:output():audio(c)",
+        "    for m = 0, 1 do",
+        "      assert(not master:input():audio(m):connected_to(p:name()),",
+        "        'master input still records ' .. name)",
+        "    end",
+        "    assert(p:connected_to(buses[bus]:input():audio(c):name()),",
+        "      'track ' .. name .. ' not routed to ' .. bus)",
+        "    assert(not p:connected_to(master:input():audio(c):name()),",
+        "      'track ' .. name .. ' still routed to the master')",
+        "  end",
+        "end",
         "s:set_session_extents(Temporal.timepos_t(0), "
         f"Temporal.timepos_t({recipe.duration_samples}))",
         "s:save_state('', false, false, false, false, false)",
