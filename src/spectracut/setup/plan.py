@@ -16,7 +16,7 @@ import re
 import shlex
 import subprocess
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -28,13 +28,15 @@ from spectracut.setup.storage import (
     LINUX_TOOLS,
     MANAGER_PORT,
     WINDOWS_DRIVE,
-    WINDOWS_LOCAL_PATH,
     WINDOWS_TOOLS,
     WORKER_TASK,
     Credential,
+    StorageLayout,
     StorageTarget,
     choose_default_host,
+    normalize_drive,
     plan_storage,
+    storage_folder,
     storage_notes,
     wifi_warnings,
     windows_task_restart,
@@ -74,6 +76,14 @@ class SetupState(StrictModel):
     set_id: str | None = None
     hosts: dict[str, HostState] = {}
     storage: StorageTarget | None = None
+    # Requested by ``setup --storage-path/--windows-drive`` (None: the per-OS default folder).
+    storage_path: str | None = None
+    windows_drive: str = WINDOWS_DRIVE
+    # The layout last applied with ``storage``; None on older states means the defaults.
+    storage_layout: StorageLayout | None = None
+
+    def layout(self) -> StorageLayout:
+        return StorageLayout(path=self.storage_path, drive=normalize_drive(self.windows_drive))
 
 
 @dataclass(frozen=True)
@@ -82,6 +92,7 @@ class Plan:
     steps: tuple[Step, ...]
     storage: StorageTarget
     notes: tuple[str, ...] = ()
+    layout: StorageLayout = field(default_factory=StorageLayout)
 
 
 def state_path(home: Path | None = None) -> Path:
@@ -160,17 +171,23 @@ def _pins(manifest: Manifest, set_id: str, wheels: LocalWheels) -> dict[str, str
 
 
 def _worker_args(
-    manager_url: str, target: StorageTarget, facts: Mapping[str, HostFacts], name: str, user: str
+    manager_url: str,
+    target: StorageTarget,
+    facts: Mapping[str, HostFacts],
+    name: str,
+    user: str,
+    layout: StorageLayout | None = None,
 ) -> str:
     """``worker-args.json`` for ``windows_worker.ps1``: Manager, drive, share and its account.
 
     Kept out of the task's action so the task is registered once (by an admin) and later
     setups change the worker's settings without admin.
     """
+    layout = layout or StorageLayout()
     server = facts[target.host].address if target.kind == "host" else target.host
-    args = {"Manager": manager_url, "Drive": WINDOWS_DRIVE, "Share": target.share}
+    args = {"Manager": manager_url, "Drive": normalize_drive(layout.drive), "Share": target.share}
     if target.kind == "host" and target.host == name:
-        args["LocalPath"] = WINDOWS_LOCAL_PATH
+        args["LocalPath"] = storage_folder(target, facts, layout)
     else:
         args |= {"Server": server, "User": user}
     return json.dumps(args, sort_keys=True)
@@ -458,6 +475,7 @@ def build_plan(
     machine with the most free space.
     """
     target = storage or state.storage or choose_default_host(facts)
+    layout = state.layout()
     storage_host = target.host if target.kind == "host" else None
     pins = _pins(manifest, set_id, wheels)
     manager_url = f"http://{facts[CONTROL].address}:{MANAGER_PORT}"
@@ -475,7 +493,7 @@ def build_plan(
             svc = _service_steps(f, manager_url, pins["flamenco-manager"])
         elif name in workers:
             steps += _worker_prep_steps(f, have, pins, gpu_src, gpu_hash)
-            args = _worker_args(manager_url, target, facts, name, cred.user)
+            args = _worker_args(manager_url, target, facts, name, cred.user, layout)
             digest = hashlib.sha256((worker_src + args).encode("utf-8")).hexdigest()[:12]
             svc = _service_steps(f, manager_url, pins["flamenco-worker"], args, digest)
             if f.os == "windows":
@@ -495,7 +513,7 @@ def build_plan(
                 need_task.append(name)
         elif name in workers and f.os == "windows" and not f.admin and not f.task:
             need_task.append(name)
-    steps += plan_storage(target, state.storage, facts, workers, cred)
+    steps += plan_storage(target, state.storage, facts, workers, cred, layout, state.storage_layout)
     return Plan(
         set_id,
         tuple(steps),
@@ -505,6 +523,7 @@ def build_plan(
             + wifi_warnings(facts, target)
             + worker_task_notes(facts, need_task)
         ),
+        layout,
     )
 
 
@@ -531,7 +550,9 @@ def apply_plan(
 ) -> SetupState:
     """Run the steps in order; record each success. A failure stops the run (state kept)."""
     _run_steps(plan.steps, runner, state, home)
-    state = state.model_copy(update={"set_id": plan.set_id, "storage": plan.storage})
+    state = state.model_copy(
+        update={"set_id": plan.set_id, "storage": plan.storage, "storage_layout": plan.layout}
+    )
     save_state(state, home)
     return state
 
@@ -653,7 +674,12 @@ class CommandRunner:
                 "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]"
                 "::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); "
                 f"$env:USERPROFILE; schtasks.exe /query /tn {WORKER_TASK} *> $null; "
-                "$LASTEXITCODE -eq 0"
+                "$LASTEXITCODE -eq 0; "
+                # Drive letters in use: letter=UNC (network), letter=folder (subst), letter=.
+                "$sub = @{}; subst | ForEach-Object { if ($_ -match '^(\\w):\\\\: => (.*)$') "
+                "{ $sub[$matches[1]] = $matches[2] } }; (@(Get-PSDrive -PSProvider FileSystem) "
+                "| ForEach-Object { $r = if ($sub[$_.Name]) { $sub[$_.Name] } "
+                "else { [string]$_.DisplayRoot }; $_.Name + '=' + $r }) -join '|'"
             )
         else:
             script = (
@@ -689,15 +715,16 @@ def parse_probe(name: str, os: Os, out: str) -> HostFacts:
     """Probe output: Tailscale address, network device or media type, free bytes.
 
     Windows adds: whether the SSH account is an Administrator, its profile path and
-    whether the worker task exists (``True``/``False``; a missing line keeps the default).
+    whether the worker task exists (``True``/``False``; a missing line keeps the default)
+    and the drive letters in use (``letter=root`` joined by ``|``; paths may hold commas).
     """
     lines = [ln.strip() for ln in out.splitlines()]
-    lines += [""] * (6 - len(lines))
-    address, link, free, admin, home, task = lines[:6]
+    lines += [""] * (7 - len(lines))
+    address, link, free, admin, home, task, drives = lines[:7]
     wired = "802.11" not in link if os == "windows" else not link.startswith("wl")
     gb = float(free) / 1e9 if free.replace(".", "", 1).isdigit() else 0.0
     if os != "windows":
-        admin = home = task = ""
+        admin = home = task = drives = ""
     return HostFacts(
         name=name,
         os=os,
@@ -707,4 +734,5 @@ def parse_probe(name: str, os: Os, out: str) -> HostFacts:
         admin=admin.lower() != "false",
         home=home,
         task=task.lower() != "false",
+        drives=tuple(d for d in drives.split("|") if d.strip()),
     )

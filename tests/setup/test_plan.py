@@ -160,20 +160,28 @@ def test_storage_move_repoints_manager_and_all_workers(tmp_path: Path) -> None:
     assert "storage:serve" in ids
     assert "storage:migrate" in ids
     assert ids.index("storage:migrate") < ids.index("storage:attach:control")
-    assert {"storage:attach:control", "storage:attach:legion", "storage:attach:rig"} <= set(ids)
+    assert {"storage:attach:control", "storage:attach:rig"} <= set(ids)
+    # Windows maps in the worker task's session (worker-args.json), not over SSH
+    assert "storage:attach:legion" not in ids
     assert "storage:variables" in ids
     assert "storage:restart-manager" in ids
     assert {"storage:restart-worker:legion", "storage:restart-worker:rig"} <= set(ids)
     serve = next(s for s in move.steps if s.id == "storage:serve")
     assert serve.shell == "powershell"
-    assert "Test-Path" in serve.command and "Administrator" in serve.command  # admin handoff
+    assert "Test-Path" in serve.command and "-Path 'C:/spectracut/storage'" in serve.command
     assert "New-SmbShare" in windows_storage_source() and "UserList" in windows_storage_source()
     assert "100.64.0.0/10" in windows_storage_source()
 
     nas = _plan(load_state(tmp_path), StorageTarget(kind="nas", host="nas.lan", share="films"))
     assert "storage:serve" not in [s.id for s in nas.steps]
-    attach = next(s for s in nas.steps if s.id == "storage:attach:legion")
-    assert "\\\\nas.lan\\films" in attach.command
+    args = next(s for s in nas.steps if s.id == "worker-args:legion")
+    assert json.loads(args.stdin or "") | {"Manager": ""} == {
+        "Manager": "",
+        "Drive": "F:",
+        "Share": "films",
+        "Server": "nas.lan",
+        "User": CRED.user,
+    }
 
 
 def test_secrets_stay_off_command_lines() -> None:
@@ -437,3 +445,87 @@ def test_windows_probe_and_resources_scripts_use_no_cim(monkeypatch: pytest.Monk
         assert word not in probe and word not in resources
     assert "IsInRole" in probe and "$env:USERPROFILE" in probe and "schtasks.exe /query" in probe
     assert "ComputerInfo" in resources
+
+
+def test_parse_probe_reads_drive_letters_in_use() -> None:
+    out = (
+        "100.64.0.2\nEthernet\n1\nFalse\nC:\\U\nTrue\n"
+        "C=|D=|F=\\\\nas\\media, 2024|S=D:\\SpectraCut\\flamenco\n"
+    )
+    f = parse_probe("mrdubey-1", "windows", out)
+    assert f.drives == ("C=", "D=", "F=\\\\nas\\media, 2024", "S=D:\\SpectraCut\\flamenco")
+    old = parse_probe("legion", "windows", "100.64.0.3\nEthernet\n1\nTrue\nC:\\U\nTrue")
+    assert old.drives == ()
+
+
+def test_windows_probe_lists_drives_without_cim(monkeypatch: pytest.MonkeyPatch) -> None:
+    scripts: list[str] = []
+
+    class Proc:
+        returncode, stdout, stderr = 0, "100.64.0.2\nEthernet\n1\n", ""
+
+    def fake_exec(host: str, cmd: str, shell: str, stdin: str | None) -> Proc:
+        scripts.append(cmd)
+        p = Proc()
+        if cmd == "uname -s":
+            p.returncode = 1
+        return p
+
+    runner = CommandRunner()
+    monkeypatch.setattr(runner, "_exec", fake_exec)
+    runner.probe("mrdubey-1")
+    assert "Get-PSDrive -PSProvider FileSystem" in scripts[1] and "subst" in scripts[1]
+    assert "Cim" not in scripts[1] and "Wmi" not in scripts[1]
+
+
+def _cli_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, FakeRunner]:
+    home = tmp_path / "home"
+    monkeypatch.setenv("SPECTRACUT_HOME", str(home))
+    runner = FakeRunner()
+    monkeypatch.setattr(setup_cli, "CommandRunner", lambda: runner)
+    monkeypatch.setattr(setup_cli, "build_wheels", lambda _out: WHEELS)
+    home.mkdir()
+    return home, runner
+
+
+def test_cli_storage_path_and_windows_drive_are_validated_and_persisted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, runner = _cli_home(tmp_path, monkeypatch)
+    cli = CliRunner()
+    dry = cli.invoke(
+        app, ["setup", "--storage-path", "/data/flamenco/", "--windows-drive", "s", "--dry-run"]
+    )
+    assert dry.exit_code == 0, dry.output
+    assert load_state(home) == SetupState()  # a dry run keeps nothing
+    assert "bind /data/flamenco at /srv/flamenco" in dry.output
+
+    bad = cli.invoke(app, ["setup", "--windows-drive", "SS:", "--dry-run"])
+    assert bad.exit_code == 2 and "drive letter" in bad.output
+    rel = cli.invoke(app, ["setup", "--storage-path", "relative/dir", "--dry-run"])
+    assert rel.exit_code == 2 and "absolute" in rel.output
+
+    done = cli.invoke(app, ["setup", "--storage-path", "/data/flamenco", "--windows-drive", "S:"])
+    assert done.exit_code == 0, done.output
+    state = load_state(home)
+    assert (state.storage_path, state.windows_drive) == ("/data/flamenco", "S:")
+    assert state.storage_layout is not None and state.storage_layout.drive == "S:"
+    # later runs without the options keep the persisted settings: nothing to do
+    again = cli.invoke(app, ["setup", "--dry-run"])
+    assert again.exit_code == 0 and "nothing to do" in again.output
+
+
+def test_cli_defaults_unchanged_without_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, runner = _cli_home(tmp_path, monkeypatch)
+    done = CliRunner().invoke(app, ["setup"])
+    assert done.exit_code == 0, done.output
+    state = load_state(home)
+    assert (state.storage_path, state.windows_drive) == (None, "F:")
+    ran = {s.id: s for s in runner.ran}
+    assert "path = /srv/flamenco\n" in (ran["storage:smb-conf"].stdin or "")
+    assert "storage:bind" not in ran
+    cfg = yaml.safe_load(ran["storage:variables"].stdin or "")
+    values = {v["platform"]: v["value"] for v in cfg["variables"]["storage"]["values"]}
+    assert values == {"linux": "/srv/flamenco", "windows": "F:/"}

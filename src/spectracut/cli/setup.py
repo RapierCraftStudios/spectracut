@@ -4,7 +4,9 @@
 The control plane is this machine; render hosts are the registered hosts
 (``spectracut hosts``), reached over SSH by name. Setup is idempotent: only what
 differs from the manifest is done. ``--storage-host`` moves Flamenco's shared
-storage (a registered host, ``control``, or ``nas://server/share``).
+storage (a registered host, ``control``, or ``nas://server/share``);
+``--storage-path`` and ``--windows-drive`` set the served folder and the Windows
+drive letter, kept in the setup state for later runs.
 """
 
 from __future__ import annotations
@@ -25,12 +27,15 @@ from spectracut.setup.plan import (
     apply_plan,
     build_plan,
     load_state,
+    save_state,
 )
 from spectracut.setup.storage import (
     CONTROL,
     Credential,
     StorageError,
     StorageTarget,
+    normalize_drive,
+    normalize_storage_path,
     parse_storage_host,
 )
 from spectracut.setup.wheels import build_wheels
@@ -75,6 +80,27 @@ def setup_cmd(
             ),
         ),
     ] = None,
+    storage_path: Annotated[
+        str | None,
+        typer.Option(
+            "--storage-path",
+            help=(
+                "Folder the storage host serves, e.g. D:/SpectraCut/flamenco or /data/flamenco "
+                "(default C:/spectracut/storage on Windows, /srv/flamenco on Linux); kept for "
+                "later runs."
+            ),
+        ),
+    ] = None,
+    windows_drive: Annotated[
+        str | None,
+        typer.Option(
+            "--windows-drive",
+            help=(
+                "Drive letter every Windows host sees storage on (default F:); must be free "
+                "on each Windows host. Kept for later runs."
+            ),
+        ),
+    ] = None,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print the plan; change nothing.")
     ] = False,
@@ -94,11 +120,20 @@ def setup_cmd(
             else:
                 set_id = nxt.id
         target = parse_storage_host(storage_host, [CONTROL, *workers]) if storage_host else None
+        settings: dict[str, str] = {}
+        if storage_path is not None:
+            settings["storage_path"] = normalize_storage_path(storage_path)
+        if windows_drive is not None:
+            settings["windows_drive"] = normalize_drive(windows_drive)
+        if settings:
+            state = state.model_copy(update=settings)
         runner: StepRunner = CommandRunner()
         facts: dict[str, HostFacts] = {n: runner.probe(n) for n in (CONTROL, *workers)}
         cred = share_credential(root, target or state.storage)
         wheels = build_wheels(root / "wheels")
         plan = build_plan(manifest, set_id, facts, workers, state, cred, target, wheels=wheels)
+        if settings and not dry_run:
+            save_state(state, root)  # valid for this farm; kept even if a later step stops
         for note in plan.notes:
             typer.echo(f"warning: {note}")
         if not plan.steps:

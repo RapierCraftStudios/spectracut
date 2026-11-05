@@ -4,13 +4,16 @@
 The storage host is a user setting (``--storage-host``): the control plane, a
 registered render host, or an existing NAS share (``nas://server/share``).
 Every Linux machine sees the share at :data:`LINUX_PATH`, every Windows machine
-at :data:`WINDOWS_DRIVE`, so the two-way ``storage`` variable is one pair of
-values for the whole farm. Windows paths in Flamenco variables always use
+at one drive letter (``--windows-drive``, default :data:`WINDOWS_DRIVE`), so the
+two-way ``storage`` variable is one pair of values for the whole farm. The folder
+the storage host serves is ``--storage-path`` (default :data:`WINDOWS_LOCAL_PATH`
+or :data:`LINUX_PATH`); see :class:`StorageLayout`. Windows paths in Flamenco variables always use
 forward slashes (Flamenco eats backslashes). Passwords travel on stdin only.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,7 +37,8 @@ CRED_FILE = "/etc/spectracut-storage.cred"
 MIGRATE_MOUNT = "/mnt/spectracut-migrate"
 MANAGER_PORT = 8085
 ADMIN_SCRIPT = "windows_storage.ps1"
-WINDOWS_MARKER = f"{WINDOWS_LOCAL_PATH}/.spectracut-share"
+MARKER_NAME = ".spectracut-share"
+WINDOWS_MARKER = f"{WINDOWS_LOCAL_PATH}/{MARKER_NAME}"
 WORKER_TASK = "spectracut-worker"
 # Whether the worker task exists, via schtasks.exe: the CIM task cmdlets are
 # denied to a network-logon standard user, schtasks.exe is not.
@@ -75,6 +79,88 @@ class Credential:
 
 class StorageError(ValueError):
     pass
+
+
+class StorageLayout(StrictModel):
+    """How storage is laid out: the served folder (``None``: per-OS default) and the drive."""
+
+    path: str | None = None
+    drive: str = WINDOWS_DRIVE
+
+
+_DRIVE = re.compile(r"^([A-Za-z]):?$")
+_WINDOWS_ABS = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def normalize_drive(value: str) -> str:
+    """``s``, ``S`` or ``s:`` -> ``S:``; anything else is an error."""
+    m = _DRIVE.match(value.strip())
+    if not m:
+        raise StorageError(f"expected a drive letter like S:, got {value!r}")
+    return m.group(1).upper() + ":"
+
+
+def normalize_storage_path(value: str) -> str:
+    """An absolute Linux (``/srv/x``) or Windows (``D:/x``) folder, forward slashes, no quotes."""
+    v = value.strip()
+    if not v or any(c in v for c in "'\"`$;|\n\r"):
+        raise StorageError(f"storage path must be a plain absolute folder, got {value!r}")
+    if _WINDOWS_ABS.match(v):
+        v = to_flamenco_path(v)
+        v = v[0].upper() + v[1:]
+        return v if len(v) == 3 else v.rstrip("/")
+    if v.startswith("/"):
+        return v if v == "/" else v.rstrip("/")
+    raise StorageError(f"storage path must be absolute (D:/folder or /folder), got {value!r}")
+
+
+def storage_folder(
+    target: StorageTarget, facts: Mapping[str, HostFacts], layout: StorageLayout
+) -> str:
+    """The folder the storage host serves, checked against its OS."""
+    windows = facts[target.host].os == "windows"
+    if layout.path is None:
+        return WINDOWS_LOCAL_PATH if windows else LINUX_PATH
+    path = normalize_storage_path(layout.path)
+    if windows != bool(_WINDOWS_ABS.match(path)):
+        kind = "a Windows path like D:/folder" if windows else "a Linux path like /srv/folder"
+        raise StorageError(f"{target.host} needs {kind} for --storage-path, got {path!r}")
+    return path
+
+
+def _norm_root(value: str) -> str:
+    return value.replace("/", "\\").rstrip("\\").lower()
+
+
+def check_windows_drive(
+    target: StorageTarget,
+    facts: Mapping[str, HostFacts],
+    machines: Sequence[str],
+    layout: StorageLayout,
+) -> None:
+    """Fail when the drive letter is taken on a Windows machine by anything but the storage.
+
+    ``HostFacts.drives`` lists ``letter=root`` (root: the UNC of a network drive, the
+    folder of a subst drive, empty for a local volume). The share's UNC is fine
+    everywhere; on the storage host its own folder (subst) is fine too.
+    """
+    letter = normalize_drive(layout.drive)[0]
+    unc = _norm_root(f"\\\\{_smb_server(target, facts)}\\{target.share}")
+    for name in machines:
+        f = facts[name]
+        if f.os != "windows":
+            continue
+        ok = {unc}
+        if target.kind == "host" and target.host == name:
+            ok.add(_norm_root(storage_folder(target, facts, layout)))
+        for entry in f.drives:
+            used, _, root = entry.partition("=")
+            if used.strip().rstrip(":").upper() == letter and _norm_root(root.strip()) not in ok:
+                what = root.strip() or "a local disk"
+                raise StorageError(
+                    f"drive {letter}: is already used on {name} ({what}); "
+                    "choose a free letter with --windows-drive"
+                )
 
 
 def to_flamenco_path(path: str) -> str:
@@ -143,7 +229,7 @@ def storage_variables(
     return variables
 
 
-def manager_config(listen: str) -> str:
+def manager_config(listen: str, windows_drive: str = WINDOWS_DRIVE) -> str:
     """``flamenco-manager.yaml``: Tailscale-only listener, Shaman off, shared variables."""
     doc = {
         "_meta": {"version": 3},
@@ -152,7 +238,7 @@ def manager_config(listen: str) -> str:
         "listen": listen,
         "shared_storage_path": LINUX_PATH,
         "shaman": {"enabled": False},
-        "variables": storage_variables(),
+        "variables": storage_variables(windows_drive=windows_drive),
     }
     return yaml.safe_dump(doc, sort_keys=False)
 
@@ -189,12 +275,17 @@ _PROFILE_DIR = (
 )
 
 
-def _windows_admin_steps(host: str, cred: Credential) -> list[Step]:
-    """Write the admin script and its ACL'd password file, then wait for an admin to run it.
+def _windows_admin_steps(
+    host: str, cred: Credential, path: str, share: str, admin: bool
+) -> list[Step]:
+    """Write the admin script and its ACL'd password file, then run it or wait for an admin.
 
-    Creating an SMB share and a local account needs admin, which the SSH account lacks.
-    The gate step fails until the script has run; re-running ``spectracut setup`` continues.
+    Creating an SMB share and a local account needs admin. When the SSH account is an
+    Administrator setup runs the script itself; otherwise the gate step fails until an
+    admin has run it, and re-running ``spectracut setup`` continues. Either way the
+    password reaches the script only through the ACL'd file (written from stdin).
     """
+    marker = f"{path}/{MARKER_NAME}"
     write_script = (
         _PROFILE_DIR + f"[IO.File]::WriteAllText((Join-Path $d '{ADMIN_SCRIPT}'), "
         "[Console]::In.ReadToEnd())"
@@ -205,13 +296,25 @@ def _windows_admin_steps(host: str, cred: Credential) -> list[Step]:
         "icacls $f /inheritance:r /grant:r ($env:USERNAME + ':F') '*S-1-5-32-544:F' | Out-Null; "
         "[IO.File]::WriteAllText($f, [Console]::In.ReadLine())"
     )
-    gate = (
-        _PROFILE_DIR + f"if (-not (Test-Path '{WINDOWS_MARKER}')) {{ "
-        f"$s = Join-Path $d '{ADMIN_SCRIPT}'; $f = Join-Path $d 'storage.pw'; "
-        "[Console]::Error.WriteLine('run once as Administrator: powershell -ExecutionPolicy Bypass "
-        f"-File ' + $s + ' -PasswordFile ' + $f + ' -User {cred.user} -Share {SHARE}"
-        "; then re-run spectracut setup'); exit 1 }"
-    )
+    if admin:
+        serve = (
+            _PROFILE_DIR + f"$s = Join-Path $d '{ADMIN_SCRIPT}'; $f = Join-Path $d 'storage.pw'; "
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $s -PasswordFile $f "
+            f"-User '{cred.user}' -Share '{share}' -Path '{path}'; "
+            "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; "
+            f"if (-not (Test-Path '{marker}')) {{ "
+            f"[Console]::Error.WriteLine('the storage admin script did not mark {path}'); exit 1 }}"
+        )
+        summary = "create the share (admin script, run as the Administrator SSH account)"
+    else:
+        serve = (
+            _PROFILE_DIR + f"if (-not (Test-Path '{marker}')) {{ "
+            f"$s = Join-Path $d '{ADMIN_SCRIPT}'; $f = Join-Path $d 'storage.pw'; "
+            "[Console]::Error.WriteLine('run once as Administrator: powershell -ExecutionPolicy "
+            f"Bypass -File ' + $s + ' -PasswordFile ' + $f + ' -User {cred.user} -Share {share} "
+            f'-Path "{path}"; then re-run spectracut setup\'); exit 1 }}'
+        )
+        summary = "wait for the admin script to have created the share"
     return [
         Step(
             host,
@@ -229,19 +332,17 @@ def _windows_admin_steps(host: str, cred: Credential) -> list[Step]:
             "powershell",
             stdin=cred.password + "\n",
         ),  # fmt: skip
-        Step(
-            host,
-            "storage:serve",
-            "wait for the admin script to have created the share",
-            gate,
-            "powershell",
-        ),  # fmt: skip
+        Step(host, "storage:serve", summary, serve, "powershell"),
     ]
 
 
 def storage_notes(target: StorageTarget, facts: Mapping[str, HostFacts]) -> list[str]:
-    """Heads-up for a Windows storage host: an administrator must run the script once."""
-    if target.kind == "host" and facts[target.host].os == "windows":
+    """Heads-up for a non-admin Windows storage host: an administrator must run the script once."""
+    if (
+        target.kind == "host"
+        and facts[target.host].os == "windows"
+        and not facts[target.host].admin
+    ):
         return [
             f"{target.host} needs a one-time admin step: setup writes {ADMIN_SCRIPT} and an "
             "ACL'd password file under its profile's spectracut folder and stops until the "
@@ -251,18 +352,22 @@ def storage_notes(target: StorageTarget, facts: Mapping[str, HostFacts]) -> list
 
 
 def _serve_steps(
-    target: StorageTarget, facts: Mapping[str, HostFacts], cred: Credential
+    target: StorageTarget,
+    facts: Mapping[str, HostFacts],
+    cred: Credential,
+    layout: StorageLayout,
 ) -> list[Step]:
     """Set up the share on the chosen machine (Tailscale-only, dedicated account)."""
     host = facts[target.host]
+    folder = storage_folder(target, facts, layout)
     if host.os == "windows":
-        return _windows_admin_steps(target.host, cred)
+        return _windows_admin_steps(target.host, cred, folder, target.share, host.admin)
     smb_conf = (
-        f"[{SHARE}]\n   path = {LINUX_PATH}\n   read only = no\n   valid users = {cred.user}\n"
+        f"[{SHARE}]\n   path = {folder}\n   read only = no\n   valid users = {cred.user}\n"
         f"   hosts allow = {TAILSCALE_RANGE} 127.0.0.1\n   hosts deny = 0.0.0.0/0\n"
         "   server min protocol = SMB3\n"
     )
-    return [
+    steps = [
         write_file_step(
             target.host,
             "linux",
@@ -275,9 +380,9 @@ def _serve_steps(
             target.host,
             "storage:serve",
             "serve the Samba share (Tailscale-only)",
-            f"sudo mkdir -p {LINUX_PATH} && id -u {cred.user} >/dev/null 2>&1 "
+            f"sudo mkdir -p '{folder}' && id -u {cred.user} >/dev/null 2>&1 "
             f"|| sudo useradd --system --no-create-home --shell /usr/bin/nologin {cred.user}; "
-            f"sudo chown {cred.user} {LINUX_PATH}; "
+            f"sudo chown {cred.user} '{folder}'; "
             "grep -q 'spectracut.d' /etc/samba/smb.conf "
             "|| echo 'include = /etc/samba/spectracut.d/flamenco.conf' | sudo tee -a /etc/samba/smb.conf >/dev/null; "  # noqa: E501
             f'read -r pw; printf \'%s\\n%s\\n\' "$pw" "$pw" | sudo smbpasswd -s -a {cred.user}; '
@@ -286,28 +391,28 @@ def _serve_steps(
             stdin=cred.password + "\n",
         ),
     ]
-
-
-def _attach_steps(name: str, os: str, server: str, share: str, cred: Credential) -> list[Step]:
-    """Mount (Linux) or map (Windows) the share on one machine, replacing any old attachment."""
-    if os == "windows":
-        script = (
-            "$p = [Console]::In.ReadLine(); "
-            f"if (Test-Path {WINDOWS_DRIVE}) {{ Remove-SmbMapping -LocalPath {WINDOWS_DRIVE} -Force "  # noqa: E501
-            "-UpdateProfile -EA SilentlyContinue }; "
-            f"New-SmbMapping -LocalPath {WINDOWS_DRIVE} -RemotePath '\\\\{server}\\{share}' "
-            f"-UserName '{cred.user}' -Password $p -Persistent $true | Out-Null"
-        )
-        return [
+    if folder != LINUX_PATH:
+        # The rest of the farm and the Manager see storage at LINUX_PATH: bind the folder there.
+        steps.append(
             Step(
-                name,
-                f"storage:attach:{name}",
-                f"map {WINDOWS_DRIVE} to the share",
-                script,
-                "powershell",
-                stdin=cred.password + "\n",
+                target.host,
+                "storage:bind",
+                f"bind {folder} at {LINUX_PATH}",
+                f"sudo mkdir -p {LINUX_PATH}; "
+                f"mountpoint -q {LINUX_PATH} && sudo umount {LINUX_PATH}; "
+                f"sudo mount --bind '{folder}' {LINUX_PATH}",
             )
-        ]
+        )
+    return steps
+
+
+def _attach_steps(name: str, server: str, share: str, cred: Credential) -> list[Step]:
+    """Mount the share on one Linux machine, replacing any old mount.
+
+    Windows machines get no step here: drive mappings live in a logon session, so the
+    worker task maps the drive itself (``windows_worker.ps1``: subst of the folder on
+    the storage host, the UNC share elsewhere) from ``worker-args.json``.
+    """
     cred_body = f"username={cred.user}\npassword={cred.password}\n"
     return [
         write_file_step(
@@ -336,26 +441,32 @@ def plan_storage(
     facts: Mapping[str, HostFacts],
     workers: Sequence[str],
     cred: Credential,
+    layout: StorageLayout | None = None,
+    previous_layout: StorageLayout | None = None,
 ) -> list[Step]:
     """Steps that put storage on ``target`` and re-point the Manager and every worker.
 
-    Empty when ``previous == target`` (already converged). A change migrates:
-    files on the control plane's share are copied across before the re-point.
+    Empty when ``previous == target`` and the layout (folder, drive) is unchanged
+    (already converged). A change migrates: files on the control plane's share are
+    copied across before the re-point. The drive letter is checked on every Windows
+    machine first, so a conflict fails the plan (and ``--dry-run``).
     """
-    if previous == target:
-        return []
+    layout = layout or StorageLayout()
     for name in (CONTROL, *workers):
         if name not in facts:
             raise StorageError(f"no facts for {name}")
     if target.kind == "host" and target.host not in facts:
         raise StorageError(f"unknown storage host {target.host!r}")
+    check_windows_drive(target, facts, [CONTROL, *workers], layout)
+    if previous == target and (previous_layout or StorageLayout()) == layout:
+        return []
     server = _smb_server(target, facts)
     steps: list[Step] = []
     if target.kind == "host":
-        steps += _serve_steps(target, facts, cred)
+        steps += _serve_steps(target, facts, cred, layout)
     control_is_storage = target.kind == "host" and target.host == CONTROL
     if previous is not None and not control_is_storage:
-        steps += _attach_steps(CONTROL, "linux", server, target.share, cred)[:1]
+        steps += _attach_steps(CONTROL, server, target.share, cred)[:1]
         steps += _migrate_steps(server, target.share, cred)
     machines = [CONTROL, *[w for w in workers if w != CONTROL]]
     for name in machines:
@@ -363,7 +474,9 @@ def plan_storage(
             continue  # served locally at LINUX_PATH
         if name == target.host and facts[name].os == "linux" and target.kind == "host":
             continue
-        steps += _attach_steps(name, facts[name].os, server, target.share, cred)
+        if facts[name].os == "windows":
+            continue  # mapped in the worker task's session (worker-args.json)
+        steps += _attach_steps(name, server, target.share, cred)
     listen = f"{facts[CONTROL].address}:{MANAGER_PORT}"
     steps.append(
         write_file_step(
@@ -372,7 +485,7 @@ def plan_storage(
             "storage:variables",
             "write the Manager config with the two-way storage variables",
             "$HOME/.local/opt/flamenco/flamenco-manager.yaml",
-            manager_config(listen),
+            manager_config(listen, normalize_drive(layout.drive)),
         )
     )
     steps.append(
