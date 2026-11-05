@@ -232,9 +232,7 @@ def routes(store: ProductionStore) -> list[BaseRoute]:
         except ValidationError as exc:
             raise _HttpError(400, f"invalid body: {exc.error_count()} error(s)") from exc
 
-    def mutate(
-        pid: str, nid: str, change: Callable[[ProductionGraph], None]
-    ) -> ProductionGraph:
+    def mutate(pid: str, nid: str, change: Callable[[ProductionGraph], None]) -> ProductionGraph:
         with lock:
             graph = load(pid)
             node_of(graph, nid)

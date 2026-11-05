@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+/* global document, fetch, requestAnimationFrame, HTMLTextAreaElement */
 // The local review page: gate queue, frame-accurate player with synced audio,
 // approve / request changes, and notes pinned to frames. Review only: productions
 // are started and steered from the CLI and Claude Code (MCP), never from here.
