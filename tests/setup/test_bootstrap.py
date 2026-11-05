@@ -15,7 +15,7 @@ from spectracut.cli import render as render_cli
 from spectracut.cli.app import app
 from spectracut.cli.render import load_hosts
 from spectracut.queue.profile import RenderProfile
-from spectracut.setup.manifest import HostFacts, Step, load_manifest
+from spectracut.setup.manifest import HostFacts, Os, Step, load_manifest
 from spectracut.setup.plan import (
     CommandRunner,
     SetupError,
@@ -45,7 +45,7 @@ WHEELS = _fake_wheels()
 
 
 class FakeHost:
-    def __init__(self, os: str = "linux", fail: str | None = None, admin: bool = True) -> None:
+    def __init__(self, os: Os = "linux", fail: str | None = None, admin: bool = True) -> None:
         self.os = os
         self.fail = fail
         self.admin = admin
@@ -60,7 +60,7 @@ class FakeHost:
             "100.64.0.9",
             wired=True,
             free_gb=500,
-            admin=self.admin,  # type: ignore[arg-type]
+            admin=self.admin,
         )
 
     def run(self, step: Step) -> str | None:

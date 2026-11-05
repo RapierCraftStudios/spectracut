@@ -8,6 +8,7 @@ import json
 import re
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -250,10 +251,11 @@ def test_spectracut_host_installed_and_profiled_on_every_worker(tmp_path: Path) 
     assert {s.host for s in copies} == set(WORKERS) and all(s.component is None for s in copies)
 
 
-def _args(plan, host: str = "legion") -> dict:  # type: ignore[no-untyped-def]
+def _args(plan: Any, host: str = "legion") -> dict[str, Any]:
     step = next(s for s in plan.steps if s.id == f"worker-args:{host}")
     assert "worker-args.json" in step.command
-    return json.loads(step.stdin or "")
+    args: dict[str, Any] = json.loads(step.stdin or "")
+    return args
 
 
 def test_windows_worker_is_a_startup_task_under_the_profile() -> None:
