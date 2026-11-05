@@ -28,6 +28,8 @@ from spectracut.queue.signing import JobEnvelope
 JOB_TYPE: Final = "spectracut-shot"
 JOB_TYPE_SCRIPT: Final = "spectracut-shot.js"
 DEFAULT_CHUNK_SIZE: Final = 10
+JOB_TYPES_DIR: Final = "flamenco_jobtypes"
+ERROR_BODY_LIMIT: Final = 500  # characters of an HTTP error body kept in FlamencoError
 DEFAULT_CAPABILITIES: tuple[str, ...] = ("eevee", "cycles", "workbench")
 
 _VENDOR_WORDS = re.compile(r"\b(nvidia|geforce|quadro|amd|radeon|intel|arc|rtx|gtx)\b")
@@ -156,7 +158,34 @@ def build_shot_job(
 
 def job_type_script() -> Path:
     """Path of the ``spectracut-shot`` compiler to install in the Manager's ``scripts/``."""
-    return Path(str(resources.files("spectracut.queue") / "flamenco_jobtypes" / JOB_TYPE_SCRIPT))
+    return Path(str(resources.files("spectracut.queue") / JOB_TYPES_DIR / JOB_TYPE_SCRIPT))
+
+
+def job_type_sources() -> dict[str, str]:
+    """Every packaged custom job type: file name -> content, sorted by name.
+
+    ``spectracut setup`` installs these into the Manager's ``scripts/`` folder.
+    """
+    folder = resources.files("spectracut.queue") / JOB_TYPES_DIR
+    files = sorted((f for f in folder.iterdir() if f.name.endswith(".js")), key=lambda f: f.name)
+    return {f.name: f.read_text(encoding="utf-8") for f in files}
+
+
+def job_type_names() -> list[str]:
+    """The job type names the Manager lists for :func:`job_type_sources` (the file stems)."""
+    return [name.removesuffix(".js") for name in job_type_sources()]
+
+
+def _error_body(exc: urllib.error.HTTPError) -> str:
+    """The response body of an HTTP error, decoded, stripped and truncated ("" if none)."""
+    try:
+        raw = exc.read()
+    except (OSError, ValueError):
+        return ""
+    text = (raw or b"").decode("utf-8", errors="replace").strip()
+    if len(text) > ERROR_BODY_LIMIT:
+        text = text[:ERROR_BODY_LIMIT] + "…"
+    return text
 
 
 class FlamencoClient:
@@ -178,7 +207,9 @@ class FlamencoClient:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
-            raise FlamencoError(f"{method} {path} failed: HTTP {exc.code}") from None
+            body = _error_body(exc)
+            detail = f": {body}" if body else ""
+            raise FlamencoError(f"{method} {path} failed: HTTP {exc.code}{detail}") from None
         except (urllib.error.URLError, OSError) as exc:
             raise FlamencoError(f"{method} {path} failed: {exc}") from None
         return json.loads(raw) if raw else None
@@ -214,6 +245,11 @@ class FlamencoClient:
             f"/api/v3/worker-mgt/workers/{worker_id}/settags",
             {"tag_ids": list(tag_ids)},
         )
+
+    def job_types(self) -> list[str]:
+        """Names of the job types the Manager knows (``GET /api/v3/jobs/types``)."""
+        payload = cast(dict[str, Any], self._request("GET", "/api/v3/jobs/types") or {})
+        return [str(t["name"]) for t in payload.get("job_types") or []]
 
     def submit(self, job: dict[str, Any]) -> dict[str, Any]:
         return cast(dict[str, Any], self._request("POST", "/api/v3/jobs", job))
