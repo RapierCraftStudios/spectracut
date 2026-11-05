@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""``render.set_property`` (an allowlist of render and colour settings) and ``render.set_output``.
+"""``render.set_property`` (an allowlist of render and colour settings), ``render.set_output``
+and ``render.set_passes`` (an allowlist of view-layer passes for multilayer EXR).
 
 Each allowed key maps to a typed validator and a setter written out in code;
 the user-supplied key only selects a row in the table. Nothing here evaluates
@@ -140,7 +141,13 @@ def render_set_property(bpy: Any, args: dict[str, Any]) -> Report:
 
 
 # Output formats: an 8-bit PNG master, or scene-linear OpenEXR (no view transform baked).
-OUTPUT_DEPTHS = {"PNG": ("8", "16"), "OPEN_EXR": ("16", "32")}
+# OPEN_EXR_MULTILAYER carries the view-layer passes (AOVs, depth, vectors, cryptomatte).
+OUTPUT_DEPTHS = {
+    "PNG": ("8", "16"),
+    "OPEN_EXR": ("16", "32"),
+    "OPEN_EXR_MULTILAYER": ("16", "32"),
+}
+EXR_FORMATS = ("OPEN_EXR", "OPEN_EXR_MULTILAYER")
 EXR_CODEC = "ZIP"
 
 
@@ -156,7 +163,82 @@ def render_set_output(bpy: Any, args: dict[str, Any]) -> Report:
     # FOLLOW_SCENE: PNG is encoded with the scene's view/display; EXR stays scene-linear.
     image.color_management = "FOLLOW_SCENE"
     report: dict[str, Any] = {"format": fmt, "color_depth": depth}
-    if fmt == "OPEN_EXR":
+    if fmt in EXR_FORMATS:
         image.exr_codec = EXR_CODEC
         report["exr_codec"] = EXR_CODEC
     return report
+
+
+# View-layer passes by recipe name -> a setter written out in code for that pass.
+# The recipe name only selects a row; nothing is looked up by user strings.
+
+
+def _pass_combined(layer: Any, on: bool) -> None:
+    layer.use_pass_combined = on
+
+
+def _pass_z(layer: Any, on: bool) -> None:
+    layer.use_pass_z = on
+
+
+def _pass_mist(layer: Any, on: bool) -> None:
+    layer.use_pass_mist = on
+
+
+def _pass_normal(layer: Any, on: bool) -> None:
+    layer.use_pass_normal = on
+
+
+def _pass_vector(layer: Any, on: bool) -> None:
+    layer.use_pass_vector = on
+
+
+def _pass_diffuse(layer: Any, on: bool) -> None:
+    layer.use_pass_diffuse_color = on
+
+
+def _pass_glossy(layer: Any, on: bool) -> None:
+    layer.use_pass_glossy_color = on
+
+
+def _pass_emission(layer: Any, on: bool) -> None:
+    layer.use_pass_emit = on
+
+
+def _pass_crypto_object(layer: Any, on: bool) -> None:
+    layer.use_pass_cryptomatte_object = on
+
+
+def _pass_crypto_material(layer: Any, on: bool) -> None:
+    layer.use_pass_cryptomatte_material = on
+
+
+PASSES: dict[str, Callable[[Any, bool], None]] = {
+    "combined": _pass_combined,
+    "z": _pass_z,
+    "mist": _pass_mist,
+    "normal": _pass_normal,
+    "vector": _pass_vector,
+    "diffuse": _pass_diffuse,
+    "glossy": _pass_glossy,
+    "emission": _pass_emission,
+    "cryptomatte_object": _pass_crypto_object,
+    "cryptomatte_material": _pass_crypto_material,
+}
+
+
+def render_set_passes(bpy: Any, args: dict[str, Any]) -> Report:
+    """Enable exactly the requested view-layer passes; the other allowlisted ones go off."""
+    check_only(args, {"passes"}, "render.set_passes")
+    passes = args.get("passes")
+    if not isinstance(passes, list) or not passes:
+        raise ToolError("render.set_passes: passes must be a non-empty list")
+    for name in passes:
+        if not isinstance(name, str) or name not in PASSES:
+            raise ToolError(f"render.set_passes: passes must be among {sorted(PASSES)}")
+    if len(set(passes)) != len(passes):
+        raise ToolError("render.set_passes: passes must not repeat")
+    layer = bpy.context.view_layer
+    for name, setter in PASSES.items():
+        setter(layer, name in passes)
+    return {"passes": list(passes)}

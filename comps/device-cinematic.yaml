@@ -1,0 +1,21 @@
+# Device cinematic: atmosphere around the device, never on its UI. Screen
+# glow inside the matte; glints, light wrap and lens dispersion only outside
+# it, so the screen stays legible.
+id: device-cinematic
+version: 1
+screen_matte: device_screen
+ops:
+  - op: screen_glow
+    strength: 0.03
+    size: 7
+    threshold: 1.0
+  - op: glints
+    threshold: 1.0
+    strength: 0.3
+    streaks: 6
+  - op: light_wrap
+    amount: 0.2
+    blur: 12
+  - op: lens
+    distortion: 0.01
+    dispersion: 0.02

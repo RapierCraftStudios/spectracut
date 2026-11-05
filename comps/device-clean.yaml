@@ -1,0 +1,16 @@
+# Device clean: clarity first. A light UI sharpen and a barely-there screen
+# glow inside the device-screen cryptomatte; no lens character.
+id: device-clean
+version: 1
+screen_matte: device_screen
+ops:
+  - op: ui_sharpen
+    amount: 0.3
+    radius: 1
+  - op: screen_glow
+    strength: 0.02
+    size: 6
+    threshold: 0.9
+  - op: lens
+    distortion: 0.0
+    dispersion: 0.0

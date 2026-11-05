@@ -1,0 +1,32 @@
+{
+  "name": "device-shot-comped",
+  "description": "A device shot composited and finished: a deterministic recipe, a preview render, a final render to multilayer EXR with AOVs, depth, motion vectors and cryptomatte, the shot's declarative comp graph as a compositor-only job, then the Look's finishing; a comp or grade change re-runs only compositing; no human gates.",
+  "stages": [
+    "shot",
+    "render_preview",
+    "render_scene",
+    "comp",
+    "finish"
+  ],
+  "revision_budget": {
+    "shot": 0,
+    "render_preview": 0,
+    "render_scene": 0,
+    "comp": 0,
+    "finish": 0
+  },
+  "tier": {
+    "shot": "preview",
+    "render_preview": "preview",
+    "render_scene": "final",
+    "comp": "final",
+    "finish": "final"
+  },
+  "gates": {
+    "shot": "auto",
+    "render_preview": "auto",
+    "render_scene": "auto",
+    "comp": "auto",
+    "finish": "auto"
+  }
+}
