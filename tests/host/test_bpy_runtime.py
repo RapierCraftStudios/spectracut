@@ -129,3 +129,36 @@ def test_runner_usage_errors(tmp_path: Path) -> None:
         check=True,
     )
     assert result.stdout.split() == ["1", "1"]
+
+
+def _chunks(data: bytes) -> list[tuple[bytes, bytes]]:
+    import struct
+
+    pos, found = 8, []
+    while pos < len(data):
+        length, kind = struct.unpack(">I4s", data[pos : pos + 8])
+        found.append((kind, data[pos + 8 : pos + 8 + length]))
+        pos += 12 + length
+    return found
+
+
+def test_runner_disables_stamp_metadata_and_strips_png_text(
+    fake_bin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_BPY_PNG", "1")
+    frames = []
+    for run in ("a", "b"):
+        work = tmp_path / run
+        work.mkdir()
+        result = _blender(fake_bin, _manifest(work, GOOD_STEPS), "tok", work)
+        assert result.returncode == 0, result.stderr
+        stamps = json.loads((work / "bpy.jsonl.stamps").read_text())
+        assert stamps == {
+            "use_stamp": False,
+            "use_stamp_date": False,
+            "use_stamp_render_time": False,
+        }
+        frames.append((work / "out" / "frame_0001.png").read_bytes())
+    kinds = [k for k, _ in _chunks(frames[0])]
+    assert kinds == [b"IHDR", b"IDAT", b"IEND"]
+    assert frames[0] == frames[1]

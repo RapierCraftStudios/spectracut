@@ -17,11 +17,61 @@ import hashlib
 import json
 import math
 import os
+import struct
 import sys
 from pathlib import Path
 from typing import Any
 
 TOKEN_ENV = "SPECTRACUT_EXECUTION_TOKEN"
+
+STAMP_FLAGS = (
+    "use_stamp",
+    "use_stamp_date",
+    "use_stamp_time",
+    "use_stamp_render_time",
+    "use_stamp_frame",
+    "use_stamp_frame_range",
+    "use_stamp_memory",
+    "use_stamp_hostname",
+    "use_stamp_camera",
+    "use_stamp_lens",
+    "use_stamp_scene",
+    "use_stamp_marker",
+    "use_stamp_filename",
+    "use_stamp_sequencer_strip",
+    "use_stamp_note",
+)
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+RUN_VARYING_CHUNKS = (b"tEXt", b"zTXt", b"iTXt", b"tIME")
+
+
+def disable_run_metadata(scene: Any) -> None:
+    """Turn off every stamp that records the date, render time or host in the output."""
+    render = scene.render
+    for flag in STAMP_FLAGS:
+        if hasattr(render, flag):
+            setattr(render, flag, False)
+
+
+def strip_png_metadata(path: Path) -> None:
+    """Drop text and time chunks from a PNG so equal pixels give equal bytes.
+
+    Cycles writes ``cycles.<view layer>.*_time`` as custom stamp fields that have no
+    toggle, so they are removed from the file. A non-PNG file is left untouched.
+    """
+    data = path.read_bytes()
+    if not data.startswith(PNG_SIGNATURE):
+        return
+    out = bytearray(PNG_SIGNATURE)
+    pos = len(PNG_SIGNATURE)
+    while pos + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[pos : pos + 8])
+        end = pos + 12 + length
+        if kind not in RUN_VARYING_CHUNKS:
+            out += data[pos:end]
+        pos = end
+    if bytes(out) != data:
+        path.write_bytes(bytes(out))
 
 
 class RunnerRefused(RuntimeError):
@@ -271,7 +321,10 @@ def run(manifest: dict[str, Any], bpy: Any) -> None:
     scene.frame_end = int(manifest["frame_end"])
     scene.render.filepath = str(Path(manifest["output_dir"]) / "frame_")
     scene.render.use_file_extension = True
+    disable_run_metadata(scene)
     bpy.ops.render.render(animation=True)
+    for frame in sorted(Path(manifest["output_dir"]).glob("frame_*.png")):
+        strip_png_metadata(frame)
 
 
 def main(argv: list[str] | None = None) -> int:

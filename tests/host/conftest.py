@@ -42,11 +42,29 @@ from unittest.mock import MagicMock
 _bpy = MagicMock(name="bpy")
 _bpy.app.version = (4, 5, 3)
 
+def _chunk(kind, body):
+    import struct, zlib
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+def _png():
+    import struct, time, zlib
+    head = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", head)
+        + _chunk(b"tEXt", b"RenderTime\x00" + str(time.time()).encode())
+        + _chunk(b"IDAT", zlib.compress(b"\x00\x01\x02\x03\x04"))
+        + _chunk(b"IEND", b""))
+
 def _render(animation=False):
     scene = _bpy.context.scene
     out = str(scene.render.filepath)
     for frame in range(int(scene.frame_start), int(scene.frame_end) + 1):
-        Path(f"{out}{frame:04d}.png").write_bytes(b"png")
+        body = _png() if os.environ.get("FAKE_BPY_PNG") else b"png"
+        Path(f"{out}{frame:04d}.png").write_bytes(body)
+    record = os.environ.get("FAKE_BPY_RECORD")
+    if record:
+        stamps = {k: getattr(scene.render, k) is True for k in (
+            "use_stamp", "use_stamp_date", "use_stamp_render_time")}
+        Path(record + ".stamps").write_text(json.dumps(stamps))
 
 _bpy.ops.render.render.side_effect = _render
 

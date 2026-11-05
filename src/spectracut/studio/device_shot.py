@@ -36,6 +36,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import time
 from collections.abc import Callable, Mapping
@@ -46,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
 
+from spectracut.harness.imagecmp import ImageError, decode_png
 from spectracut.queue.executors.flamenco import FlamencoApi, FlamencoExecutor
 from spectracut.queue.queue import Job, JobQueue
 from spectracut.queue.signing import JobEnvelope, sign_job
@@ -277,6 +279,9 @@ class ExecutorOptions:
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
 
+_BARE_SHA = re.compile(r"[0-9a-f]{64}")
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -285,8 +290,28 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def frame_identity(path: Path) -> str:
+    """Identity of a rendered frame: its shape and decoded pixels, not its file bytes.
+
+    Blender stamps run-varying metadata into the file, so replay compares pixels. A
+    frame that cannot be decoded (EXR, 16-bit) falls back to its file sha256.
+    """
+    try:
+        image = decode_png(path.read_bytes())
+    except ImageError:
+        return _sha256(path)
+    h = hashlib.sha256(f"{image.width}x{image.height}x{image.channels}\n".encode())
+    h.update(image.pixels)
+    return f"pixels:sha256:{h.hexdigest()}"
+
+
 def frame_hashes(out: Path) -> dict[str, str]:
-    """sha256 of every ``frame_*`` file in ``out``, by file name."""
+    """:func:`frame_identity` of every ``frame_*`` file in ``out``, by file name."""
+    return {p.name: frame_identity(p) for p in sorted(out.glob("frame_*")) if p.is_file()}
+
+
+def frame_file_hashes(out: Path) -> dict[str, str]:
+    """sha256 of every ``frame_*`` file's bytes, by file name (provenance)."""
     return {p.name: _sha256(p) for p in sorted(out.glob("frame_*")) if p.is_file()}
 
 
@@ -557,6 +582,7 @@ def device_shot_runner(
             "tier": ctx.tier.value,
             "scene_graph_hash": scene,
             "frames": dict(frames),
+            "frame_files": dict(frame_file_hashes(out)),
             "output_dir": str(out),
             "worker_tag": flamenco.get("worker_tag", config.worker_tag),
             "job_id": job_id,
@@ -601,6 +627,7 @@ class ReplayResult:
     scene_graph_hash: str | None
     original_frames: dict[str, str]
     frames: dict[str, str]
+    files: dict[str, str] = field(default_factory=dict)
 
     @property
     def scene_matches(self) -> bool:
@@ -611,7 +638,19 @@ class ReplayResult:
 
     @property
     def frames_match(self) -> bool:
-        return bool(self.frames) and self.frames == self.original_frames
+        return bool(self.frames) and not self._differing()
+
+    def _same(self, name: str) -> bool:
+        recorded = self.original_frames.get(name)
+        if recorded is not None and _BARE_SHA.fullmatch(recorded):
+            # recorded before pixel identities: it is a file sha256
+            return recorded == self.files.get(name, self.frames.get(name))
+        return recorded is not None and recorded == self.frames.get(name)
+
+    def _differing(self) -> list[str]:
+        return [
+            n for n in sorted(set(self.original_frames) | set(self.frames)) if not self._same(n)
+        ]
 
     @property
     def matches(self) -> bool:
@@ -621,10 +660,7 @@ class ReplayResult:
         out: list[str] = []
         if not self.scene_matches:
             out.append("scene_graph_hash")
-        for name in sorted(set(self.original_frames) | set(self.frames)):
-            if self.original_frames.get(name) != self.frames.get(name):
-                out.append(name)
-        return out
+        return out + self._differing()
 
 
 def _fresh_replay_id(config: DeviceShotConfig, job_id: str) -> str:
@@ -691,4 +727,5 @@ def replay(
         scene_graph_hash=read_scene_graph_hash(out),
         original_frames=original_frames,
         frames=frame_hashes(out),
+        files=frame_file_hashes(out),
     )

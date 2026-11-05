@@ -356,6 +356,7 @@ def test_studio_run_renders_preview_and_final_and_status_shows_ledger(
         assert isinstance(frames, dict) and set(frames) == {"frame_0001.png"}
         frame = Path(str(out["output_dir"])) / "frame_0001.png"
         assert frames["frame_0001.png"] == _sha(frame)
+        assert out["frame_files"]["frame_0001.png"] == _sha(frame)
         assert Path(str(out["output_dir"])).parent == shared / "out"
         assert out["worker_tag"] == TAG
         job_file = shared / "jobs" / f"{out['job_id']}.json"
@@ -625,3 +626,64 @@ def test_e2e_device_shot_renders_on_the_farm_and_replays_identically(tmp_path: P
     replay = runner.invoke(app, ["studio", "replay", pid, "render_final", "--home", home])
     print(replay.output)
     assert replay.exit_code == 0, replay.output
+
+
+def _png(pixels: bytes, text: bytes | None = None) -> bytes:
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+        )
+
+    raw = b"\x00" + pixels  # one RGBA row, filter 0
+    out = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 8, 6, 0, 0, 0))
+    if text is not None:
+        out += chunk(b"tEXt", text)
+    return out + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+
+def _replayed(tmp_path: Path, name: str, recorded: Path, replayed: Path) -> ds.ReplayResult:
+    return ds.ReplayResult(
+        node_id="n",
+        original_job_id="a",
+        job_id="b",
+        output_dir=tmp_path,
+        original_scene_graph_hash="h",
+        scene_graph_hash="h",
+        original_frames=ds.frame_hashes(recorded),
+        frames=ds.frame_hashes(replayed),
+        files=ds.frame_file_hashes(replayed),
+    )
+
+
+def test_frame_identity_ignores_png_text_chunks_but_not_pixels(tmp_path: Path) -> None:
+    pix = bytes(range(8))
+    dirs = {n: tmp_path / n for n in ("a", "b", "c")}
+    for d in dirs.values():
+        d.mkdir()
+    (dirs["a"] / "frame_0001.png").write_bytes(_png(pix, b"RenderTime\x000.5"))
+    (dirs["b"] / "frame_0001.png").write_bytes(_png(pix, b"Date\x002026-01-01"))
+    (dirs["c"] / "frame_0001.png").write_bytes(_png(pix[:-1] + bytes([pix[-1] ^ 1])))
+    assert ds.frame_file_hashes(dirs["a"]) != ds.frame_file_hashes(dirs["b"])
+    same = _replayed(tmp_path, "f", dirs["a"], dirs["b"])
+    assert same.matches and same.mismatches() == []
+    lsb = _replayed(tmp_path, "f", dirs["a"], dirs["c"])
+    assert not lsb.matches and lsb.mismatches() == ["frame_0001.png"]
+
+
+def test_replay_of_a_legacy_file_sha_record_compares_file_bytes(tmp_path: Path) -> None:
+    rec, rep = tmp_path / "rec", tmp_path / "rep"
+    rec.mkdir()
+    rep.mkdir()
+    (rec / "frame_0001.png").write_bytes(_png(bytes(8)))
+    (rep / "frame_0001.png").write_bytes(_png(bytes(8)))
+    result = _replayed(tmp_path, "f", rec, rep)
+    legacy = ds.ReplayResult(**{**result.__dict__, "original_frames": ds.frame_file_hashes(rec)})
+    assert legacy.matches
+    (rep / "frame_0001.png").write_bytes(_png(bytes(8), b"Date\x00x"))
+    changed = ds.ReplayResult(
+        **{**legacy.__dict__, "files": ds.frame_file_hashes(rep), "frames": ds.frame_hashes(rep)}
+    )
+    assert not changed.matches
