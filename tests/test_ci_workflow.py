@@ -54,3 +54,23 @@ def test_runs_on_every_pull_request() -> None:
 )
 def test_ci_runs_check(needle: str) -> None:
     assert any(needle in line for line in run_lines()), f"ci.yml never runs {needle!r}"
+
+
+def test_ci_builds_both_images_without_pushing() -> None:
+    # The release images job only runs on tags, so CI must build the images on every PR.
+    docker_jobs = [
+        job
+        for job in load()["jobs"].values()
+        if any("docker/build-push-action" in step.get("uses", "") for step in job["steps"])
+    ]
+    assert docker_jobs, "ci.yml never builds the Docker images"
+    files = {
+        entry["dockerfile"]
+        for job in docker_jobs
+        for entry in job.get("strategy", {}).get("matrix", {}).get("include", [])
+    }
+    assert files == {"docker/Dockerfile.api", "docker/Dockerfile.host"}
+    for job in docker_jobs:
+        for step in job["steps"]:
+            if "docker/build-push-action" in step.get("uses", ""):
+                assert step.get("with", {}).get("push", False) is False

@@ -7,6 +7,7 @@ WORKDIR /src
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 COPY host/pyproject.toml ./host/pyproject.toml
+COPY scripts/flamenco_enable_gpu.py ./scripts/flamenco_enable_gpu.py
 RUN uv build --wheel --out-dir /dist
 
 FROM python:3.12-slim

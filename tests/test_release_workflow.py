@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,40 @@ def test_dockerfiles_are_licensed_and_unprivileged(name: str) -> None:
     assert text.startswith("# SPDX-License-Identifier: AGPL-3.0-or-later")
     assert 'org.opencontainers.image.licenses="AGPL-3.0-or-later"' in text
     assert "USER spectracut" in text
+
+
+def build_stage_copies(name: str) -> list[str]:
+    """Destinations (relative to WORKDIR) of the COPY lines in the `AS build` stage."""
+    copies: list[str] = []
+    in_build = False
+    for raw in (DOCKER / name).read_text().splitlines():
+        line = raw.strip()
+        if line.upper().startswith("FROM "):
+            in_build = line.lower().endswith(" as build")
+            continue
+        if in_build and line.upper().startswith("COPY ") and "--from" not in line:
+            parts = line.split()[1:]
+            sources, dest = parts[:-1], parts[-1]
+            if dest in ("./", "."):
+                copies.extend(s.rstrip("/") for s in sources)
+            else:
+                copies.append(dest.removeprefix("./").rstrip("/"))
+    return copies
+
+
+@pytest.mark.parametrize("name", ["Dockerfile.api", "Dockerfile.host"])
+def test_build_stage_copies_every_wheel_force_include(name: str) -> None:
+    # hatchling fails with "Forced include not found" when a force-include source is
+    # missing from the build context, so every source must be copied into the build stage.
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    wheel = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]
+    sources = list(wheel.get("force-include", {}))
+    assert sources, "pyproject.toml lost its wheel force-include table"
+    copied = build_stage_copies(name)
+    for source in sources:
+        assert any(source == c or source.startswith(c + "/") for c in copied), (
+            f"{name} build stage never copies {source!r}, a wheel force-include"
+        )
 
 
 def test_api_image_never_installs_blender_or_host() -> None:
