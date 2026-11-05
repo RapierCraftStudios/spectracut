@@ -690,11 +690,20 @@ def _hash_of(blender: Path, tmp_path: Path, steps: list[tuple[str, dict[str, Any
 
 
 def test_scene_graph_hash_same_recipe_same_hash(blender: Path, tmp_path: Path) -> None:
-    steps = [("scene.clear", {}), CAM, CUBE, ("inspect.bounds", {})]
+    steps: list[tuple[str, dict[str, Any]]] = [
+        ("scene.clear", {}),
+        CAM,
+        CUBE,
+        ("inspect.bounds", {}),
+    ]
     first = _hash_of(blender, tmp_path / "a", steps)
     assert re.fullmatch(r"[0-9a-f]{64}", first)
     assert _hash_of(blender, tmp_path / "b", steps) == first
-    moved = [("scene.clear", {}), CAM, ("object.add_primitive", {"kind": "cube", "location": [1, 0, 0]})]
+    moved: list[tuple[str, dict[str, Any]]] = [
+        ("scene.clear", {}),
+        CAM,
+        ("object.add_primitive", {"kind": "cube", "location": [1, 0, 0]}),
+    ]
     assert _hash_of(blender, tmp_path / "c", moved) != first
 
 
@@ -724,6 +733,7 @@ def test_scene_graph_hash_canonical_and_content_addressed(tmp_path: Path) -> Non
         "               resolution_percentage=100, fps=24, film_transparent=False,\n"
         "               use_motion_blur=False, motion_blur_shutter=0.5)\n"
         "    scene = N(camera=cam, render=render, cycles=N(samples=64),\n"
+        "              frame_start=1, frame_end=1,\n"
         "              eevee=N(taa_render_samples=16),\n"
         "              view_settings=N(view_transform='AgX', look='None', exposure=0.0,\n"
         "                              gamma=1.0))\n"

@@ -223,21 +223,20 @@ def test_version_flag_prints_the_installed_package_version() -> None:
 
 
 def test_run_assets_dir_flag_overrides_env(
-    tmp_path: Path, host_env: dict[str, str], sign: SignJob, make_recipe: Any
+    tmp_path: Path, host_env: dict[str, str], sign: SignJob, make_recipe: Any, make_envelope: Any
 ) -> None:
     flag_dir, env_dir = tmp_path / "flag-assets", tmp_path / "env-assets"
     for d in (flag_dir, env_dir):
         (d / "devices").mkdir(parents=True)
         (d / "devices" / "phone.glb").write_bytes(b"glTF")
     recipe = make_recipe([("object.import_gltf", {"path": "devices/phone.glb"})])
-    job = write_job(tmp_path, sign(make_envelope_for(recipe)))
-    env = {**host_env, "SPECTRACUT_ASSETS_DIR": str(env_dir), "FAKE_BPY_RECORD": ""}
-    env["FAKE_BPY_RECORD"] = str(tmp_path / "bpy.jsonl")
+    job = write_job(tmp_path, sign(make_envelope(recipe)))
+    env = {**host_env, "SPECTRACUT_ASSETS_DIR": str(env_dir)}
     out = tmp_path / "out"
     args = ["run", "--job-file", str(job), "--output", str(out)]
     result = host(env, *args, "--assets-dir", str(flag_dir))
     assert result.returncode == 0, result.stderr
-    calls = (tmp_path / "bpy.jsonl").read_text()
+    calls = Path(env["FAKE_BPY_RECORD"]).read_text()
     assert str((flag_dir / "devices" / "phone.glb").resolve()) in calls
     assert str(env_dir) not in calls
     assert json.loads((out / "result.json").read_text())["scene_graph_hash"]

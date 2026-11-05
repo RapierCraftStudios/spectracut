@@ -220,6 +220,9 @@ def scene_state(bpy: Any) -> dict[str, Any]:
         "engine": render.engine,
         "resolution": [render.resolution_x, render.resolution_y, render.resolution_percentage],
         "fps": render.fps,
+        # The scene's own range, read before the manifest's chunk range is applied,
+        # so every chunk of one job hashes the same.
+        "frame_range": [scene.frame_start, scene.frame_end],
         "film_transparent": render.film_transparent,
         "use_motion_blur": render.use_motion_blur,
         "motion_blur_shutter": render.motion_blur_shutter,
@@ -240,7 +243,7 @@ def scene_state(bpy: Any) -> dict[str, Any]:
 
 
 def scene_graph_hash(bpy: Any) -> str:
-    """The deterministic hash of the built scene (frame range excluded: chunks share it)."""
+    """The deterministic hash of the built scene, computed before the chunk range is set."""
     return canonical_scene_hash(scene_state(bpy))
 
 

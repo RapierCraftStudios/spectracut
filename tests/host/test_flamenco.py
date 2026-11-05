@@ -170,6 +170,7 @@ def test_build_shot_job_sets_optional_assets_dir(
     envelope = make_envelope()
     job = build_shot_job("/j.json", envelope, TAGS[0], output_dir="/o", assets_dir="/shared/assets")
     assert job["settings"]["assets_dir"] == "/shared/assets"
-    assert "assets_dir" not in build_shot_job("/j.json", envelope, TAGS[0], output_dir="/o")[
-        "settings"
-    ]
+    assert (
+        "assets_dir"
+        not in build_shot_job("/j.json", envelope, TAGS[0], output_dir="/o")["settings"]
+    )
