@@ -25,6 +25,7 @@ from os import killpg
 from pathlib import Path
 from typing import Protocol
 
+from spectracut.queue.flamenco import job_type_sources
 from spectracut.queue.profile import RenderProfile
 from spectracut.setup.manifest import (
     HostFacts,
@@ -72,6 +73,10 @@ STATE_NAME = "setup-state.json"
 GPU_PSEUDO = "gpu-script"
 SERVICE_PSEUDO = "worker-service"
 MANAGER_SERVICE = "manager-service"
+JOBTYPES_PSEUDO = "manager-jobtypes"
+MANAGER_UNIT = "flamenco-manager"
+# The Manager's folder when its unit sets no WorkingDirectory (setup's own install).
+MANAGER_DIR_DEFAULT = "$HOME/.local/opt/flamenco"
 HOST_PSEUDO = "host-profile"
 HOST_REG_PSEUDO = "host-registration"
 HOST_REG_REL = ".config/spectracut/host.json"
@@ -535,6 +540,56 @@ def _worker_prep_steps(
     return steps
 
 
+def job_types_version(sources: Mapping[str, str]) -> str:
+    """Content hash of the packaged job types: a changed script gives a new version."""
+    digest = hashlib.sha256()
+    for name in sorted(sources):
+        digest.update(f"{name}\0{sources[name]}\0".encode())
+    return digest.hexdigest()[:12]
+
+
+def job_types_step(host: str, sources: Mapping[str, str]) -> Step:
+    """Install the custom job types into the Manager's ``scripts/`` folder; no sudo.
+
+    Flamenco loads custom job types from ``scripts/`` next to ``flamenco-manager``,
+    which is the Manager unit's WorkingDirectory (a hand-installed Manager may live
+    elsewhere than setup's own install). A file is replaced only when its content
+    differs, and the Manager is restarted only when a file changed.
+    """
+    lines = [
+        "set -e",
+        f"d=$(systemctl --user show -p WorkingDirectory --value {MANAGER_UNIT} 2>/dev/null "
+        "|| true)",
+        'd="${d#[-!]}"',
+        '[ "$d" != "~" ] || d="$HOME"',
+        f'[ -n "$d" ] || d="{MANAGER_DIR_DEFAULT}"',
+        's="$d/scripts"',
+        'mkdir -p "$s"',
+        "changed=",
+        't=$(mktemp "$s/.spectracut.XXXXXX")',
+    ]
+    for name in sorted(sources):
+        b64 = base64.b64encode(sources[name].encode("utf-8")).decode("ascii")
+        lines += [
+            f"printf '%s' '{b64}' | base64 -d > \"$t\"",
+            f'if ! cmp -s "$t" "$s/{name}"; then chmod 644 "$t"; mv -f "$t" "$s/{name}"; '
+            'changed=1; t=$(mktemp "$s/.spectracut.XXXXXX"); fi',
+        ]
+    lines += [
+        'rm -f "$t"',
+        f'if [ -n "$changed" ]; then systemctl --user restart {MANAGER_UNIT}; fi',
+    ]
+    return Step(
+        host,
+        "manager:job-types",
+        f"install the Flamenco job types ({', '.join(sorted(sources))})",
+        "; ".join(lines),
+        component=JOBTYPES_PSEUDO,
+        version=job_types_version(sources),
+        kind="write",
+    )
+
+
 def host_registration(name: str, public_key: str) -> str:
     """``host.json`` for a worker: its registered name and the control plane's public key."""
     return json.dumps({"control_plane_public_key": public_key, "host_id": name}, sort_keys=True)
@@ -588,6 +643,7 @@ def build_plan(
     gpu_src = gpu_script_source()
     gpu_hash = hashlib.sha256(gpu_src.encode("utf-8")).hexdigest()[:12]
     worker_src = worker_script_source() + task_script_source()
+    job_types = job_type_sources()
     steps: list[Step] = []
     need_task: list[str] = []
     for name in [CONTROL, *workers]:
@@ -623,6 +679,8 @@ def build_plan(
                 need_task.append(name)
         elif name in workers and f.os == "windows" and not f.admin and not f.task:
             need_task.append(name)
+        if name == CONTROL and have.get(JOBTYPES_PSEUDO) != job_types_version(job_types):
+            steps.append(job_types_step(name, job_types))
     steps += plan_storage(target, state.storage, facts, workers, cred, layout, state.storage_layout)
     return Plan(
         set_id,

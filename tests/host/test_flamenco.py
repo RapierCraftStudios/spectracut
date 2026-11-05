@@ -174,3 +174,55 @@ def test_build_shot_job_sets_optional_assets_dir(
         "assets_dir"
         not in build_shot_job("/j.json", envelope, TAGS[0], output_dir="/o")["settings"]
     )
+
+
+class _Rejecting(BaseHTTPRequestHandler):
+    body = b""
+
+    def log_message(self, *args: Any) -> None:
+        pass
+
+    def do_GET(self) -> None:
+        if self.path == "/api/v3/jobs/types":
+            raw = json.dumps({"job_types": [{"name": "spectracut-shot", "label": "Shot"}]})
+            self.send_response(200)
+            data = raw.encode()
+        else:
+            self.send_response(400)
+            data = _Rejecting.body
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    do_POST = do_GET
+
+
+@pytest.fixture
+def rejecting() -> Iterator[str]:
+    server = HTTPServer(("127.0.0.1", 0), _Rejecting)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_port}"
+    server.shutdown()
+
+
+def test_client_error_includes_the_response_body(rejecting: str) -> None:
+    client = FlamencoClient(rejecting)
+    _Rejecting.body = b'{"message": "job type unknown", "type": "spectracut-shot"}'
+    with pytest.raises(FlamencoError) as err:
+        client.submit({"type": "spectracut-shot"})
+    assert str(err.value).startswith("POST /api/v3/jobs failed: HTTP 400: ")
+    assert "job type unknown" in str(err.value)
+
+    _Rejecting.body = b"x" * 5000
+    with pytest.raises(FlamencoError) as err:
+        client.submit({})
+    assert len(str(err.value)) < 600 and str(err.value).endswith("x…")
+
+    _Rejecting.body = b""
+    with pytest.raises(FlamencoError, match=r"failed: HTTP 400$"):
+        client.submit({})
+
+
+def test_client_lists_job_types(rejecting: str) -> None:
+    assert FlamencoClient(rejecting).job_types() == ["spectracut-shot"]

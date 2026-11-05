@@ -562,6 +562,9 @@ class StubManager:
     def list_tags(self) -> list[WorkerTag]:
         return list(self.tags)
 
+    def job_types(self) -> list[str]:
+        return ["spectracut-shot"]
+
     def create_tag(self, name: str, description: str = "") -> None:
         self.tags.append(WorkerTag(id=name, name=name, description=description))
 

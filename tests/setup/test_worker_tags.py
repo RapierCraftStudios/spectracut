@@ -65,6 +65,9 @@ class FakeManager:
     def list_tags(self) -> list[WorkerTag]:
         return list(self.tags.values())
 
+    def job_types(self) -> list[str]:
+        return ["spectracut-shot"]
+
     def create_tag(self, name: str, description: str = "") -> None:
         self.writes.append(("create", name))
         self.add_tag(name, description)

@@ -13,15 +13,16 @@ from __future__ import annotations
 
 import os
 import secrets
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Protocol
 
 import typer
 
 from spectracut.cli.render import HomeOpt, HostEntry, _home, _read_registry
 from spectracut.providers.base import redact
-from spectracut.queue.flamenco import FlamencoClient
+from spectracut.queue.flamenco import FlamencoClient, FlamencoError, job_type_names
 from spectracut.queue.signing import ensure_signing_key, read_public_key
 from spectracut.setup.manifest import HostFacts, StepRunner, load_manifest
 from spectracut.setup.plan import (
@@ -52,8 +53,19 @@ NAS_USER_ENV = "SPECTRACUT_NAS_USER"
 NAS_PASSWORD_ENV = "SPECTRACUT_NAS_PASSWORD"
 
 
-def manager_client(url: str) -> TagApi:
-    """The Manager API client the worker-tag sync uses (replaced in tests)."""
+# Seconds to wait for the Manager to list the job types (it restarts when one changed).
+JOB_TYPES_TIMEOUT = 60.0
+JOB_TYPES_POLL = 2.0
+
+
+class ManagerApi(TagApi, Protocol):
+    """The Manager API setup uses: worker tags and the job types it knows."""
+
+    def job_types(self) -> list[str]: ...
+
+
+def manager_client(url: str) -> ManagerApi:
+    """The Manager API client setup uses for worker tags and job types (replaced in tests)."""
     return FlamencoClient(url)
 
 
@@ -171,12 +183,57 @@ def setup_cmd(
         if plan.steps and not dry_run:
             apply_plan(plan, runner, state, root)
         # Worker tags live in the Manager, so they are synced even when the hosts converged.
-        _sync_tags(f"http://{facts[CONTROL].address}:{MANAGER_PORT}", registered, dry_run)
+        url = f"http://{facts[CONTROL].address}:{MANAGER_PORT}"
+        _sync_tags(url, registered, dry_run)
+        # Likewise the job types: the Manager must list every packaged one after setup.
+        _check_job_types(url, dry_run)
         if dry_run or not plan.steps:
             return
     except (StorageError, SetupError, ValueError, OSError) as exc:
         raise _fail(str(exc)) from exc
     typer.echo(f"set {set_id} applied; storage on {plan.storage.host}")
+
+
+def _check_job_types(
+    url: str,
+    dry_run: bool,
+    *,
+    timeout: float | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Fail unless the Manager lists every packaged job type (a dry run only warns).
+
+    Polls up to ``timeout`` s (default :data:`JOB_TYPES_TIMEOUT`): setup restarts the
+    Manager when a job type changed.
+    """
+    if timeout is None:
+        timeout = JOB_TYPES_TIMEOUT
+    wanted = job_type_names()
+    client = manager_client(url)
+    deadline = clock() + timeout
+    missing: list[str] = []
+    problem = ""
+    while True:
+        try:
+            listed = set(client.job_types())
+            missing = [n for n in wanted if n not in listed]
+            problem = ""
+        except FlamencoError as exc:
+            missing, problem = wanted, f" ({exc})"
+        if not missing or dry_run or clock() >= deadline:
+            break
+        sleep(min(JOB_TYPES_POLL, max(deadline - clock(), 0.0)))
+    if not missing:
+        return
+    message = (
+        f"Flamenco Manager does not list job type {', '.join(missing)}{problem}; check the "
+        "scripts/ folder next to flamenco-manager and run `spectracut setup` again"
+    )
+    if dry_run:
+        typer.echo(redact(f"warning: {message}"))
+        return
+    raise SetupError(message)
 
 
 def _sync_tags(url: str, hosts: Sequence[HostEntry], dry_run: bool) -> None:
