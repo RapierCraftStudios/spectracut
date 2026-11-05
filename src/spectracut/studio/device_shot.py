@@ -79,6 +79,7 @@ if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     from spectracut.providers.base import VisionJudge
+    from spectracut.qa.report import QAReportStore
 
 PROFILE = "device-shot"
 SHOT_STAGE = "shot"
@@ -597,6 +598,36 @@ def _load_brief(data: Any) -> Brief | CreativeBrief:
         return CreativeBrief.model_validate(data)
 
 
+def _qa_look(ctx: RunContext) -> Look:
+    """The brand kit's default Look for QA, else a neutral Look with default thresholds."""
+    kit = ctx.spec.params.get(BRAND_KIT_PARAM)
+    if kit is not None:
+        try:
+            return resolve_look(BrandKit.model_validate(kit))
+        except ValueError:
+            pass
+    return Look(id="neutral")
+
+
+def _render_qa(
+    ctx: RunContext, job_id: str, out: Path, look: Look, store: QAReportStore | None
+) -> dict[str, JsonValue]:
+    """Run QA on the rendered frames and save the report; a QA failure never raises."""
+    from spectracut.qa.copy_ocr import available_reader
+    from spectracut.qa.report import QAReportStore, run_qa
+
+    kit_param = ctx.spec.params.get(BRAND_KIT_PARAM)
+    try:
+        kit = BrandKit.model_validate(kit_param) if kit_param is not None else None
+        frames = [p.read_bytes() for p in sorted(out.glob("frame_*")) if p.is_file()]
+        report = run_qa(job_id, frames, look, reader=available_reader(), brand_kit=kit)
+        (store or QAReportStore()).save(report)
+    except Exception as exc:  # noqa: BLE001 - QA must not fail the render; export is gated
+        return {"passed": False, "failures": ["qa.error"], "render_id": job_id, "error": str(exc)}
+    failures: list[JsonValue] = [c.name for c in report.failures()]
+    return {"passed": report.passed, "failures": failures, "render_id": job_id}
+
+
 def device_shot_runner(
     graph: ProductionGraph,
     config: DeviceShotConfig,
@@ -606,8 +637,13 @@ def device_shot_runner(
     key: Ed25519PrivateKey,
     now: Callable[[], datetime] | None = None,
     options: ExecutorOptions | None = None,
+    qa_store: QAReportStore | None = None,
 ) -> Runner:
-    """A graph Runner for the ``device-shot`` and ``device-shot-graded`` profiles' stages."""
+    """A graph Runner for the ``device-shot`` and ``device-shot-graded`` profiles' stages.
+
+    Every render is QA'd and its report saved in ``qa_store`` (the
+    :func:`~spectracut.studio.store.spectracut_home` store by default) under the job id.
+    """
     opts = options or ExecutorOptions()
     clock_now = now or opts.now
 
@@ -669,6 +705,9 @@ def device_shot_runner(
         if scene_referred:
             output[LOOK_ID_PARAM] = look.id
             output["render_rules"] = [{"tool": s.tool, "args": s.args} for s in render_rules(look)]
+        output["qa"] = _render_qa(
+            ctx, job_id, out, look if scene_referred else _qa_look(ctx), qa_store
+        )
         usage = result.usage
         if ctx.tier is Tier.PREVIEW and not scene_referred:
             active = judge

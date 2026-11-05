@@ -18,6 +18,7 @@ for the film's shots, not farm frames.
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,8 @@ from spectracut.formats.cutdowns import (
 )
 from spectracut.formats.linter import ShotLook, lint
 from spectracut.formats.safe_areas import Overlay, export_preset
+from spectracut.qa.common import QACheck
+from spectracut.qa.report import QAReport
 from spectracut.spec._base import content_hash
 from spectracut.studio.gates import GateMode, GatePolicy
 from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
@@ -195,7 +198,16 @@ def test_one_production_yields_three_15s_9x16_ads_and_a_30s_16x9_ad_without_new_
             assert (clip.media_ref, spec.aspect) in approved
         assert from_otio(to_otio(edit)) == edit
         assert lint(edit, LOOKS) == []
-        export_preset(spec, [Overlay(name="cta", x=0.2, y=0.5, w=0.5, h=0.1)])
+        export_preset(
+            spec,
+            [Overlay(name="cta", x=0.2, y=0.5, w=0.5, h=0.1)],
+            qa=QAReport(
+                render_id=spec.id,
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                checks=[QACheck(name="ok", status="pass")],
+                passed=True,
+            ),
+        )
 
     again = graph.run(renderer)
     assert not again.did_work

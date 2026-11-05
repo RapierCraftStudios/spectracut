@@ -30,6 +30,7 @@ from typer.testing import CliRunner
 from spectracut.cli import studio as studio_mod
 from spectracut.cli.app import app
 from spectracut.providers.base import VisionScore
+from spectracut.qa.report import QAReportStore
 from spectracut.queue.flamenco import WorkerTag, gpu_slug, worker_tags
 from spectracut.queue.profile import RenderProfile
 from spectracut.queue.signing import (
@@ -64,6 +65,14 @@ LEGION = RenderProfile(
 TAG = "3070laptopgpu"
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _qa_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Render QA reports go to SPECTRACUT_HOME; keep them out of the real home."""
+    home = tmp_path / "qa-home"
+    monkeypatch.setenv("SPECTRACUT_HOME", str(home))
+    return home
 
 
 def _brief() -> Brief:
@@ -368,6 +377,10 @@ def test_studio_run_renders_preview_and_final_and_status_shows_ledger(
         assert {"tool": "render.set_engine", "args": {"engine": engine}} in [
             {"tool": s["tool"], "args": s["args"]} for s in steps
         ]
+        qa = out["qa"]
+        assert isinstance(qa, dict) and qa["render_id"] == out["job_id"]
+        report = QAReportStore(tmp_path / "qa-home").load(str(out["job_id"]))
+        assert report is not None and report.passed == qa["passed"]
     assert fake.submitted[0]["settings"]["assets_dir"] == str(tmp_path / "a")
     preview = graph.output("render_preview")
     assert isinstance(preview, dict) and preview["vision_qa"] == {

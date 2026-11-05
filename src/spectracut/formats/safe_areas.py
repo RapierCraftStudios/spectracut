@@ -4,7 +4,8 @@
 Each platform overlays its own UI (captions, buttons, progress bars) on the
 video. A cut-down's titles, captions, CTA and logo must sit inside the
 platform's safe rect for the cut-down's aspect, so :func:`export_preset` refuses
-an overlay outside it and a platform that does not take the aspect.
+an overlay outside it and a platform that does not take the aspect. It also
+refuses a render whose QA report did not pass (#27).
 
 Insets are fractions of the frame height (top, bottom) and width (left, right).
 They are deliberately conservative roundings of each platform's published
@@ -13,13 +14,16 @@ creative guidance; when a platform changes its UI, change the table here.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from pydantic import Field, model_validator
 
 from spectracut.formats.cutdowns import CutDownSpec
 from spectracut.spec._base import Slug, StrictModel
 from spectracut.spec.spec import Aspect
+
+if TYPE_CHECKING:
+    from spectracut.qa.report import QAReport
 
 _EPS = 1e-9
 
@@ -112,9 +116,20 @@ def inside_safe_area(platform: str, aspect: str, overlay: Overlay) -> bool:
 
 
 def export_preset(
-    cutdown: CutDownSpec, overlays: tuple[Overlay, ...] | list[Overlay] = ()
+    cutdown: CutDownSpec,
+    overlays: tuple[Overlay, ...] | list[Overlay] = (),
+    *,
+    qa: QAReport,
 ) -> ExportPreset:
-    """The export of ``cutdown`` for its platform, with every overlay checked."""
+    """The export of ``cutdown`` for its platform, with every overlay checked.
+
+    ``qa`` is the render's QA report: a report that did not pass raises
+    :class:`~spectracut.qa.report.ExportBlocked` before anything else is checked.
+    """
+    # Imported here: qa.edit_checks imports this module.
+    from spectracut.qa.report import ensure_exportable
+
+    ensure_exportable(qa)
     platform, aspect = cutdown.platform, cutdown.aspect
     safe_area(platform, aspect)
     outside = [o.name for o in overlays if not inside_safe_area(platform, aspect, o)]

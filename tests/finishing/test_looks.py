@@ -41,6 +41,14 @@ KIT = ROOT / "brands" / "alterlab" / "brand-kit.yaml"
 TAG = "3070laptopgpu"
 
 
+@pytest.fixture(autouse=True)
+def _qa_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Render QA reports go to SPECTRACUT_HOME; keep them out of the real home."""
+    home = tmp_path / "qa-home"
+    monkeypatch.setenv("SPECTRACUT_HOME", str(home))
+    return home
+
+
 # ---- the library -------------------------------------------------------------------
 
 
