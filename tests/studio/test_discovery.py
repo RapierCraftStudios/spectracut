@@ -286,7 +286,9 @@ def test_forbidden_word_matches_whole_words_only() -> None:
 def test_check_brief_flags_sources_product_notes_did_not_declare() -> None:
     from spectracut.studio.departments import ProductNotes
 
-    product = ProductNotes.model_validate({**PRODUCT, "sources": SOURCES[:1], "features": PRODUCT["features"][:1]})
+    product = ProductNotes.model_validate(
+        {**PRODUCT, "sources": SOURCES[:1], "features": PRODUCT["features"][:1]}
+    )
     violations = check_brief(CreativeBrief.model_validate(BRIEF), product)
     assert [v.kind for v in violations] == ["untraced_source"]
 
@@ -317,6 +319,8 @@ def test_copy_gate_error_is_a_department_output_error() -> None:
     from spectracut.studio import DepartmentOutputError
     from spectracut.writer.copy_gate import Violation
 
-    err = CopyGateError("script-writer", "script", [Violation(line=0, kind="unsourced", detail="x")])
+    err = CopyGateError(
+        "script-writer", "script", [Violation(line=0, kind="unsourced", detail="x")]
+    )
     assert isinstance(err, DepartmentOutputError)
     assert "copy gate: line 0 unsourced: x" in str(err)

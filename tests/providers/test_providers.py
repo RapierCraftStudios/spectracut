@@ -428,7 +428,11 @@ def test_claude_text_provider_completes_through_sign_in(
     assert isinstance(provider, base.TextProvider)
     out = provider.complete("sys", "say it", schema={"type": "object"})
     assert out.output == {"score": 0.8, "notes": "clear and legible"}
-    assert out.usage == {"claude_requests": 1, "claude_input_tokens": 3010, "claude_output_tokens": 0}
+    assert out.usage == {
+        "claude_requests": 1,
+        "claude_input_tokens": 3010,
+        "claude_output_tokens": 0,
+    }
     call = fakes.calls(fake_bins["record"])[0]
     assert call["keys"] == []
     assert "--json-schema" in call["argv"]

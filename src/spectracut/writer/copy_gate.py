@@ -75,7 +75,9 @@ def check_script(
         for claim in line.claims:
             if not claim.source_id.strip():
                 found.append(
-                    Violation(line=i, kind="unsourced", detail=f"claim {claim.text!r} cites no source")
+                    Violation(
+                        line=i, kind="unsourced", detail=f"claim {claim.text!r} cites no source"
+                    )
                 )
             elif claim.source_id not in known:
                 found.append(
