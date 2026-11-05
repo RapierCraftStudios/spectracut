@@ -354,6 +354,8 @@ NEW_TOOLS = {
     "look.set_view",
     "render.set_output",
     "finish.apply_look",
+    "render.set_passes",
+    "comp.apply_graph",
     "type.add_2d",
     "type.add_3d",
 }
@@ -367,7 +369,7 @@ def test_registry_literal_matches_tools() -> None:
     names, same = got
     assert same is True
     assert set(names) == runtime_tool_names(RUNTIME / "tools.py")
-    assert NEW_TOOLS <= set(names) and len(names) == 23
+    assert NEW_TOOLS <= set(names) and len(names) == 25
 
 
 def test_error_codes_are_stable() -> None:
@@ -922,6 +924,189 @@ def test_apply_look_refusals(
     assert run.proc.returncode == 1
     assert f"[{code}]" in run.proc.stderr, run.proc.stderr
     assert not any("render.render" in c for c in run.state.get("calls", []))
+
+
+# --- compositing: render.set_passes and comp.apply_graph (#55) --------------------------
+
+
+def test_set_passes_enables_exactly_the_requested_passes() -> None:
+    got = pure(
+        "from types import SimpleNamespace\n"
+        "from bpy_runtime.ops.props import PASSES, render_set_passes\n"
+        "layer = SimpleNamespace()\n"
+        "bpy = SimpleNamespace(context=SimpleNamespace(view_layer=layer))\n"
+        "for name in PASSES: PASSES[name](layer, True)\n"
+        "report = render_set_passes(bpy, {'passes': ['combined', 'z', 'vector',"
+        " 'cryptomatte_object']})\n"
+        "print(json.dumps([report, vars(layer)]))\n"
+    )
+    report, layer = got
+    assert report == {"passes": ["combined", "z", "vector", "cryptomatte_object"]}
+    on = {k for k, v in layer.items() if v}
+    assert on == {
+        "use_pass_combined",
+        "use_pass_z",
+        "use_pass_vector",
+        "use_pass_cryptomatte_object",
+    }
+    assert len(layer) == 10
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"passes": []},
+        {"passes": ["z", "z"]},
+        {"passes": ["shadow_catcher"]},
+        {"passes": "z"},
+        {"passes": ["z"], "script": "x"},
+    ],
+)
+def test_set_passes_refusals(blender: Path, tmp_path: Path, args: dict[str, Any]) -> None:
+    run = run_steps(blender, tmp_path, [("render.set_passes", args)])
+    assert run.proc.returncode == 1 and "[args.invalid]" in run.proc.stderr, run.proc.stderr
+
+
+def test_set_output_accepts_multilayer_exr(blender: Path, tmp_path: Path) -> None:
+    steps = [
+        ("render.set_passes", {"passes": ["combined", "z", "vector", "cryptomatte_object"]}),
+        ("render.set_output", {"format": "OPEN_EXR_MULTILAYER", "color_depth": "32"}),
+    ]
+    run = run_steps(blender, tmp_path, steps)
+    assert run.proc.returncode == 0, run.proc.stderr
+    assert run.report("render.set_output") == {
+        "format": "OPEN_EXR_MULTILAYER",
+        "color_depth": "32",
+        "exr_codec": "ZIP",
+    }
+    bad = run_steps(
+        blender,
+        tmp_path,
+        [("render.set_output", {"format": "OPEN_EXR_MULTILAYER", "color_depth": "8"})],
+    )
+    assert bad.proc.returncode == 1 and "[args.invalid]" in bad.proc.stderr
+
+
+def _comp_args(comp_id: str = "device-cinematic") -> dict[str, Any]:
+    from spectracut.finishing.comp import comp_params, load_comps
+
+    graph = load_comps(ROOT / "comps")[comp_id]
+    return {**comp_params(graph), "frames": ["frames/frame_0001.exr", "frames/frame_0002.exr"]}
+
+
+@pytest.mark.parametrize("comp_id", ["device-clean", "device-cinematic", "screen-grade"])
+def test_apply_graph_runs_every_library_graph(blender: Path, tmp_path: Path, comp_id: str) -> None:
+    """Regression: the host accepts exactly what ``comp_params`` sends (screen_glow.threshold)."""
+    assets = _exr_assets(tmp_path)
+    run = run_steps(
+        blender, tmp_path, [("comp.apply_graph", _comp_args(comp_id))], assets_dir=assets
+    )
+    assert run.proc.returncode == 0, run.proc.stderr
+    report = run.report("comp.apply_graph")
+    assert report["comp_id"] == comp_id and report["screen_matte"] == "device_screen"
+    assert report["nodes"][:3] == ["image", "screen_matte", "scene_matte"]
+    assert report["nodes"][-1] == "composite"
+    calls = run.state["calls"]
+    assert not any("CompositorNodeRLayers" in c for c in calls)
+    assert any("CompositorNodeCryptomatteV2" in c for c in calls)
+
+
+COMP_TREE = r"""
+from pathlib import Path
+from bpy_runtime.ops import scene
+from bpy_runtime.ops.compositor import comp_apply_graph
+
+class Socket:
+    def __init__(self, node, name):
+        self.node, self.name, self.default_value = node, name, None
+
+class Sockets(dict):
+    def __getitem__(self, key):
+        if key not in self:
+            dict.__setitem__(self, key, Socket(self.node, key))
+        return dict.__getitem__(self, key)
+
+class Node:
+    def __init__(self, kind):
+        self.kind, self.label = kind, ""
+        self.inputs, self.outputs = Sockets(), Sockets()
+        self.inputs.node = self.outputs.node = self
+
+class Nodes(list):
+    def new(self, kind):
+        node = Node(kind)
+        self.append(node)
+        return node
+
+class Links(list):
+    def new(self, a, b):
+        self.append((a.node.label, b.node.label, b.name))
+
+class NS:
+    pass
+
+tree = NS(); tree.nodes = Nodes(); tree.links = Links()
+bpy = NS(); bpy.context = NS(); bpy.context.scene = sc = NS()
+sc.render = NS(); sc.node_tree = tree
+bpy.data = NS(); bpy.data.images = NS()
+bpy.data.images.load = lambda path, check_existing=False: NS()
+scene._CONTEXT["assets_dir"] = Path(sys.argv[2])
+args = json.loads(sys.argv[3])
+report = comp_apply_graph(bpy, args)
+nodes = {n.label: [n.kind, getattr(n, "matte_id", None), getattr(n, "source", None)]
+         for n in tree.nodes}
+print(json.dumps([report, nodes, tree.links]))
+"""
+
+
+def test_apply_graph_masks_screen_ops_with_the_matte_and_scene_ops_with_its_inverse(
+    tmp_path: Path,
+) -> None:
+    assets = _exr_assets(tmp_path)
+    args = {**_comp_args("device-cinematic"), "screen_matte": "Phone.Screen"}
+    args["ops"] = [*args["ops"], {"op": "screen_grade", "saturation": 0.9}]
+    report, nodes, links = pure(COMP_TREE, str(assets), json.dumps(args))
+    assert report["screen_matte"] == "Phone.Screen"
+    assert nodes["screen_matte"] == ["CompositorNodeCryptomatteV2", "Phone.Screen", "IMAGE"]
+    assert ["image", "screen_matte", "Image"] in links
+    assert ["screen_matte", "scene_matte", "Color"] in links
+    fac = {dst: src for src, dst, sock in links if sock == 0}
+    for op in ("glints", "light_wrap", "lens"):
+        assert fac[op] == "scene_matte", (op, fac)
+    assert fac["screen_grade"] == "screen_matte"
+    assert ["screen_matte", "screen_glow_isolate", 2] in links
+    assert ["screen_glow", "glints_glare", "Image"] in links
+    assert ["screen_grade", "composite", "Image"] in links
+    assert not any(kind == "CompositorNodeRLayers" for kind, _, _ in nodes.values())
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        ({"frames": ["../frame_0001.exr"]}, "asset.path_refused"),
+        ({"frames": ["/etc/frame_0001.exr"]}, "asset.path_refused"),
+        ({"frames": ["frames/frame_0001.png"]}, "asset.path_refused"),
+        ({"frames": []}, "args.invalid"),
+        ({"ops": [{"op": "python", "code": "x"}]}, "args.invalid"),
+        ({"ops": [{"op": "lens", "dispersion": 0.5}]}, "args.invalid"),
+        ({"ops": [{"op": "lens", "extra": 1}]}, "args.invalid"),
+        ({"ops": [{"op": "lens"}, {"op": "lens"}]}, "args.invalid"),
+        ({"screen_matte": "x" * 64}, "args.invalid"),
+        ({"script": "x"}, "args.invalid"),
+    ],
+)
+def test_apply_graph_refusals(
+    blender: Path, tmp_path: Path, change: dict[str, Any], code: str
+) -> None:
+    assets = _exr_assets(tmp_path)
+    (tmp_path / "frame_0001.exr").write_bytes(b"exr")
+    run = run_steps(
+        blender, tmp_path, [("comp.apply_graph", {**_comp_args(), **change})], assets_dir=assets
+    )
+    assert run.proc.returncode == 1
+    assert f"[{code}]" in run.proc.stderr, run.proc.stderr
+    calls = run.state.get("calls", [])
+    assert not any("nodes.new" in c or "images.load" in c for c in calls), calls
 
 
 # --- motion typography (#56) -----------------------------------------------------------

@@ -1,0 +1,22 @@
+[
+  {
+    "text": "Revenue up 12%",
+    "box": {
+      "x": 0.325,
+      "y": 0.4,
+      "w": 0.35,
+      "h": 0.06666666666666667
+    },
+    "confidence": 0.95
+  },
+  {
+    "text": "We use cookies to improve your experience. Accept all cookies",
+    "box": {
+      "x": 0.05,
+      "y": 0.86,
+      "w": 0.9,
+      "h": 0.06
+    },
+    "confidence": 0.88
+  }
+]

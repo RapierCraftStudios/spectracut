@@ -28,11 +28,12 @@ from bpy_runtime.ops.camera import (
     camera_set_dof,
     camera_use,
 )
+from bpy_runtime.ops.compositor import comp_apply_graph
 from bpy_runtime.ops.finish import finish_apply_look
 from bpy_runtime.ops.inspect import inspect_bounds, inspect_framing
 from bpy_runtime.ops.look import look_set_view
 from bpy_runtime.ops.material import material_apply_preset, material_apply_screen
-from bpy_runtime.ops.props import render_set_output, render_set_property
+from bpy_runtime.ops.props import render_set_output, render_set_passes, render_set_property
 from bpy_runtime.ops.scene import object_import_gltf
 from bpy_runtime.type3d import type_add_2d, type_add_3d
 
@@ -61,6 +62,8 @@ TOOL_NAMES = frozenset(
         "look.set_view",
         "render.set_output",
         "finish.apply_look",
+        "render.set_passes",
+        "comp.apply_graph",
         "type.add_2d",
         "type.add_3d",
     }
@@ -179,6 +182,8 @@ TOOLS: dict[str, Callable[[Any, dict[str, Any]], Report]] = {
     "look.set_view": look_set_view,
     "render.set_output": render_set_output,
     "finish.apply_look": finish_apply_look,
+    "render.set_passes": render_set_passes,
+    "comp.apply_graph": comp_apply_graph,
     "type.add_2d": type_add_2d,
     "type.add_3d": type_add_3d,
 }
