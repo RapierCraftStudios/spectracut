@@ -8,8 +8,8 @@ import pytest
 from spectracut.critique.benchmarks import png_bytes
 from spectracut.qa.legibility import (
     AA_RATIO,
-    contrast_ratio,
     linear_legibility,
+    luminance_contrast,
     relative_luminance,
     screen_legibility,
 )
@@ -38,11 +38,11 @@ SCREEN = (8, 4, 16, 16)
 def test_known_wcag_pairs() -> None:
     black, white = relative_luminance((0, 0, 0)), relative_luminance((255, 255, 255))
     assert black == 0.0 and white == pytest.approx(1.0)
-    assert contrast_ratio(black, white) == pytest.approx(21.0)
-    assert contrast_ratio(white, black) == pytest.approx(21.0)
+    assert luminance_contrast(black, white) == pytest.approx(21.0)
+    assert luminance_contrast(white, black) == pytest.approx(21.0)
     grey = relative_luminance((119, 119, 119))
-    assert contrast_ratio(grey, grey) == 1.0
-    assert contrast_ratio(grey, white) == pytest.approx(4.48, abs=0.01)
+    assert luminance_contrast(grey, grey) == 1.0
+    assert luminance_contrast(grey, white) == pytest.approx(4.48, abs=0.01)
     with pytest.raises(ValueError, match="outside 0..255"):
         relative_luminance((300, 0, 0))
 

@@ -686,15 +686,11 @@ def device_shot_runner(
     options: ExecutorOptions | None = None,
     qa_store: QAReportStore | None = None,
 ) -> Runner:
-<<<<<<< HEAD
-    """A graph Runner for the ``device-shot``, ``-graded`` and ``-comped`` profiles' stages."""
-=======
-    """A graph Runner for the ``device-shot`` and ``device-shot-graded`` profiles' stages.
+    """A graph Runner for the ``device-shot``, ``-graded`` and ``-comped`` profiles' stages.
 
     Every render is QA'd and its report saved in ``qa_store`` (the
     :func:`~spectracut.studio.store.spectracut_home` store by default) under the job id.
     """
->>>>>>> origin/milestone/m2-first-film-alterlab-launch-film
     opts = options or ExecutorOptions()
     clock_now = now or opts.now
 
@@ -757,14 +753,11 @@ def device_shot_runner(
         if scene_referred:
             output[LOOK_ID_PARAM] = look.id
             output["render_rules"] = [{"tool": s.tool, "args": s.args} for s in render_rules(look)]
-<<<<<<< HEAD
         if passes:
             output["render_passes"] = list(comp.RENDER_PASSES)
-=======
         output["qa"] = _render_qa(
             ctx, job_id, out, look if scene_referred else _qa_look(ctx), qa_store
         )
->>>>>>> origin/milestone/m2-first-film-alterlab-launch-film
         usage = result.usage
         if ctx.tier is Tier.PREVIEW and not scene_referred:
             active = judge
