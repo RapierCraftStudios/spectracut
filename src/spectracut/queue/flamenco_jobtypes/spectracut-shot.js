@@ -7,6 +7,11 @@
 // the host registration through the execution guard before starting
 // `blender -b --factory-startup` with the bpy runtime. It never passes Python
 // to Blender: hosts only run declarative recipes.
+//
+// assets_dir is normally `{storage}/assets/<sha>`: the brand assets the control
+// plane staged content-addressed on shared storage. `{storage}` is Flamenco's
+// two-way variable, which the Manager expands per worker platform when it
+// dispatches the task, so the value is passed through unchanged.
 
 /* global author */
 
@@ -24,7 +29,8 @@ const JOB_TYPE = {
     { key: "output_dir", type: "string", subtype: "dir_path", required: true,
       description: "Where the host writes frames and result.json" },
     { key: "assets_dir", type: "string", subtype: "dir_path", required: false,
-      description: "Assets root on shared storage (two-way variables map it per platform)" },
+      description: "Assets root on shared storage, normally {storage}/assets/<sha> " +
+        "(the two-way storage variable maps it per worker platform)" },
   ],
 };
 

@@ -206,12 +206,13 @@ def new(
 
 
 def _device_shot_params(kit_path: Path) -> dict[str, JsonValue]:
-    """The brand kit's JSON and its screen asset (path and sha256) for the ``shot`` node."""
+    """The brand kit JSON, its assets root and screen asset (path, sha256) for the shot node."""
     try:
         kit: BrandKit = load_brand_kit(kit_path)
     except ValueError as exc:
         raise _fail(str(exc)) from exc
-    screen = (kit_path.parent / "assets" / SCREEN_ASSET).resolve()
+    assets = (kit_path.parent / "assets").resolve()
+    screen = (assets / SCREEN_ASSET).resolve()
     try:
         digest = hashlib.sha256(screen.read_bytes()).hexdigest()
     except OSError as exc:
@@ -221,6 +222,7 @@ def _device_shot_params(kit_path: Path) -> dict[str, JsonValue]:
         ds.SCREEN_IMAGE_PARAM: SCREEN_ASSET.as_posix(),
         ds.SCREEN_PATH_PARAM: str(screen),
         ds.SCREEN_SHA256_PARAM: digest,
+        ds.ASSETS_DIR_PARAM: str(assets),
     }
 
 

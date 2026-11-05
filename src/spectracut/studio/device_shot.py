@@ -10,7 +10,13 @@ Stages (``profiles/device-shot.json``):
     key light, coloured from the brand palette.
 ``render_preview`` / ``render_final``
     :func:`tier_steps` appends the tier's render steps (preview: Eevee at 50%;
-    final: Cycles, fixed seed, OIDN denoise). The job is signed to shared
+    final: Cycles, fixed seed, OIDN denoise). Before submitting,
+    :func:`stage_assets` copies the brand kit's ``assets/`` once into
+    ``<shared>/assets/<sha>/`` (content-addressed, every referenced file's
+    sha256 verified) and the job's assets dir is ``{storage}/assets/<sha>``,
+    which Flamenco's two-way ``storage`` variable resolves on Linux and
+    Windows workers (``SPECTRACUT_ASSETS_DIR`` overrides it verbatim and
+    disables staging). The job is signed to shared
     storage (:func:`sign_to_shared`) and runs through
     ``JobQueue.as_runner`` + :class:`FlamencoExecutor`. The output records the
     scene-graph hash and every frame's sha256. The preview frame is scored once
@@ -30,11 +36,12 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
@@ -63,6 +70,12 @@ SCREEN_IMAGE_PARAM = "screen_image"
 """The screen image path relative to the assets dir, as the host resolves it."""
 SCREEN_PATH_PARAM = "screen_path"
 SCREEN_SHA256_PARAM = "screen_sha256"
+ASSETS_DIR_PARAM = "assets_dir"
+"""The brand kit's ``assets`` root on the control plane; staged to shared storage per render."""
+
+STORAGE_VAR = "{storage}"
+"""Flamenco's two-way storage variable; its Linux value is the shared root (``config.shared``)."""
+ASSETS_SUBDIR = "assets"
 
 BLENDER_VERSION = "4.5"
 WIDTH, HEIGHT = 1920, 1200
@@ -277,6 +290,82 @@ def frame_hashes(out: Path) -> dict[str, str]:
     return {p.name: _sha256(p) for p in sorted(out.glob("frame_*")) if p.is_file()}
 
 
+def _asset_manifest(source: Path) -> list[tuple[str, str]]:
+    """``(posix relpath, sha256)`` of every regular file under ``source``, sorted by path."""
+    if not source.is_dir():
+        raise ValueError(f"brand kit assets dir {source} does not exist")
+    files = [p for p in source.rglob("*") if p.is_file() and not p.is_symlink()]
+    return sorted((p.relative_to(source).as_posix(), _sha256(p)) for p in files)
+
+
+def referenced_assets(recipe: Recipe) -> dict[str, str]:
+    """Asset relpath -> pinned sha256 for every ``material.apply_screen`` step in ``recipe``."""
+    refs: dict[str, str] = {}
+    for step in recipe.steps:
+        if step.tool == "material.apply_screen":
+            image, sha = step.args.get("image"), step.args.get("image_sha256")
+            if isinstance(image, str) and isinstance(sha, str):
+                refs[image] = sha
+    return refs
+
+
+def _verify_staged(staged: Path, referenced: Mapping[str, str]) -> None:
+    for rel, want in sorted(referenced.items()):
+        parts = PurePosixPath(rel).parts
+        if PurePosixPath(rel).is_absolute() or ".." in parts:
+            raise ValueError(f"referenced asset {rel!r} must be relative to the assets dir")
+        path = staged.joinpath(*parts)
+        if not path.is_file():
+            raise ValueError(f"referenced asset {rel!r} is missing from staged assets {staged}")
+        got = _sha256(path)
+        if got != want:
+            raise ValueError(
+                f"referenced asset {rel!r} in {staged} has sha256 {got}, the recipe expects {want}"
+            )
+
+
+def stage_assets(source: Path, shared: Path, referenced: Mapping[str, str]) -> str:
+    """Stage ``source`` once under ``<shared>/assets/<sha>/`` and return ``<sha>``.
+
+    ``<sha>`` is the sha256 of the sorted ``(relpath, file sha256)`` manifest of
+    the whole tree (licence sidecars included). The copy lands in a temp dir and
+    is renamed into place, so concurrent renders copy at most once each and an
+    existing staged dir is never rewritten. Every ``referenced`` relpath must
+    then exist in the staged dir with its pinned sha256, else :class:`ValueError`.
+    """
+    source = Path(source)
+    manifest = _asset_manifest(source)
+    sha = hashlib.sha256(
+        "".join(f"{rel}\0{digest}\n" for rel, digest in manifest).encode("utf-8")
+    ).hexdigest()
+    root = Path(shared) / ASSETS_SUBDIR
+    staged = root / sha
+    if not staged.is_dir():
+        root.mkdir(parents=True, exist_ok=True)
+        tmp = root / f".tmp-{sha}-{os.getpid()}"
+        shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            for rel, _digest in manifest:
+                dest = tmp.joinpath(*PurePosixPath(rel).parts)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source.joinpath(*PurePosixPath(rel).parts), dest)
+            tmp.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(tmp, staged)
+            except OSError:
+                if not staged.is_dir():  # not a lost race: a real failure
+                    raise
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    _verify_staged(staged, referenced)
+    return sha
+
+
+def storage_assets_dir(sha: str) -> str:
+    """The job's assets dir for staged ``sha``: ``{storage}/assets/<sha>``."""
+    return f"{STORAGE_VAR}/{ASSETS_SUBDIR}/{sha}"
+
+
 def read_scene_graph_hash(out: Path) -> str | None:
     """``scene_graph_hash`` from ``report.json``, else ``result.json`` or a chunk result."""
     candidates = [out / "report.json", out / "result.json", *sorted(out.glob("result-*.json"))]
@@ -315,7 +404,12 @@ def _envelope(job_id: str, recipe: Recipe, config: DeviceShotConfig, now: dateti
 
 
 def _blender_job(
-    envelope: JobEnvelope, job_file: Path, out: Path, config: DeviceShotConfig, tier: Tier
+    envelope: JobEnvelope,
+    job_file: Path,
+    out: Path,
+    config: DeviceShotConfig,
+    tier: Tier,
+    assets_dir: str | None = None,
 ) -> Job:
     payload: dict[str, JsonValue] = {
         "envelope": envelope.model_dump(mode="json"),
@@ -323,8 +417,9 @@ def _blender_job(
         "worker_tag": config.worker_tag,
         "output_dir": str(out),
     }
-    if config.assets_dir:
-        payload["assets_dir"] = config.assets_dir
+    assets = assets_dir or config.assets_dir
+    if assets:
+        payload["assets_dir"] = assets
     return Job(
         id=envelope.job_id,
         kind="blender",
@@ -335,7 +430,11 @@ def _blender_job(
 
 
 def _executor(
-    client: FlamencoApi, out: Path, config: DeviceShotConfig, opts: ExecutorOptions
+    client: FlamencoApi,
+    out: Path,
+    config: DeviceShotConfig,
+    opts: ExecutorOptions,
+    assets_dir: str | None = None,
 ) -> FlamencoExecutor:
     return FlamencoExecutor(
         client,
@@ -343,7 +442,7 @@ def _executor(
         sleep=opts.sleep,
         poll_interval=opts.poll_interval,
         timeout_s=opts.timeout_s,
-        assets_dir=config.assets_dir,
+        assets_dir=assets_dir or config.assets_dir,
         clock=opts.clock,
     )
 
@@ -364,6 +463,38 @@ def _base_recipe(ctx: RunContext) -> Recipe:
         if isinstance(value, dict) and isinstance(value.get("recipe"), dict):
             return Recipe.model_validate(value["recipe"])
     raise ValueError(f"node {ctx.spec.id!r} has no input carrying a device recipe")
+
+
+def _assets_source(value: Mapping[str, Any]) -> str | None:
+    source = value.get("assets_source")
+    return source if isinstance(source, str) and source else None
+
+
+def _shot_assets_source(ctx: RunContext) -> str | None:
+    for nid in ctx.spec.inputs:
+        value = ctx.inputs.get(nid)
+        if isinstance(value, dict) and isinstance(value.get("recipe"), dict):
+            return _assets_source(value)
+    return None
+
+
+def _stage_for(
+    config: DeviceShotConfig, source: str | None, recipe: Recipe
+) -> tuple[str | None, str | None]:
+    """``(job assets_dir, staged sha)``: the override verbatim, else stage ``source``.
+
+    Raises :class:`ValueError` before anything is submitted when there is
+    neither an override nor a brand kit assets dir to stage.
+    """
+    if config.assets_dir:
+        return config.assets_dir, None
+    if source is None:
+        raise ValueError(
+            "device-shot render has no brand kit assets dir to stage "
+            "(recreate the production with --brand-kit) and SPECTRACUT_ASSETS_DIR is unset"
+        )
+    sha = stage_assets(Path(source), config.shared, referenced_assets(recipe))
+    return storage_assets_dir(sha), sha
 
 
 def _load_brief(data: Any) -> Brief | CreativeBrief:
@@ -399,19 +530,24 @@ def device_shot_runner(
             "recipe": recipe.model_dump(mode="json"),
             "recipe_hash": recipe.content_hash,
         }
+        source = params.get(ASSETS_DIR_PARAM)
+        if isinstance(source, str) and source:
+            output["assets_source"] = source
         return RunResult(output=output)
 
     def render(ctx: RunContext) -> RunResult:
         base = _base_recipe(ctx)
         recipe = with_tier(base, ctx.tier)
+        source = _shot_assets_source(ctx)
+        assets_dir, assets_sha = _stage_for(config, source, recipe)
         job_id = _fresh_job_id(
             config, f"{graph.production_id}-{ctx.spec.id}-{recipe.content_hash[7:19]}"
         )
         envelope = _envelope(job_id, recipe, config, clock_now())
         job_file = sign_to_shared(envelope, key, config.shared)
         out = config.out_dir(job_id)
-        job = _blender_job(envelope, job_file, out, config, ctx.tier)
-        queue = JobQueue([_executor(client, out, config, opts)], now=clock_now)
+        job = _blender_job(envelope, job_file, out, config, ctx.tier, assets_dir)
+        queue = JobQueue([_executor(client, out, config, opts, assets_dir)], now=clock_now)
         result = queue.as_runner(lambda _ctx: job, sleep=opts.sleep)(ctx)
         scene, frames = _render_record(out)
         flamenco = result.output if isinstance(result.output, dict) else {}
@@ -426,6 +562,10 @@ def device_shot_runner(
             "job_id": job_id,
             "flamenco_job_id": flamenco.get("flamenco_job_id"),
         }
+        if source is not None:
+            output["assets_source"] = source
+        if assets_sha is not None:
+            output["assets_sha"] = assets_sha
         usage = result.usage
         if ctx.tier is Tier.PREVIEW:
             active = judge
@@ -520,13 +660,23 @@ def replay(
     tier = Tier(str(recorded["tier"]))
     recipe = with_tier(Recipe.model_validate(recorded["recipe"]), tier)
     original_job = str(recorded["job_id"])
+    recorded_sha = recorded.get("assets_sha")
+    staged = config.shared / ASSETS_SUBDIR / str(recorded_sha)
+    if not config.assets_dir and isinstance(recorded_sha, str) and staged.is_dir():
+        # the recorded render's staged assets are still there: replay against exactly those
+        _verify_staged(staged, referenced_assets(recipe))
+        assets_dir: str | None = storage_assets_dir(recorded_sha)
+    else:
+        assets_dir, _sha = _stage_for(config, _assets_source(recorded), recipe)
     job_id = _fresh_replay_id(config, original_job)
     out = config.out_dir(job_id)
     envelope = _envelope(job_id, recipe, config, (now or opts.now)())
     job_file = sign_to_shared(envelope, key, config.shared)
-    job = _blender_job(envelope, job_file, out, config, tier)
+    job = _blender_job(envelope, job_file, out, config, tier, assets_dir)
     job.node_id = node_id
-    _executor(client, out, config, opts).run(job)  # direct: no FrameCache, no graph cache
+    _executor(client, out, config, opts, assets_dir).run(
+        job
+    )  # direct: no FrameCache, no graph cache
     raw_frames = recorded["frames"]
     original_frames = (
         {str(k): str(v) for k, v in raw_frames.items()} if isinstance(raw_frames, dict) else {}
