@@ -25,6 +25,7 @@ from spectracut.setup.storage import (
     normalize_storage_path,
     storage_notes,
     windows_storage_source,
+    write_file_step,
 )
 from spectracut.setup.wheels import LocalWheels
 
@@ -333,3 +334,50 @@ def test_mount_commands_quote_a_hostile_server_as_one_argument() -> None:
     for cmd in cmds:
         assert f"//{evil}/flamenco" in shlex.split(cmd)
         assert "touch" not in [t for t in shlex.split(cmd) if t != f"//{evil}/flamenco"]
+
+
+def _run_sh(cmd: str, stdin: str, home: Path, cwd: Path) -> None:
+    import subprocess
+
+    env = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
+    subprocess.run(["sh", "-c", cmd], input=stdin, text=True, cwd=cwd, env=env, check=True)
+
+
+def test_write_file_step_expands_home_and_writes_without_sudo(tmp_path: Path) -> None:
+    home, cwd = tmp_path / "home", tmp_path / "cwd"
+    home.mkdir()
+    cwd.mkdir()
+    rel = ".config/systemd/user/flamenco-manager.service"
+    step = write_file_step("control", "linux", "x", "x", f"$HOME/{rel}", "body\n")
+    assert "sudo" not in step.command
+    _run_sh(step.command, "body\n", home, cwd)
+    target = home / rel
+    assert target.read_text() == "body\n"
+    assert oct(target.stat().st_mode & 0o777) == "0o644"
+    assert list(cwd.iterdir()) == []  # no literal "$HOME" tree
+
+
+def test_write_file_step_absolute_path_keeps_sudo_form() -> None:
+    step = write_file_step("rig", "linux", "x", "x", "/etc/x.conf", "c", mode="600")
+    assert step.command == (
+        "d=$(dirname '/etc/x.conf'); sudo mkdir -p \"$d\" && sudo tee '/etc/x.conf' >/dev/null "
+        "&& sudo chmod 600 '/etc/x.conf'"
+    )
+
+
+@pytest.mark.parametrize("bad", ['$HOME/a"b', "$HOME/a`b", "$HOME/a$b", "$HOME/", "$X/a", "/a'b"])
+def test_write_file_step_rejects_unsafe_paths(bad: str) -> None:
+    with pytest.raises(ValueError):
+        write_file_step("control", "linux", "x", "x", bad, "c")
+
+
+def test_no_single_quoted_dollar_path_in_linux_write_steps() -> None:
+    import re
+
+    plan = _plan()
+    writes = [s for s in plan.steps if s.kind == "write" and s.shell == "sh"]
+    ids = {s.id for s in writes}
+    assert {"service:manager-unit", "service:worker-unit:rig", "storage:variables"} <= ids
+    for s in writes:
+        quoted = re.findall(r"'([^']*)'", s.command)  # sequential pairs: real quoted spans
+        assert not any("$" in q for q in quoted), s.id
