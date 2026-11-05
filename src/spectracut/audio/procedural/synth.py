@@ -172,7 +172,7 @@ _KINDS: dict[str, Callable[[SoundSpec, int, int, random.Random], Signal]] = {
 PROCEDURAL_KINDS: frozenset[str] = frozenset(_KINDS)
 
 
-def normalise(signal: Sequence[float], level: float) -> array[float]:
+def normalise_peak(signal: Sequence[float], level: float) -> array[float]:
     """``signal`` scaled so its peak magnitude is ``level`` (silence stays silent)."""
     peak = max((abs(v) for v in signal), default=0.0)
     scale = level / peak if peak > 0.0 else 0.0
@@ -190,7 +190,7 @@ class ProceduralGenerator:
             raise ValueError(f"ProceduralGenerator cannot make sound kind {spec.kind!r}")
         n = spec.samples(sample_rate)
         rng = random.Random(f"{spec.kind}:{spec.seed}")
-        mono = normalise(make(spec, n, sample_rate, rng), _num(spec, "level", 0.5))
+        mono = normalise_peak(make(spec, n, sample_rate, rng), _num(spec, "level", 0.5))
         return [mono] if spec.channels == 1 else [mono, array("f", mono)]
 
 

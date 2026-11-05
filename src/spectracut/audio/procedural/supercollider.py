@@ -24,7 +24,7 @@ import tempfile
 from array import array
 from pathlib import Path
 
-from spectracut.audio.procedural.synth import DEFAULT_TAIL_S, PROCEDURAL_KINDS, normalise
+from spectracut.audio.procedural.synth import DEFAULT_TAIL_S, PROCEDURAL_KINDS, normalise_peak
 from spectracut.audio.recipe import SoundSpec
 
 Channels = list[array[float]]
@@ -182,5 +182,5 @@ class SuperColliderGenerator:
         peak = max(max((abs(v) for v in c), default=0.0) for c in fitted)
         scale = level / peak if peak > 0.0 else 0.0
         if len(fitted) == 1:
-            return [normalise(fitted[0], level)]
+            return [normalise_peak(fitted[0], level)]
         return [array("f", (v * scale for v in c)) for c in fitted]
