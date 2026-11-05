@@ -2,8 +2,9 @@
 # SpectraCut Flamenco worker, run by the task `spectracut-worker` at startup as the render
 # host's SSH account (registered once by windows_worker_task.ps1). Its settings come from
 # worker-args.json next to it, which setup rewrites without admin; parameters override it.
-# Maps the shared storage on -Drive (subst when this PC holds the storage itself), puts the
-# profile's Blender on PATH and runs the worker. Installed to %USERPROFILE%\spectracut by setup.
+# Maps the shared storage on -Drive in this task's own logon session (subst of LocalPath when
+# this PC holds the storage itself, the UNC share otherwise), puts the profile's Blender on
+# PATH and runs the worker. Installed to %USERPROFILE%\spectracut by setup.
 param(
   [string]$Manager = '',
   [string]$Drive = '',
@@ -23,7 +24,7 @@ if (-not $Manager) {
   if (-not $User) { $User = [string]$cfg.User }
   if (-not $LocalPath) { $LocalPath = [string]$cfg.LocalPath }
 }
-if (-not $Drive) { $Drive = 'F:' }
+if (-not $Drive) { throw 'worker-args.json has no Drive; re-run spectracut setup' }
 if (-not $Share) { $Share = 'flamenco' }
 $letter = $Drive.TrimEnd(':')
 cmd /c "net use $Drive /delete /y >nul 2>&1"

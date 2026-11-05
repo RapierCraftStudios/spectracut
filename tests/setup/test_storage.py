@@ -3,18 +3,26 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
+import yaml
 
 import spectracut
 from spectracut.cli.render import HostEntry
 from spectracut.queue.profile import RenderProfile
 from spectracut.setup.manifest import HostFacts, Step, load_manifest
-from spectracut.setup.plan import Plan, SetupState, build_plan
+from spectracut.setup.plan import Plan, SetupState, apply_plan, build_plan, worker_script_source
 from spectracut.setup.storage import (
     CONTROL,
     Credential,
+    StorageError,
     StorageTarget,
+    normalize_drive,
+    normalize_storage_path,
     storage_notes,
     windows_storage_source,
 )
@@ -23,7 +31,8 @@ from spectracut.setup.wheels import LocalWheels
 CRED = Credential("spectracut-share", "pw-secret-value")
 FACTS = {
     CONTROL: HostFacts(CONTROL, "linux", "100.64.0.1", wired=True, free_gb=200),
-    "legion": HostFacts("legion", "windows", "100.64.0.2", wired=True, free_gb=500),
+    # a standard (non-admin) SSH account: the storage share needs the one-time admin handoff
+    "legion": HostFacts("legion", "windows", "100.64.0.2", wired=True, free_gb=500, admin=False),
     "rig": HostFacts("rig", "linux", "100.64.0.3", wired=True, free_gb=900),
 }
 TARGET = StorageTarget(kind="host", host="legion")
@@ -42,11 +51,23 @@ def _fake_wheels(payload: bytes = b"code") -> LocalWheels:
 WHEELS = _fake_wheels()
 
 
-def _plan() -> Plan:
+def _plan(
+    state: SetupState | None = None,
+    facts: dict[str, HostFacts] | None = None,
+    target: StorageTarget = TARGET,
+) -> Plan:
     return build_plan(
-        load_manifest(), "2026.11", FACTS, ["legion", "rig"], SetupState(), CRED, TARGET,
-        wheels=WHEELS,
+        load_manifest(), "2026.11", facts or FACTS, ["legion", "rig"], state or SetupState(),
+        CRED, target, wheels=WHEELS,
     )  # fmt: skip
+
+
+D_PATH = "D:/SpectraCut/flamenco"
+CUSTOM = SetupState(storage_path=D_PATH, windows_drive="S:")
+
+
+def _step(plan: Plan, step_id: str) -> Step:
+    return next(s for s in plan.steps if s.id == step_id)
 
 
 def test_windows_storage_host_writes_admin_script_then_gates_then_mounts_and_maps() -> None:
@@ -155,3 +176,139 @@ def test_windows_storage_flow_blocks_until_admin_ran_then_mounts_and_maps(tmp_pa
     state = apply_plan(_plan(), host, SetupState(), tmp_path)
     assert "storage:attach:" + CONTROL in host.ran and "storage:attach:rig" in host.ran
     assert state.storage == TARGET
+
+
+def test_drive_and_path_options_are_normalized() -> None:
+    assert normalize_drive("s") == normalize_drive("S:") == "S:"
+    for bad in ("SS", "1:", "", "S:\\"):
+        with pytest.raises(StorageError):
+            normalize_drive(bad)
+    assert normalize_storage_path("d:\\SpectraCut\\flamenco\\") == D_PATH
+    assert normalize_storage_path("/data/flamenco/") == "/data/flamenco"
+    for bad in ("relative", "D:/x'; rm", "/a/$(b)", ""):
+        with pytest.raises(StorageError):
+            normalize_storage_path(bad)
+
+
+def test_windows_storage_path_reaches_admin_script_gate_and_worker_subst() -> None:
+    plan = _plan(CUSTOM)
+    gate = _step(plan, "storage:serve")
+    assert f"Test-Path '{D_PATH}/.spectracut-share'" in gate.command
+    assert f'-Path "{D_PATH}"' in gate.command and "C:/spectracut" not in gate.command
+    # storage host: subst of the local folder in the worker task's session, no SMB loopback
+    own = json.loads(_step(plan, "worker-args:legion").stdin or "")
+    assert own["LocalPath"] == D_PATH and own["Drive"] == "S:" and "Server" not in own
+    assert "storage:attach:legion" not in [s.id for s in plan.steps]
+    assert "worker-cred:legion" not in [s.id for s in plan.steps]
+    worker = worker_script_source()
+    assert "subst $Drive" in worker and "New-PSDrive" in worker and "'F:'" not in worker
+    # the two-way variable uses the drive
+    variables = yaml.safe_load(_step(plan, "storage:variables").stdin or "")
+    win = [v for v in variables["variables"]["storage"]["values"] if v["platform"] == "windows"]
+    assert win == [{"platform": "windows", "value": "S:/"}]
+
+
+def test_other_windows_hosts_map_the_unc_share_in_the_task_session() -> None:
+    facts = dict(FACTS, mrdubey=HostFacts("mrdubey", "windows", "100.64.0.9", True, 200))
+    plan = build_plan(
+        load_manifest(), "2026.11", facts, ["legion", "mrdubey", "rig"], CUSTOM, CRED, TARGET,
+        wheels=WHEELS,
+    )  # fmt: skip
+    other = json.loads(_step(plan, "worker-args:mrdubey").stdin or "")
+    assert other == {
+        "Manager": other["Manager"],
+        "Drive": "S:",
+        "Share": "flamenco",
+        "Server": "100.64.0.2",
+        "User": CRED.user,
+    }
+    assert _step(plan, "worker-cred:mrdubey").stdin == CRED.password + "\n"
+    assert not [s for s in plan.steps if "New-SmbMapping" in s.command]
+
+
+def test_drive_letter_in_use_on_any_windows_host_fails_the_plan() -> None:
+    taken = dict(FACTS, legion=replace(FACTS["legion"], drives=("C=", "S=")))
+    with pytest.raises(StorageError, match="S: is already used on legion"):
+        _plan(CUSTOM, taken)
+    other = dict(FACTS, mrdubey=HostFacts("mrdubey", "windows", "100.64.0.9", True, 1))
+    other["mrdubey"] = replace(other["mrdubey"], drives=("S=\\\\nas\\other",))
+    with pytest.raises(StorageError, match="mrdubey"):
+        build_plan(
+            load_manifest(), "2026.11", other, ["legion", "mrdubey"], CUSTOM, CRED, TARGET,
+            wheels=WHEELS,
+        )  # fmt: skip
+    # already the share (UNC) or, on the storage host, its own subst folder: fine
+    ok = dict(FACTS, legion=replace(FACTS["legion"], drives=("S=D:\\SpectraCut\\flamenco",)))
+    assert _plan(CUSTOM, ok).steps
+    other["mrdubey"] = replace(other["mrdubey"], drives=("S=\\\\100.64.0.2\\flamenco",))
+    assert build_plan(
+        load_manifest(), "2026.11", other, ["legion", "mrdubey"], CUSTOM, CRED, TARGET,
+        wheels=WHEELS,
+    ).steps  # fmt: skip
+    # the default F: is checked too
+    with pytest.raises(StorageError, match="F: is already used"):
+        _plan(None, dict(FACTS, legion=replace(FACTS["legion"], drives=("F=",))))
+
+
+def test_storage_path_must_match_the_storage_host_os() -> None:
+    with pytest.raises(StorageError, match="Windows path"):
+        _plan(SetupState(storage_path="/data/flamenco"))
+    with pytest.raises(StorageError, match="Linux path"):
+        _plan(CUSTOM, target=StorageTarget(kind="host", host="rig"))
+
+
+def test_linux_storage_path_is_served_and_bound_at_srv_flamenco() -> None:
+    plan = _plan(
+        SetupState(storage_path="/data/flamenco"), target=StorageTarget(kind="host", host="rig")
+    )
+    assert "path = /data/flamenco\n" in (_step(plan, "storage:smb-conf").stdin or "")
+    assert "sudo chown spectracut-share '/data/flamenco'" in _step(plan, "storage:serve").command
+    bind = _step(plan, "storage:bind")
+    assert bind.host == "rig" and "mount --bind '/data/flamenco' /srv/flamenco" in bind.command
+    default = _plan(target=StorageTarget(kind="host", host="rig"))
+    assert "path = /srv/flamenco\n" in (_step(default, "storage:smb-conf").stdin or "")
+    assert "storage:bind" not in [s.id for s in default.steps]
+
+
+def test_admin_ssh_account_runs_the_storage_script_itself_password_via_file_only() -> None:
+    admin = dict(FACTS, legion=replace(FACTS["legion"], admin=True))
+    plan = _plan(CUSTOM, admin)
+    ids = [s.id for s in plan.steps]
+    assert ids.index("storage:admin-script") < ids.index("storage:admin-password")
+    assert ids.index("storage:admin-password") < ids.index("storage:serve")
+    serve = _step(plan, "storage:serve")
+    assert "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $s -PasswordFile $f" in (
+        serve.command
+    )
+    assert f"-Path '{D_PATH}'" in serve.command and serve.stdin is None
+    assert "run once as Administrator" not in serve.command
+    assert not any(
+        "one-time admin step" in n and "storage" in n for n in storage_notes(TARGET, admin)
+    )
+    for step in plan.steps:
+        assert CRED.password not in step.command
+    assert _step(plan, "storage:admin-password").stdin == CRED.password + "\n"
+
+
+def test_admin_script_reports_or_adopts_an_existing_share() -> None:
+    src = windows_storage_source()
+    check = src.index("$existing = Get-SmbShare -Name $Share")
+    assert check < src.index("New-LocalUser") and check < src.index("New-Item -ItemType Directory")
+    assert "(Get-NormPath $existing.Path) -ne (Get-NormPath $Path)" in src
+    assert "throw (\"SMB share '$Share' already exists at" in src
+    assert "Grant-SmbShareAccess -Name $Share -AccountName $User" in src  # adopt on a match
+    assert src.index("throw (") < src.index(".spectracut-share")  # no marker on mismatch
+
+
+def test_path_or_drive_change_replans_storage(tmp_path: Path) -> None:
+    host = _SimulatedWindowsHost()
+    host.share_ready = True  # an admin already ran the script
+    state = apply_plan(_plan(), host, SetupState(), tmp_path)
+    assert _plan(state).steps == ()
+    moved = apply_plan(
+        _plan(state.model_copy(update={"windows_drive": "S:"})), host, state, tmp_path
+    )
+    assert moved.storage_layout is not None and moved.storage_layout.drive == "S:"
+    replan = _plan(moved.model_copy(update={"storage_path": D_PATH}))
+    assert "storage:serve" in [s.id for s in replan.steps]
+    assert "storage:restart-worker:legion" in [s.id for s in replan.steps]

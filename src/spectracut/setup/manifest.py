@@ -96,6 +96,9 @@ class HostFacts:
     admin: bool = True
     home: str = ""
     task: bool = True
+    # Windows: drive letters in use as ``letter=root`` (UNC of a network drive, folder of
+    # a subst drive, empty for a local volume), read via Get-PSDrive and subst, not CIM.
+    drives: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

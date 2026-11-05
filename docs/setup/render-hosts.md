@@ -59,3 +59,44 @@ contain no secrets: the storage password stays in the account's `spectracut\smb.
 
 After that, `spectracut setup` and `spectracut hosts add` stop and start the worker with
 `schtasks.exe` and need no admin. Setup repeats the warning until the task exists.
+
+## Shared storage location and drive letter
+
+`spectracut setup --storage-host <host>` puts Flamenco's shared storage on a host. Two more
+options set where it lives and how Windows hosts see it. Setup keeps both for later runs:
+
+- `--storage-path <folder>`: the folder the storage host serves, for example
+  `D:/SpectraCut/flamenco` on Windows or `/data/flamenco` on Linux. The default is
+  `C:/spectracut/storage` on Windows and `/srv/flamenco` on Linux. On a Linux storage host
+  with another folder, setup bind-mounts that folder at `/srv/flamenco`, so the Manager and
+  every Linux machine still use `/srv/flamenco`.
+- `--windows-drive <letter>`: the drive letter every Windows host uses for storage (default
+  `F:`). The two-way `storage` variable uses it. Setup checks the letter on every Windows host
+  before mapping. If the letter is already a disk or another mapping, setup stops (even with
+  `--dry-run`) and asks for a free letter. A letter that already points to the share is fine.
+
+```
+spectracut setup --storage-host mrdubey-1 --storage-path D:/SpectraCut/flamenco --windows-drive S:
+```
+
+Storage is mapped by the worker task, so the drive is visible to the worker, not only to an
+SSH session. On the Windows storage host, `windows_worker.ps1` runs
+`subst <drive> <storage path>` (local, no SMB loopback). Other Windows hosts map
+`\\<storage host>\flamenco` with the share account.
+
+### Windows storage host
+
+Creating the SMB share and its account needs an Administrator. Setup writes
+`windows_storage.ps1` and an ACL'd password file under the SSH account's `spectracut`
+folder. The password is passed on stdin and never appears on a command line.
+
+- If the SSH account is an Administrator, setup runs the script itself.
+- If the SSH account is a standard user, setup prints the elevated command (including
+  `-Path`) and stops. Run that command once, then re-run `spectracut setup`.
+
+If a share named `flamenco` already exists, the script compares its folder with the storage
+path:
+
+- **Same folder:** the share is adopted.
+- **Different folder:** the script fails and names both folders. Either re-run setup with
+  `--storage-path <existing folder>` or remove the share.
