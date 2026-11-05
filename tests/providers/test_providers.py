@@ -31,8 +31,8 @@ from spectracut.providers.claude_code import (
     ClaudeCodeTextProvider,
     ClaudeCodeVisionJudge,
     claude_judge_argv,
-    claude_text_argv,
     claude_status,
+    claude_text_argv,
     parse_judge_output,
     parse_text_output,
 )
