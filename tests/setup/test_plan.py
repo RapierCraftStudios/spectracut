@@ -599,3 +599,82 @@ def test_cli_defaults_unchanged_without_options(
     cfg = yaml.safe_load(ran["storage:variables"].stdin or "")
     values = {v["platform"]: v["value"] for v in cfg["variables"]["storage"]["values"]}
     assert values == {"linux": "/srv/flamenco", "windows": "F:/"}
+
+
+PUB = "cHVibGljLWtleS1iYXNlNjQ="
+
+
+def _reg_plan(state: SetupState, key: str | None = PUB):  # type: ignore[no-untyped-def]
+    return build_plan(
+        load_manifest(),
+        "2026.11",
+        FACTS,
+        WORKERS,
+        state,
+        CRED,
+        wheels=WHEELS,
+        signing_public_key=key,
+    )
+
+
+def test_every_worker_gets_host_json_in_the_worker_account() -> None:
+    steps = {s.id: s for s in _reg_plan(SetupState()).steps}
+    assert f"host-registration:{CONTROL}" not in steps
+    for name in WORKERS:
+        step = steps[f"host-registration:{name}"]
+        assert json.loads(step.stdin or "") == {"host_id": name, "control_plane_public_key": PUB}
+        assert step.component == "host-registration" and step.version
+        assert "sudo" not in step.command and PUB not in step.command
+    win, lin = steps["host-registration:legion"], steps["host-registration:rig"]
+    assert win.shell == "powershell" and "$env:USERPROFILE" in win.command
+    assert ".config/spectracut/host.json" in win.command
+    assert lin.shell == "sh" and '"$HOME/.config/spectracut/host.json"' in lin.command
+    assert "chmod 600" in lin.command
+
+
+def test_no_host_json_without_a_key() -> None:
+    assert not [s for s in _reg_plan(SetupState(), None).steps if "registration" in s.id]
+
+
+def test_host_json_rerun_is_idempotent_and_a_new_key_rewrites(tmp_path: Path) -> None:
+    state = load_state(tmp_path)
+    apply_plan(_reg_plan(state), FakeRunner(), state, tmp_path)
+    assert _reg_plan(load_state(tmp_path)).steps == ()
+    rekeyed = [s.id for s in _reg_plan(load_state(tmp_path), "bmV3LWtleQ==").steps]
+    assert rekeyed == ["host-registration:legion", "host-registration:rig"]
+
+
+def test_cli_setup_creates_key_once_and_never_prints_or_ships_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spectracut.queue.signing import SIGNING_KEY_ENV, load_private_key, public_key_b64
+
+    monkeypatch.delenv(SIGNING_KEY_ENV, raising=False)
+    home, runner = _cli_home(tmp_path, monkeypatch)
+    entry = {"cpus": 8, "mem_gb": 32, "profile": {"blender_version": "4.5.3"}}
+    hosts = [{"name": n, **entry} for n in WORKERS]
+    (home / "hosts.json").write_text(json.dumps({"hosts": hosts}), encoding="utf-8")
+    cli = CliRunner()
+    dry = cli.invoke(app, ["setup", "--dry-run"])
+    assert dry.exit_code == 0, dry.output
+    assert not (home / "job-signing.key").exists()  # a dry run creates nothing
+    assert "legion: register the host" in dry.output
+
+    done = cli.invoke(app, ["setup"])
+    assert done.exit_code == 0, done.output
+    key_file = home / "job-signing.key"
+    assert key_file.stat().st_mode & 0o777 == 0o600
+    private = key_file.read_text(encoding="utf-8").strip()
+    public = public_key_b64(load_private_key())  # found with no env var set
+    regs = {s.host: s for s in runner.ran if s.id.startswith("host-registration:")}
+    assert set(regs) == set(WORKERS)
+    for name, step in regs.items():
+        assert json.loads(step.stdin or "") == {"host_id": name, "control_plane_public_key": public}
+    for step in runner.ran:
+        assert private not in step.command and private not in (step.stdin or "")
+    assert private not in done.output and private not in dry.output
+    assert private not in (home / "setup-state.json").read_text(encoding="utf-8")
+
+    again = cli.invoke(app, ["setup"])
+    assert again.exit_code == 0 and "nothing to do" in again.output
+    assert key_file.read_text(encoding="utf-8").strip() == private

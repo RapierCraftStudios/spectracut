@@ -2,7 +2,8 @@
 """Signed render jobs.
 
 The control plane signs each job envelope with its Ed25519 private key (from the
-environment only, never from specs, recipes or logs). Registered render hosts
+environment or the 0600 key file ``spectracut setup`` keeps in the SpectraCut home,
+never from specs, recipes or logs). Registered render hosts
 hold only the matching public key, so any host can verify a job routed to it by
 worker tag, but no host can forge one. The signature covers the canonical JSON
 of the whole envelope, so changing any field invalidates it.
@@ -14,6 +15,7 @@ import base64
 import binascii
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Self
 
 from cryptography.exceptions import InvalidSignature
@@ -34,6 +36,8 @@ from spectracut.spec.recipe import Recipe
 
 SIGNING_KEY_ENV = "SPECTRACUT_JOB_SIGNING_KEY"
 """Env var holding the control plane's base64 raw Ed25519 private key."""
+SIGNING_KEY_FILE = "job-signing.key"
+"""The key file ``spectracut setup`` creates (mode 0600) in the SpectraCut home."""
 
 TagName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_.-]*$", max_length=64)]
 
@@ -89,11 +93,66 @@ def generate_keypair() -> tuple[str, str]:
     return base64.b64encode(private).decode(), base64.b64encode(public).decode()
 
 
-def load_private_key(value: str | None = None) -> Ed25519PrivateKey:
-    """Load the signing key from ``value`` or :data:`SIGNING_KEY_ENV`."""
+def signing_key_path(home: Path | None = None) -> Path:
+    """Where the control plane's signing key lives: ``<home>/job-signing.key``."""
+    if home is None:
+        from spectracut.studio.store import spectracut_home
+
+        home = spectracut_home()
+    return Path(home) / SIGNING_KEY_FILE
+
+
+def public_key_b64(private_key: Ed25519PrivateKey) -> str:
+    """The base64 raw public key matching ``private_key`` (what hosts register)."""
+    raw = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    return base64.b64encode(raw).decode()
+
+
+def ensure_signing_key(home: Path | None = None) -> str:
+    """Create the signing key file once (mode 0600) and return its base64 public key.
+
+    An existing key is never overwritten or regenerated.
+    """
+    path = signing_key_path(home)
+    if not path.is_file():
+        private, public = generate_keypair()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass  # created concurrently: use that one
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(private + "\n")
+            return public
+    return public_key_b64(load_private_key(path.read_text(encoding="utf-8")))
+
+
+def read_public_key(home: Path | None = None) -> str | None:
+    """The public key of an existing key file, or ``None`` if setup has not created one."""
+    path = signing_key_path(home)
+    if not path.is_file():
+        return None
+    return public_key_b64(load_private_key(path.read_text(encoding="utf-8")))
+
+
+def load_private_key(value: str | None = None, home: Path | None = None) -> Ed25519PrivateKey:
+    """Load the signing key from ``value``, :data:`SIGNING_KEY_ENV`, else the key file.
+
+    The key file is ``<home>/job-signing.key`` (default home: the SpectraCut home).
+    """
     raw = value if value is not None else os.environ.get(SIGNING_KEY_ENV)
     if not raw:
-        raise ValueError(f"no job signing key: set {SIGNING_KEY_ENV}")
+        path = signing_key_path(home)
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            raw = ""
+        if not raw.strip():
+            raise ValueError(
+                f"no job signing key: set {SIGNING_KEY_ENV} or run `spectracut setup` "
+                f"(creates {path})"
+            )
     try:
         return Ed25519PrivateKey.from_private_bytes(_b64decode(raw, "signing key"))
     except ValueError:

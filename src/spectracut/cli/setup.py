@@ -20,6 +20,7 @@ import typer
 
 from spectracut.cli.render import HomeOpt, _home, _read_registry
 from spectracut.providers.base import redact
+from spectracut.queue.signing import ensure_signing_key, read_public_key
 from spectracut.setup.manifest import HostFacts, StepRunner, load_manifest
 from spectracut.setup.plan import (
     CommandRunner,
@@ -41,6 +42,8 @@ from spectracut.setup.storage import (
 from spectracut.setup.wheels import build_wheels
 
 SHARE_USER = "spectracut-share"
+# Shown in a dry run before the signing key exists; the real run creates the key first.
+PENDING_PUBLIC_KEY = "<created by setup>"
 NAS_USER_ENV = "SPECTRACUT_NAS_USER"
 NAS_PASSWORD_ENV = "SPECTRACUT_NAS_PASSWORD"
 
@@ -131,7 +134,22 @@ def setup_cmd(
         facts: dict[str, HostFacts] = {n: runner.probe(n) for n in (CONTROL, *workers)}
         cred = share_credential(root, target or state.storage)
         wheels = build_wheels(root / "wheels")
-        plan = build_plan(manifest, set_id, facts, workers, state, cred, target, wheels=wheels)
+        # The control plane's job-signing key: created once (0600), never printed.
+        if dry_run:
+            public_key = read_public_key(root) or PENDING_PUBLIC_KEY
+        else:
+            public_key = ensure_signing_key(root)
+        plan = build_plan(
+            manifest,
+            set_id,
+            facts,
+            workers,
+            state,
+            cred,
+            target,
+            wheels=wheels,
+            signing_public_key=public_key,
+        )
         if settings and not dry_run:
             save_state(state, root)  # valid for this farm; kept even if a later step stops
         for note in plan.notes:
