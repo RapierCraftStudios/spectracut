@@ -28,7 +28,7 @@ def create_app(
     return Starlette(
         routes=[
             *renders.routes(store or QAReportStore()),
-            *review.routes(productions or ProductionStore()),
+            *review.review_routes(productions or ProductionStore()),
         ],
         middleware=[Middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)],
     )

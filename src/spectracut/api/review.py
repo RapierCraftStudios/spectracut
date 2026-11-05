@@ -142,7 +142,7 @@ def _note_json(note: RevisionNote) -> dict[str, Any]:
     return note.model_dump(mode="json")
 
 
-def routes(store: ProductionStore) -> list[BaseRoute]:
+def review_routes(store: ProductionStore) -> list[BaseRoute]:
     """The review routes and page over the productions in ``store``."""
     lock = threading.Lock()
 
