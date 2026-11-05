@@ -1,0 +1,28 @@
+{
+  "name": "device-shot-graded",
+  "description": "A device shot finished under a Look: a deterministic recipe, a preview render, a final render to linear scene-referred EXR, then the Look's finishing (grade, lens, bloom, grain) as a separate compositor job, so switching Looks reuses the render; no human gates.",
+  "stages": [
+    "shot",
+    "render_preview",
+    "render_scene",
+    "finish"
+  ],
+  "revision_budget": {
+    "shot": 0,
+    "render_preview": 0,
+    "render_scene": 0,
+    "finish": 0
+  },
+  "tier": {
+    "shot": "preview",
+    "render_preview": "preview",
+    "render_scene": "final",
+    "finish": "final"
+  },
+  "gates": {
+    "shot": "auto",
+    "render_preview": "auto",
+    "render_scene": "auto",
+    "finish": "auto"
+  }
+}

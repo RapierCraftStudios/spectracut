@@ -352,6 +352,8 @@ NEW_TOOLS = {
     "inspect.bounds",
     "inspect.framing",
     "look.set_view",
+    "render.set_output",
+    "finish.apply_look",
 }
 
 
@@ -363,7 +365,7 @@ def test_registry_literal_matches_tools() -> None:
     names, same = got
     assert same is True
     assert set(names) == runtime_tool_names(RUNTIME / "tools.py")
-    assert NEW_TOOLS <= set(names) and len(names) == 19
+    assert NEW_TOOLS <= set(names) and len(names) == 21
 
 
 def test_error_codes_are_stable() -> None:
@@ -796,3 +798,125 @@ def test_render_set_property_rejects_bad_cycles_values(
     )
     assert run.proc.returncode == 1
     assert "[args.invalid]" in run.proc.stderr, run.proc.stderr
+
+
+# --- finishing: render.set_output and finish.apply_look (#54) ---------------------------
+
+
+def _exr_assets(tmp_path: Path) -> Path:
+    assets = tmp_path / "assets"
+    (assets / "frames").mkdir(parents=True)
+    for n in (1, 2):
+        (assets / "frames" / f"frame_{n:04d}.exr").write_bytes(b"exr")
+    (assets / "lut").mkdir()
+    (assets / "lut" / "warm.cube").write_text("LUT_1D_SIZE 2\n0 0 0\n1 1 1\n")
+    return assets
+
+
+LOOK_ARGS: dict[str, Any] = {
+    "look_id": "cinematic",
+    "look_version": 1,
+    "grade": {
+        "cdl": {
+            "slope": [1.06, 1, 0.92],
+            "offset": [0, 0, 0],
+            "power": [1, 1, 1],
+            "saturation": 1.08,
+        }
+    },
+    "lens": {"chromatic_aberration": 0.15, "vignette": 0.25, "distortion": 0.0, "halation": 0.2},
+    "bloom": 0.08,
+    "grain": 0.06,
+    "frames": ["frames/frame_0001.exr", "frames/frame_0002.exr"],
+}
+
+
+def test_set_output_exr_is_scene_linear_and_png_is_8bit(blender: Path, tmp_path: Path) -> None:
+    run = run_steps(blender, tmp_path, [("render.set_output", {"format": "OPEN_EXR"})])
+    assert run.proc.returncode == 0, run.proc.stderr
+    assert run.report("render.set_output") == {
+        "format": "OPEN_EXR",
+        "color_depth": "16",
+        "exr_codec": "ZIP",
+    }
+    png = run_steps(blender, tmp_path, [("render.set_output", {"format": "PNG"})])
+    assert png.report("render.set_output") == {"format": "PNG", "color_depth": "8"}
+    for args in ({"format": "TIFF"}, {"format": "PNG", "color_depth": "32"}):
+        bad = run_steps(blender, tmp_path, [("render.set_output", args)])
+        assert bad.proc.returncode == 1 and "[args.invalid]" in bad.proc.stderr
+
+
+def test_display_device_and_aces2_are_allowed(blender: Path, tmp_path: Path) -> None:
+    steps = [
+        ("render.set_property", {"property": "view_settings.display_device", "value": "Rec.1886"}),
+        ("render.set_property", {"property": "view_settings.view_transform", "value": "ACES 2.0"}),
+    ]
+    run = run_steps(blender, tmp_path, steps)
+    assert run.proc.returncode == 0, run.proc.stderr
+    bad = run_steps(
+        blender,
+        tmp_path,
+        [("render.set_property", {"property": "view_settings.display_device", "value": "P3"})],
+    )
+    assert "[args.invalid]" in bad.proc.stderr
+
+
+def test_apply_look_builds_a_compositor_tree_without_render_layers(
+    blender: Path, tmp_path: Path
+) -> None:
+    assets = _exr_assets(tmp_path)
+    run = run_steps(blender, tmp_path, [("finish.apply_look", LOOK_ARGS)], assets_dir=assets)
+    assert run.proc.returncode == 0, run.proc.stderr
+    report = run.report("finish.apply_look")
+    assert (report["look_id"], report["look_version"]) == ("cinematic", 1)
+    assert report["nodes"] == [
+        "image",
+        "cdl",
+        "saturation",
+        "lens",
+        "bloom",
+        "halation_glow",
+        "halation_tint",
+        "halation",
+        "vignette_mask",
+        "vignette_soften",
+        "vignette",
+        "grain_noise",
+        "grain",
+        "composite",
+    ]
+    calls = run.state["calls"]
+    assert not any("CompositorNodeRLayers" in c for c in calls)
+    first = str((assets / "frames" / "frame_0001.exr").resolve())
+    assert any(f"images.load({first!r}, check_existing=False)" in c for c in calls), calls
+    neutral = {**LOOK_ARGS, "grade": {}, "lens": {}, "bloom": 0.0, "grain": 0.0}
+    plain = run_steps(blender, tmp_path, [("finish.apply_look", neutral)], assets_dir=assets)
+    assert plain.report("finish.apply_look")["nodes"] == ["image", "composite"]
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        ({"frames": ["../frame_0001.exr"]}, "asset.path_refused"),
+        ({"frames": ["/etc/frame_0001.exr"]}, "asset.path_refused"),
+        ({"frames": ["frames/frame_0001.png"]}, "asset.path_refused"),
+        ({"frames": []}, "args.invalid"),
+        ({"bloom": 2}, "args.invalid"),
+        ({"script": "x"}, "args.invalid"),
+        ({"grade": {"lut": "warm.cube"}}, "args.invalid"),
+        ({"lut": {"path": "lut/warm.cube", "sha256": "0" * 64}}, "asset.hash_mismatch"),
+        ({"lut": {"path": "../warm.cube", "sha256": "0" * 64}}, "asset.path_refused"),
+    ],
+)
+def test_apply_look_refusals(
+    blender: Path, tmp_path: Path, change: dict[str, Any], code: str
+) -> None:
+    assets = _exr_assets(tmp_path)
+    (tmp_path / "frame_0001.exr").write_bytes(b"exr")
+    (tmp_path / "warm.cube").write_text("LUT_1D_SIZE 2\n0 0 0\n1 1 1\n")
+    run = run_steps(
+        blender, tmp_path, [("finish.apply_look", {**LOOK_ARGS, **change})], assets_dir=assets
+    )
+    assert run.proc.returncode == 1
+    assert f"[{code}]" in run.proc.stderr, run.proc.stderr
+    assert not any("render.render" in c for c in run.state.get("calls", []))

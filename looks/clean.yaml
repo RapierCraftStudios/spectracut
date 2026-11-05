@@ -1,0 +1,14 @@
+# Clean: the AlterLab kit's Look (brands/alterlab/brand-kit.yaml). A touch of
+# bloom, grain and vignette; motion blur and depth of field off so UI stays sharp.
+id: clean
+version: 1
+bloom: 0.02
+grain: 0.01
+motion_blur: false
+depth_of_field: false
+lens:
+  vignette: 0.05
+qa_thresholds:
+  grain_max: 0.05
+  haze_max: 0.05
+  bloom_max: 0.05

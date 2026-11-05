@@ -28,10 +28,11 @@ from bpy_runtime.ops.camera import (
     camera_set_dof,
     camera_use,
 )
+from bpy_runtime.ops.finish import finish_apply_look
 from bpy_runtime.ops.inspect import inspect_bounds, inspect_framing
 from bpy_runtime.ops.look import look_set_view
 from bpy_runtime.ops.material import material_apply_preset, material_apply_screen
-from bpy_runtime.ops.props import render_set_property
+from bpy_runtime.ops.props import render_set_output, render_set_property
 from bpy_runtime.ops.scene import object_import_gltf
 
 __all__ = ["TOOL_NAMES", "TOOLS", "run_step"]
@@ -57,6 +58,8 @@ TOOL_NAMES = frozenset(
         "inspect.bounds",
         "inspect.framing",
         "look.set_view",
+        "render.set_output",
+        "finish.apply_look",
     }
 )
 
@@ -171,6 +174,8 @@ TOOLS: dict[str, Callable[[Any, dict[str, Any]], Report]] = {
     "inspect.bounds": inspect_bounds,
     "inspect.framing": inspect_framing,
     "look.set_view": look_set_view,
+    "render.set_output": render_set_output,
+    "finish.apply_look": finish_apply_look,
 }
 
 assert frozenset(TOOLS) == TOOL_NAMES, "TOOLS and TOOL_NAMES must list the same tools"

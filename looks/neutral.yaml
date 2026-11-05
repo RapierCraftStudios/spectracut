@@ -1,0 +1,18 @@
+# Neutral: identity grade, no lens effects, bloom or grain. The colour-chart
+# fixture measures SDR Rec.709 masters under this Look.
+id: neutral
+version: 1
+grade:
+  cdl:
+    slope: [1.0, 1.0, 1.0]
+    offset: [0.0, 0.0, 0.0]
+    power: [1.0, 1.0, 1.0]
+    saturation: 1.0
+bloom: 0.0
+grain: 0.0
+motion_blur: false
+depth_of_field: false
+qa_thresholds:
+  grain_max: 0.02
+  haze_max: 0.02
+  bloom_max: 0.02
