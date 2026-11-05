@@ -1,0 +1,31 @@
+{
+  "id": "director",
+  "title": "Director department",
+  "criteria": [
+    {
+      "id": "intent",
+      "prompt": "Does every shot serve a beat of the script and the brief's core message?",
+      "weight": 2.0
+    },
+    {
+      "id": "camera-variety",
+      "prompt": "Do shot sizes, angles and moves vary with clear motivation, without repeated push-ins?",
+      "weight": 1.5
+    },
+    {
+      "id": "staging",
+      "prompt": "Is the subject clearly staged, with screens readable and composition deliberate?",
+      "weight": 1.5
+    },
+    {
+      "id": "pacing",
+      "prompt": "Does the shot plan's timing fit the VO and the target length?",
+      "weight": 1.0
+    },
+    {
+      "id": "style-translation",
+      "prompt": "Are style references translated into concrete, original attributes?",
+      "weight": 1.0
+    }
+  ]
+}

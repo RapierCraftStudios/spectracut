@@ -1,0 +1,26 @@
+{
+  "id": "motion-designer",
+  "title": "Motion designer department",
+  "criteria": [
+    {
+      "id": "purpose",
+      "prompt": "Does every motion explain something the VO or beat says?",
+      "weight": 1.5
+    },
+    {
+      "id": "ui-life",
+      "prompt": "Is the UI alive with visible actions and state changes, never a held screenshot?",
+      "weight": 2.0
+    },
+    {
+      "id": "easing",
+      "prompt": "Is the motion eased with weight and timing that feel deliberate?",
+      "weight": 1.0
+    },
+    {
+      "id": "legibility",
+      "prompt": "Is animated text legible and held for its reading time?",
+      "weight": 1.5
+    }
+  ]
+}

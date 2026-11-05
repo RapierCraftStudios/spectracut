@@ -1,0 +1,127 @@
+{
+  "id": "departments",
+  "title": "Department rubrics: one fixture piece per M2 department skill pack (#28)",
+  "pieces": [
+    {
+      "id": "writer",
+      "capability": "department-writer",
+      "rubric": "writer",
+      "outputs": "outputs/writer",
+      "pattern": "*.png",
+      "reference": "references/writer.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "director",
+      "capability": "department-director",
+      "rubric": "director",
+      "outputs": "outputs/director",
+      "pattern": "*.png",
+      "reference": "references/director.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "art-director",
+      "capability": "department-art-director",
+      "rubric": "art-director",
+      "outputs": "outputs/art-director",
+      "pattern": "*.png",
+      "reference": "references/art-director.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "storyboard",
+      "capability": "department-storyboard",
+      "rubric": "storyboard",
+      "outputs": "outputs/storyboard",
+      "pattern": "*.png",
+      "reference": "references/storyboard.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "editor",
+      "capability": "department-editor",
+      "rubric": "editor",
+      "outputs": "outputs/editor",
+      "pattern": "*.png",
+      "reference": "references/editor.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "lighter",
+      "capability": "department-lighter",
+      "rubric": "lighter",
+      "outputs": "outputs/lighter",
+      "pattern": "*.png",
+      "reference": "references/lighter.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "compositor",
+      "capability": "department-compositor",
+      "rubric": "compositor",
+      "outputs": "outputs/compositor",
+      "pattern": "*.png",
+      "reference": "references/compositor.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "motion-designer",
+      "capability": "department-motion-designer",
+      "rubric": "motion-designer",
+      "outputs": "outputs/motion-designer",
+      "pattern": "*.png",
+      "reference": "references/motion-designer.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "sound-designer",
+      "capability": "department-sound-designer",
+      "rubric": "sound-designer",
+      "outputs": "outputs/sound-designer",
+      "pattern": "*.png",
+      "reference": "references/sound-designer.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "mixer",
+      "capability": "department-mixer",
+      "rubric": "mixer",
+      "outputs": "outputs/mixer",
+      "pattern": "*.png",
+      "reference": "references/mixer.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
+      "id": "critic",
+      "capability": "department-critic",
+      "rubric": "critic",
+      "outputs": "outputs/critic",
+      "pattern": "*.png",
+      "reference": "references/critic.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    }
+  ]
+}

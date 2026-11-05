@@ -1,0 +1,26 @@
+{
+  "id": "lighter",
+  "title": "Lighter department",
+  "criteria": [
+    {
+      "id": "exposure",
+      "prompt": "Is the subject exposed correctly and every screen exposed for its UI?",
+      "weight": 2.0
+    },
+    {
+      "id": "clarity",
+      "prompt": "Is the frame free of haze, crushed blacks and veiling over the product or screens?",
+      "weight": 2.0
+    },
+    {
+      "id": "shape",
+      "prompt": "Does the lighting shape the product with clear edges and controlled reflections?",
+      "weight": 1.5
+    },
+    {
+      "id": "consistency",
+      "prompt": "Is lighting consistent across shots of the same scene and within the Look?",
+      "weight": 1.0
+    }
+  ]
+}

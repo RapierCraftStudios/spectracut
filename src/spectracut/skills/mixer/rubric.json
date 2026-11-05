@@ -1,0 +1,26 @@
+{
+  "id": "mixer",
+  "title": "Mixer department",
+  "criteria": [
+    {
+      "id": "intelligibility",
+      "prompt": "Is the VO clearly intelligible over music and effects throughout?",
+      "weight": 2.0
+    },
+    {
+      "id": "loudness",
+      "prompt": "Does the master meet the delivery spec's loudness and true-peak targets?",
+      "weight": 1.5
+    },
+    {
+      "id": "balance",
+      "prompt": "Are music, effects and VO balanced with dynamics that support the story?",
+      "weight": 1.5
+    },
+    {
+      "id": "deliverables",
+      "prompt": "Are stems and the M&E track complete and consistent with the master?",
+      "weight": 1.0
+    }
+  ]
+}

@@ -74,6 +74,20 @@ then a real set replaces it. Its `baseline.json` was recorded with the mock judg
 so `SPECTRACUT_PROVIDERS=mock spectracut bench check fixtures` passes in CI. Its
 `results/` directory is git-ignored.
 
+## Department rubrics (#28)
+
+A piece's `rubric` id resolves to `rubrics/<id>.json`; when that file does not
+exist, it resolves to the department skill pack's
+`src/spectracut/skills/<id>/rubric.json` (see `src/spectracut/skills/README.md`).
+The `departments` set has one fixture piece per M2 department (writer, director,
+art-director, storyboard, editor, lighter, compositor, motion-designer,
+sound-designer, mixer, critic), each scored against its department's rubric, so
+`SPECTRACUT_PROVIDERS=mock spectracut bench check departments` exercises every
+pack rubric in CI. Its outputs are tiny generated stand-in frames and its
+`baseline.json` was recorded with the mock judge; re-record it with
+`spectracut bench run departments --write-baseline` when a pack's `rubric.json`
+changes.
+
 ## Critic-vs-human agreement (BlenderGym protocol)
 
 Following BlenderGym's verifier-agreement protocol, every pair of outputs that has

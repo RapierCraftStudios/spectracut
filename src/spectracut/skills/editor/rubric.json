@@ -1,0 +1,26 @@
+{
+  "id": "editor",
+  "title": "Editor department",
+  "criteria": [
+    {
+      "id": "rhythm",
+      "prompt": "Does the cut have a varied, deliberate rhythm that matches music and VO?",
+      "weight": 1.5
+    },
+    {
+      "id": "readability",
+      "prompt": "Is every UI and text shot held long enough to read?",
+      "weight": 1.5
+    },
+    {
+      "id": "continuity",
+      "prompt": "Are cuts clean, on action, with consistent screen direction?",
+      "weight": 1.0
+    },
+    {
+      "id": "length",
+      "prompt": "Is the edit tight and within the target length for each delivery?",
+      "weight": 1.0
+    }
+  ]
+}

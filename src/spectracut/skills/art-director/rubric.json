@@ -1,0 +1,31 @@
+{
+  "id": "art-director",
+  "title": "Art director department",
+  "criteria": [
+    {
+      "id": "palette",
+      "prompt": "Is the palette coherent with the brand and the Look, with true product colours?",
+      "weight": 1.5
+    },
+    {
+      "id": "materials",
+      "prompt": "Do materials read clearly on camera at delivery size?",
+      "weight": 1.0
+    },
+    {
+      "id": "typography",
+      "prompt": "Does typography follow the brand system and stay legible in every format?",
+      "weight": 1.5
+    },
+    {
+      "id": "brand-safety",
+      "prompt": "Is every frame free of unlicensed third-party brands, logos and marks?",
+      "weight": 2.0
+    },
+    {
+      "id": "look",
+      "prompt": "Is the Look declared, consistent across shots and within its QA thresholds?",
+      "weight": 1.0
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "set_id": "departments",
+  "scores": {
+    "writer": 0.4709,
+    "director": 0.3163,
+    "art-director": 0.5436,
+    "storyboard": 0.4249,
+    "editor": 0.5581,
+    "lighter": 0.2995,
+    "compositor": 0.6136,
+    "motion-designer": 0.5262,
+    "sound-designer": 0.4574,
+    "mixer": 0.8266,
+    "critic": 0.6279
+  }
+}

@@ -3,7 +3,9 @@
 
 Layout under a benchmarks directory (default ``./benchmarks``)::
 
-    rubrics/<rubric>.json          weighted criteria the Critic scores
+    rubrics/<rubric>.json          weighted criteria the Critic scores; an id not found
+                                   here resolves to the department skill pack's
+                                   ``spectracut/skills/<id>/rubric.json``
     sets/<set>/set.json            the pieces of a benchmark set
     sets/<set>/baseline.json       accepted scores; a drop beyond tolerance is a regression
     sets/<set>/results/            report.json, report.md, scores.jsonl, ratings.jsonl
@@ -234,7 +236,14 @@ def load_set(set_id: str, root: Path | None = None) -> BenchmarkSet:
 
 
 def load_rubric(rubric_id: str, root: Path | None = None) -> Rubric:
+    """Load ``rubrics/<id>.json``, else the department skill pack's ``rubric.json``."""
     path = benchmarks_dir(root) / "rubrics" / f"{rubric_id}.json"
+    if not path.is_file():
+        from spectracut.skills import pack_dir
+
+        skill = pack_dir(rubric_id) / "rubric.json"
+        if skill.is_file():
+            path = skill
     rubric = _load(Rubric, path)
     if rubric.id != rubric_id:
         raise BenchmarkError(f"{path}: id {rubric.id!r} != {rubric_id!r}")
