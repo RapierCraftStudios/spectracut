@@ -18,6 +18,7 @@ from spectracut.cli import setup as setup_cli
 from spectracut.cli.app import app
 from spectracut.setup.manifest import HostFacts, Step, load_manifest
 from spectracut.setup.plan import (
+    LINUX_PROBE,
     CommandRunner,
     SetupState,
     apply_plan,
@@ -414,68 +415,137 @@ def test_non_admin_note_repeats_until_the_task_exists(tmp_path: Path) -> None:
 
 
 def test_parse_probe_reads_admin_profile_and_task_without_cim() -> None:
-    out = "100.64.0.2\nEthernet\n5000000000\nFalse\nC:\\Users\\artac-remote\nFalse\n"
+    out = (
+        "address=100.64.0.2\nlink=Ethernet\nfree=5000000000\nadmin=False\n"
+        "home=C:\\Users\\artac-remote\ntask=False\n"
+    )
     f = parse_probe("mrdubey-1", "windows", out)
     assert (f.admin, f.home, f.task, f.wired) == (False, "C:\\Users\\artac-remote", False, True)
-    admin = parse_probe("legion", "windows", "100.64.0.3\n802.11,Ethernet\n1\nTrue\nC:\\U\nTrue")
+    admin = parse_probe(
+        "legion",
+        "windows",
+        "address=100.64.0.3\nlink=802.11,Ethernet\nfree=1\nadmin=True\nhome=C:\\U\ntask=True",
+    )
     assert (admin.admin, admin.task, admin.wired) == (True, True, False)
-    linux = parse_probe("rig", "linux", "100.64.0.4\neth0\n100\n")
+    linux = parse_probe("rig", "linux", "address=100.64.0.4\nlink=eth0\nfree=100\n")
     assert (linux.admin, linux.home, linux.task) == (True, "", True)
 
 
-def test_windows_probe_and_resources_scripts_use_no_cim(monkeypatch: pytest.MonkeyPatch) -> None:
-    scripts: list[str] = []
+def test_probe_with_empty_or_failing_tailscale_line_parses_every_other_field() -> None:
+    win = (
+        "address=\nlink=53,Ethernet,Ethernet,Ethernet\nfree=5000000000\nadmin=False\n"
+        "home=C:\\Users\\artac-remote\ntask=False\ndrives=C=|D=\n"
+    )
+    f = parse_probe("mrdubey-1", "windows", win)
+    assert f.address == "mrdubey-1" and f.wired and f.free_gb == 5.0
+    assert (f.admin, f.home, f.task, f.drives) == (
+        False,
+        "C:\\Users\\artac-remote",
+        False,
+        ("C=", "D="),
+    )
+    # Stray CLI error text, or no address line at all, must not shift anything either.
+    noisy = "401 Unauthorized: Tailscale already in use by MRDUBEY\\ItsMr\n" + win.replace(
+        "address=\n", ""
+    )
+    g = parse_probe("mrdubey-1", "windows", noisy)
+    assert g.address == "mrdubey-1" and (g.admin, g.task, g.free_gb) == (False, False, 5.0)
+    lin = parse_probe("rig", "linux", "address=\nlink=wlan0\nfree=2000000000\n")
+    assert (lin.address, lin.wired, lin.free_gb) == ("rig", False, 2.0)
 
-    class Proc:
-        def __init__(self, rc: int, out: str) -> None:
-            self.returncode, self.stdout, self.stderr = rc, out, ""
 
-    def fake_exec(host: str, cmd: str, shell: str, stdin: str | None) -> Proc:
-        scripts.append(cmd)
+def test_unnamed_interface_types_do_not_affect_the_wired_check() -> None:
+    assert parse_probe("h", "windows", "link=53,Ethernet,Ethernet,Ethernet").wired
+    assert not parse_probe("h", "windows", "link=53,802.11").wired
+    assert parse_probe("h", "windows", "link=53").wired
+
+
+class _Proc:
+    def __init__(self, rc: int, out: str) -> None:
+        self.returncode, self.stdout, self.stderr = rc, out, ""
+
+
+def _runner(
+    monkeypatch: pytest.MonkeyPatch, probe_out: str, tailscale: _Proc, win: bool = True
+) -> tuple[CommandRunner, list[tuple[str, str]]]:
+    calls: list[tuple[str, str]] = []
+
+    def fake_exec(host: str, cmd: str, shell: str, stdin: str | None) -> _Proc:
+        calls.append((host, cmd))
         if cmd == "uname -s":
-            return Proc(1, "")
-        return Proc(0, "16\n31.8\n" if "ProcessorCount" in cmd else "100.64.0.2\nEthernet\n1\n")
+            return _Proc(1 if win else 0, "")
+        if cmd.startswith("tailscale ip -4 "):
+            return tailscale
+        return _Proc(0, "16\n31.8\n" if "ProcessorCount" in cmd else probe_out)
 
     runner = CommandRunner()
     monkeypatch.setattr(runner, "_exec", fake_exec)
+    return runner, calls
+
+
+def test_address_is_resolved_on_the_control_plane_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner, calls = _runner(
+        monkeypatch, "address=100.64.0.99\nlink=Ethernet\nfree=1\n", _Proc(0, "100.64.0.9\n")
+    )
+    assert runner.probe("mrdubey-1").address == "100.64.0.9"
+    assert (CONTROL, "tailscale ip -4 mrdubey-1") in calls
+
+
+def test_address_falls_back_to_host_probe_then_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    probe = "address=100.64.0.99\nlink=Ethernet\nfree=1\n"
+    for bad in (_Proc(1, ""), _Proc(0, ""), _Proc(0, "no such host\n"), _Proc(0, "fd7a::1\n")):
+        runner, _ = _runner(monkeypatch, probe, bad)
+        assert runner.probe("mrdubey-1").address == "100.64.0.99"
+    runner, _ = _runner(monkeypatch, "address=\nlink=Ethernet\nfree=1\n", _Proc(1, ""))
+    assert runner.probe("mrdubey-1").address == "mrdubey-1"
+
+
+def test_linux_probe_address_is_resolved_on_the_control_plane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, _ = _runner(
+        monkeypatch, "address=\nlink=eth0\nfree=100\n", _Proc(0, "100.64.0.4\n"), False
+    )
+    assert runner.probe("rig").address == "100.64.0.4"
+
+
+def test_windows_probe_and_resources_scripts_use_no_cim(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner, calls = _runner(
+        monkeypatch, "address=100.64.0.2\nlink=Ethernet\nfree=1\n", _Proc(0, "100.64.0.2\n")
+    )
     assert runner.probe("mrdubey-1").os == "windows"
     assert runner.resources("mrdubey-1", "windows") == (16.0, 31.8)
-    probe, resources = scripts[1], scripts[2]
+    probe, resources = calls[1][1], calls[-1][1]
     for word in CIM:
         assert word not in probe and word not in resources
     assert "IsInRole" in probe and "$env:USERPROFILE" in probe and "schtasks.exe /query" in probe
     assert "ComputerInfo" in resources
+    # every field is labelled, so a failing command cannot shift the others
+    for key in ("address", "link", "free", "admin", "home", "task", "drives"):
+        assert f"'{key}=' +" in probe
+
+
+def test_linux_probe_script_labels_every_field() -> None:
+    for key in ("address", "link", "free"):
+        assert f'echo "{key}=$(' in LINUX_PROBE
 
 
 def test_parse_probe_reads_drive_letters_in_use() -> None:
     out = (
-        "100.64.0.2\nEthernet\n1\nFalse\nC:\\U\nTrue\n"
-        "C=|D=|F=\\\\nas\\media, 2024|S=D:\\SpectraCut\\flamenco\n"
+        "address=100.64.0.2\nlink=Ethernet\nfree=1\nadmin=False\nhome=C:\\U\ntask=True\n"
+        "drives=C=|D=|F=\\\\nas\\media, 2024|S=D:\\SpectraCut\\flamenco\n"
     )
     f = parse_probe("mrdubey-1", "windows", out)
     assert f.drives == ("C=", "D=", "F=\\\\nas\\media, 2024", "S=D:\\SpectraCut\\flamenco")
-    old = parse_probe("legion", "windows", "100.64.0.3\nEthernet\n1\nTrue\nC:\\U\nTrue")
+    old = parse_probe("legion", "windows", "address=100.64.0.3\nlink=Ethernet\nfree=1")
     assert old.drives == ()
 
 
 def test_windows_probe_lists_drives_without_cim(monkeypatch: pytest.MonkeyPatch) -> None:
-    scripts: list[str] = []
-
-    class Proc:
-        returncode, stdout, stderr = 0, "100.64.0.2\nEthernet\n1\n", ""
-
-    def fake_exec(host: str, cmd: str, shell: str, stdin: str | None) -> Proc:
-        scripts.append(cmd)
-        p = Proc()
-        if cmd == "uname -s":
-            p.returncode = 1
-        return p
-
-    runner = CommandRunner()
-    monkeypatch.setattr(runner, "_exec", fake_exec)
+    runner, calls = _runner(monkeypatch, "link=Ethernet\nfree=1\n", _Proc(1, ""))
     runner.probe("mrdubey-1")
-    assert "Get-PSDrive -PSProvider FileSystem" in scripts[1] and "subst" in scripts[1]
-    assert "Cim" not in scripts[1] and "Wmi" not in scripts[1]
+    assert "Get-PSDrive -PSProvider FileSystem" in calls[1][1] and "subst" in calls[1][1]
+    assert "Cim" not in calls[1][1] and "Wmi" not in calls[1][1]
 
 
 def _cli_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, FakeRunner]:

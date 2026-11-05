@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import re
 import shlex
 import subprocess
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -66,6 +67,35 @@ LINUX_BIN = "$HOME/.local/bin"
 # Components whose files the running worker holds open: replaced only with the worker stopped.
 WORKER_FILES = ("flamenco-worker", "spectracut-host")
 SSH_ERROR = 255
+
+# No CIM or WMI cmdlets: a network-logon standard user is denied WMI. Admin comes from the
+# SSH token, the NICs from .NET. Every field prints its own ``key=value`` line even when its
+# command fails (the Tailscale CLI is denied to a non-interactive account).
+WINDOWS_PROBE = (
+    "$a = ''; try { $a = [string](tailscale ip -4 2>$null | Select-Object -First 1) } "
+    "catch {}; 'address=' + $a; "
+    "'link=' + ((@([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() "
+    "| Where-Object { $_.OperationalStatus -eq 'Up' -and "
+    "$_.NetworkInterfaceType -notin 'Loopback', 'Tunnel' }) | ForEach-Object { "
+    "if ($_.NetworkInterfaceType -eq 'Wireless80211') { '802.11' } "
+    "else { [string]$_.NetworkInterfaceType } }) -join ','); 'free=' + (Get-PSDrive C).Free; "
+    "'admin=' + ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]"
+    "::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); "
+    "'home=' + $env:USERPROFILE; "
+    f"schtasks.exe /query /tn {WORKER_TASK} *> $null; "
+    "'task=' + ($LASTEXITCODE -eq 0); "
+    # Drive letters in use: letter=UNC (network), letter=folder (subst), letter=.
+    "$sub = @{}; subst | ForEach-Object { if ($_ -match '^(\\w):\\\\: => (.*)$') "
+    "{ $sub[$matches[1]] = $matches[2] } }; 'drives=' + ((@(Get-PSDrive -PSProvider FileSystem) "
+    "| ForEach-Object { $r = if ($sub[$_.Name]) { $sub[$_.Name] } "
+    "else { [string]$_.DisplayRoot }; $_.Name + '=' + $r }) -join '|')"
+)
+LINUX_PROBE = (
+    'echo "address=$(tailscale ip -4 2>/dev/null | head -1)"; '
+    "echo \"link=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) "
+    'if($i=="dev"){print $(i+1);exit}}\')"; '
+    'echo "free=$(df -Pk "$HOME" | awk \'NR==2{print $4*1024}\')"'
+)
 
 
 class HostState(StrictModel):
@@ -664,32 +694,31 @@ class CommandRunner:
         if os == "windows":
             # No CIM or WMI cmdlets: a network-logon standard user is
             # denied WMI. Admin comes from the SSH token, the NICs from .NET.
-            script = (
-                "(tailscale ip -4)[0]; "
-                "(@([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() "
-                "| Where-Object { $_.OperationalStatus -eq 'Up' -and "
-                "$_.NetworkInterfaceType -notin 'Loopback', 'Tunnel' }) | ForEach-Object { "
-                "if ($_.NetworkInterfaceType -eq 'Wireless80211') { '802.11' } "
-                "else { [string]$_.NetworkInterfaceType } }) -join ','; (Get-PSDrive C).Free; "
-                "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]"
-                "::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); "
-                f"$env:USERPROFILE; schtasks.exe /query /tn {WORKER_TASK} *> $null; "
-                "$LASTEXITCODE -eq 0; "
-                # Drive letters in use: letter=UNC (network), letter=folder (subst), letter=.
-                "$sub = @{}; subst | ForEach-Object { if ($_ -match '^(\\w):\\\\: => (.*)$') "
-                "{ $sub[$matches[1]] = $matches[2] } }; (@(Get-PSDrive -PSProvider FileSystem) "
-                "| ForEach-Object { $r = if ($sub[$_.Name]) { $sub[$_.Name] } "
-                "else { [string]$_.DisplayRoot }; $_.Name + '=' + $r }) -join '|'"
-            )
+            script = WINDOWS_PROBE
         else:
-            script = (
-                "tailscale ip -4 | head -1; ip route get 1.1.1.1 | awk '{for(i=1;i<NF;i++) "
-                'if($i=="dev"){print $(i+1);exit}}\'; df -Pk "$HOME" | awk \'NR==2{print $4*1024}\''
-            )
+            script = LINUX_PROBE
         proc = self._exec(host, script, "powershell" if os == "windows" else "sh", None)
         if proc.returncode != 0:
             raise SetupError(f"cannot probe {host}: {proc.stderr.strip()[-200:]}")
-        return parse_probe(host, os, proc.stdout)
+        facts = parse_probe(host, os, proc.stdout)
+        found = self.resolve_address(host) if host != CONTROL else None
+        return replace(facts, address=found) if found else facts
+
+    def resolve_address(self, host: str) -> str | None:
+        """``host``'s Tailscale IPv4 as the control plane sees it, or None.
+
+        Asked of the control plane's own client: the host's CLI can belong to another
+        user and print nothing. Only a valid IPv4 first line counts, never error text.
+        """
+        try:
+            proc = self._exec(CONTROL, f"tailscale ip -4 {shlex.quote(host)}", "sh", None)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        first = proc.stdout.split(None, 1)[0] if proc.returncode == 0 and proc.stdout else ""
+        try:
+            return str(ipaddress.IPv4Address(first))
+        except ValueError:
+            return None
 
     def resources(self, host: str, os: Os) -> tuple[float, float]:
         """CPU count and memory in GB of ``host``."""
@@ -711,28 +740,35 @@ class CommandRunner:
         return cpus, mem
 
 
-def parse_probe(name: str, os: Os, out: str) -> HostFacts:
-    """Probe output: Tailscale address, network device or media type, free bytes.
+_PROBE_LINE = re.compile(r"^(address|link|free|admin|home|task|drives)=(.*)$")
 
-    Windows adds: whether the SSH account is an Administrator, its profile path and
-    whether the worker task exists (``True``/``False``; a missing line keeps the default)
-    and the drive letters in use (``letter=root`` joined by ``|``; paths may hold commas).
+
+def parse_probe(name: str, os: Os, out: str) -> HostFacts:
+    """Probe output: labelled ``key=value`` lines, so a missing field never shifts the rest.
+
+    Keys: ``address`` (Tailscale, may be empty), ``link`` (network device or media types),
+    ``free`` (bytes). Windows adds ``admin`` (whether the SSH account is an Administrator),
+    ``home`` (its profile path), ``task`` (whether the worker task exists; ``True``/``False``)
+    and ``drives`` (drive letters in use as ``letter=root`` joined by ``|``; paths may hold
+    ``=`` and commas). Other lines are ignored; a missing key keeps its default.
     """
-    lines = [ln.strip() for ln in out.splitlines()]
-    lines += [""] * (7 - len(lines))
-    address, link, free, admin, home, task, drives = lines[:7]
+    f: dict[str, str] = {}
+    for raw in out.splitlines():
+        m = _PROBE_LINE.match(raw.strip())
+        if m:
+            f[m.group(1)] = m.group(2).strip()
+    link, free = f.get("link", ""), f.get("free", "")
     wired = "802.11" not in link if os == "windows" else not link.startswith("wl")
     gb = float(free) / 1e9 if free.replace(".", "", 1).isdigit() else 0.0
-    if os != "windows":
-        admin = home = task = drives = ""
+    win = os == "windows"
     return HostFacts(
         name=name,
         os=os,
-        address=address or name,
+        address=f.get("address") or name,
         wired=wired,
         free_gb=gb,
-        admin=admin.lower() != "false",
-        home=home,
-        task=task.lower() != "false",
-        drives=tuple(d for d in drives.split("|") if d.strip()),
+        admin=f.get("admin", "").lower() != "false" if win else True,
+        home=f.get("home", "") if win else "",
+        task=f.get("task", "").lower() != "false" if win else True,
+        drives=tuple(d for d in f.get("drives", "").split("|") if d.strip()) if win else (),
     )
