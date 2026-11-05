@@ -364,11 +364,17 @@ class ProductionGraph:
 
     # ---- revision notes ----------------------------------------------------
 
-    def add_note(self, note: RevisionNote) -> None:
-        """Pin a reviewer's note to ``note.node_id``; its department sees it on rebuild."""
-        self.spec(note.node_id)
+    def add_note(self, node_id: str, note: RevisionNote) -> None:
+        """Pin a reviewer's note to ``node_id``; its department sees it on rebuild.
+
+        Raises :class:`KeyError` for an unknown node and :class:`ValueError` when
+        ``note.node_id`` names a different node.
+        """
+        self.spec(node_id)
+        if note.node_id != node_id:
+            raise ValueError(f"note is for {note.node_id!r}, not {node_id!r}")
         with self._lock:
-            self._notes[note.node_id] = (*self._notes.get(note.node_id, ()), note)
+            self._notes[node_id] = (*self._notes.get(node_id, ()), note)
 
     def notes(self, node_id: str) -> tuple[RevisionNote, ...]:
         """Reviewer notes on ``node_id``, oldest first."""

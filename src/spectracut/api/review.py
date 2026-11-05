@@ -268,7 +268,8 @@ def routes(store: ProductionStore) -> list[BaseRoute]:
             if data.revise:
                 if data.comment.strip():
                     g.add_note(
-                        RevisionNote(node_id=nid, text=data.comment, created_at=datetime.now(UTC))
+                        nid,
+                        RevisionNote(node_id=nid, text=data.comment, created_at=datetime.now(UTC)),
                     )
                 g.invalidate(nid)
 
@@ -284,7 +285,7 @@ def routes(store: ProductionStore) -> list[BaseRoute]:
             text=data.text,
             created_at=datetime.now(UTC),
         )
-        graph = mutate(pid, nid, lambda g: g.add_note(note))
+        graph = mutate(pid, nid, lambda g: g.add_note(nid, note))
         return result(graph, nid)
 
     def page(request: Request) -> Response:

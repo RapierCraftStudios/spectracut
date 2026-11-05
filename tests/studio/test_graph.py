@@ -429,7 +429,7 @@ def test_frame_note_reaches_the_department_on_rebuild() -> None:
     note = RevisionNote(
         node_id="board", frame=12, timecode="00:00:00:12", text="logo too small", created_at=NOTE_AT
     )
-    g.add_note(note)
+    g.add_note("board", note)
     g.reject("board", "see notes")
     g.invalidate("board")
     runner.contexts.clear()
@@ -444,7 +444,9 @@ def test_notes_survive_snapshot_and_old_snapshots_load() -> None:
     from spectracut.studio.graph import GraphSnapshot
 
     g, _ = _reviewed_board()
-    g.add_note(RevisionNote(node_id="board", frame=3, text="warmer key", created_at=NOTE_AT))
+    g.add_note(
+        "board", RevisionNote(node_id="board", frame=3, text="warmer key", created_at=NOTE_AT)
+    )
     snap = GraphSnapshot.model_validate_json(g.snapshot().model_dump_json())
     again = ProductionGraph.from_snapshot(snap)
     assert [n.text for n in again.notes("board")] == ["warmer key"]
@@ -459,8 +461,12 @@ def test_approve_clears_notes_and_unknown_node_note_fails() -> None:
     from spectracut.studio import RevisionNote
 
     g, _ = _reviewed_board()
-    g.add_note(RevisionNote(node_id="board", frame=0, text="ok after fix", created_at=NOTE_AT))
+    g.add_note(
+        "board", RevisionNote(node_id="board", frame=0, text="ok after fix", created_at=NOTE_AT)
+    )
     g.approve("board")
     assert g.notes("board") == ()
     with pytest.raises(KeyError):
-        g.add_note(RevisionNote(node_id="nope", text="x", created_at=NOTE_AT))
+        g.add_note("nope", RevisionNote(node_id="nope", text="x", created_at=NOTE_AT))
+    with pytest.raises(ValueError):
+        g.add_note("board", RevisionNote(node_id="render", text="x", created_at=NOTE_AT))
