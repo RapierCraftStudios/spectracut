@@ -564,7 +564,7 @@ Cost has to be absolutely low. SpectraCut uses exactly three external services; 
 | **ChatGPT** (Codex sign-in) | text, concept images and boards | subscription; local image models do bulk exploration, ChatGPT is used where it's clearly better |
 | **ElevenLabs** | final VO only: it's the one thing local models can't match yet | temp VO for boards and animatics is generated locally; ElevenLabs runs once per line after the script is locked; cached by text, voice and settings, so only changed lines are regenerated |
 
-**Everything else is local**, as models on the render hosts' GPUs (4070 Ti, 12 GB; 3070 Laptop, 8 GB) or as code in SpectraCut:
+**Everything else is local**, as code in SpectraCut or as models on `legion` (RTX 3070 Laptop, 8 GB), the only model host by owner decision; the picks, fallbacks and measurements are in [local-model-selection.md](local-model-selection.md):
 
 | Job | Local approach |
 |---|---|

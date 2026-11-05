@@ -60,11 +60,23 @@ python_version = "3.12"
 strict = true
 files = ["src/spectracut", "host/spectracut_host", "scripts", "tests"]
 explicit_package_bases = true
-mypy_path = ["src", "host"]
+mypy_path = ["src", "host", "scripts/model_check"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["opentimelineio", "opentimelineio.*"]
+ignore_missing_imports = true
+
+# Model packages used only by scripts/model_check, installed in per-host venvs on legion (#49).
+[[tool.mypy.overrides]]
+module = [
+    "torch", "torch.*", "torchaudio", "torchaudio.*", "transformers", "transformers.*",
+    "diffusers", "diffusers.*", "kokoro", "kokoro.*", "soundfile", "librosa", "librosa.*",
+    "faster_whisper", "faster_whisper.*", "bitsandbytes", "bitsandbytes.*",
+    "acestep", "acestep.*", "huggingface_hub", "huggingface_hub.*", "numpy", "numpy.*",
+    "qwen_tts", "qwen_tts.*", "api", "api.*", "stable_audio_tools", "stable_audio_tools.*",
+    "einops", "accelerate", "accelerate.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
