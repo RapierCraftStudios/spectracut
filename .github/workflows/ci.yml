@@ -65,6 +65,10 @@ jobs:
         run: npx eslint .
       - name: Vitest
         run: npx vitest run
+      - name: Install Chromium for capture e2e
+        run: npx playwright-core install --with-deps --only-shell chromium
+      - name: Capture e2e (headless Chromium)
+        run: SPECTRACUT_E2E=1 npx vitest run packages/capture/test/capture.e2e.test.ts
 
   docker:
     runs-on: ubuntu-latest
