@@ -28,7 +28,6 @@ import {
   type CaptureEvent,
   type CapturePage,
   type CaptureOptions,
-  type DescribeQuery,
   type ElementInfo,
   type HideRequest,
   type Rect,
@@ -150,7 +149,7 @@ class FakePage implements CapturePage {
   async boundingBox(selector: string) {
     return this.boxes[selector] ?? null;
   }
-  async describeElements(_q: DescribeQuery) {
+  async describeElements() {
     return this.elements.map((e) => ({ ...e, visible: e.visible && !this.hidden.has(e.id) }));
   }
   async hideElements(hits: HideRequest[]) {
