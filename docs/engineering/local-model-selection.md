@@ -22,7 +22,7 @@ Only models whose output can be used commercially can be a pick or a fallback. N
 - "Seconds per output" is the steady-state time (second run) for one output, without model load.
 - Card column: `legion 8 GB` is a real measurement on `legion`. `12 GB (info)` is the first pass on `mrdubey-1`.
   `8 GB emulated` is a 12 GB card capped to 8 GiB with `SC_VRAM_CAP_GB=8`. `not measured` gives the blocker in the notes.
-- `legion`'s internet link measured 0.5-1 MB/s on 2026-11-05, so a 10 GB checkpoint takes 3-6 hours. That limits
+- `legion`'s internet link measured 0.5-1 MB/s on 2026-11-05 (0.3 MB/s later that day), so a 10 GB checkpoint takes 3-6 hours. That limits
   how many candidates were measured; each job below says which runs are still open.
 
 ## Measured candidates per job
@@ -86,7 +86,7 @@ ACE-Step cue.
 | Model | Licence | Weights source | Card | Peak VRAM | Seconds per output | Quality notes |
 |---|---|---|---|---|---|---|
 | Qwen2.5-Omni-7B Q4_K_M + mmproj Q8_0, llama.cpp `b12110` (CUDA 12.4 build) | Apache-2.0 | `ggml-org/Qwen2.5-Omni-7B-GGUF` | legion 8 GB | 7253 MiB | 11.9 s per clip including load | Heard "a synthesized female voice ... no defects" (correct, but it did not report the words) and "melodic electronic tune ... steady drum beat, 4/5" for the cue. A coarse critic: it has to be paired with the numeric QA gate, not trusted alone |
-| LFM3-Omni-2B, bf16, text out | LFM Open License v1.0 (commercial use allowed below the licence's revenue threshold) | `LiquidAI/LFM3-Omni-2B` | LFM_CARD | LFM_VRAM | LFM_SECS | LFM_NOTES |
+| LFM3-Omni-2B, bf16, text out | LFM Open License v1.0 (commercial use allowed below the licence's revenue threshold) | `LiquidAI/LFM3-Omni-2B` | not measured | - | - | The `omni` venv is ready on `legion`, but the bf16 weights (about 5 GB) are not downloaded: `legion`'s link measured 0.3 MB/s on 2026-11-05. Run `run.ps1 omni omni_lfm.py` once they are in the HF cache |
 
 Not measured: Qwen3-Omni-30B-A3B Q4_K_M with `--n-cpu-moe` (Apache-2.0). The 18.5 GB download is too slow on `legion`'s link.
 
@@ -106,9 +106,9 @@ Rejected: FLUX.1 [dev] and FLUX.2 [dev] (FLUX Non-Commercial licence).
 
 | Model | Licence | Weights source | Card | Peak VRAM | Seconds per output | Result |
 |---|---|---|---|---|---|---|
-| faster-whisper `large-v3-turbo`, fp16, word timestamps | MIT | `Systran/faster-whisper-large-v3-turbo` | ASR_CARD | ASR_VRAM | ASR_SECS | ASR_NOTES |
+| faster-whisper `large-v3-turbo`, fp16, word timestamps | MIT | `mobiuslabsgmbh/faster-whisper-large-v3-turbo` | legion 8 GB | 4790 MiB | 1.38 s for 10.7 s of audio; 0.70 s for 9.9 s | Word-exact transcript of the Kokoro clip (25 words). The Qwen3-TTS clip came back as 26 words ("voice -over" split), otherwise exact. The 856 s load includes the first download |
 | faster-whisper `large-v3-turbo` | MIT | same | 12 GB (info) | 2.3 GB | 0.34 s for 10.7 s of audio | Exact transcript, 25 word timestamps |
-| `laion/larger_clap_general` | Apache-2.0 | `laion/larger_clap_general` | CLAP_CARD | CLAP_VRAM | CLAP_SECS | CLAP_NOTES |
+| `laion/larger_clap_general`, fp32, zero-shot over 3 captions | Apache-2.0 | `laion/larger_clap_general` | legion 8 GB | 1624-1720 MiB | 0.9-1.04 s per clip | **Failed the sanity check**: in two runs it scored the Kokoro speech clip as "piano music" (0.95-0.99) over "a person speaking". The preprocessing in `asr_clap.py` (mono 48 kHz input to `ClapProcessor`) has to be checked before CLAP scores are trusted |
 
 ## Picks
 
@@ -121,10 +121,10 @@ the VRAM cell says so.
 | Video-to-audio foley | HunyuanVideo-Foley XL with offload (provisional) | Sound-effects pick, placed and cut to picture | Tencent Hunyuan Community (commercial use allowed; excludes the EU, UK and South Korea) / see Sound effects | `tencent/HunyuanVideo-Foley` / see Sound effects | not measured (vendor: 8 GB with offload) | not measured | The only commercial video-to-audio model with an 8 GB path. MMAudio and ThinkSound are non-commercial |
 | Music | ACE-Step 1.5 turbo (DiT, + LM 0.6B for structure, CPU offload) | HeartMuLa-oss-3B | MIT / Apache-2.0 | `ACE-Step/Ace-Step1.5` / `HeartMuLa/HeartMuLa-oss-3B-happy-new-year` | 6.6 GB (8 GB emulated) | 4.7 s DiT only, 34.5 s with LM per 30 s cue | Fastest measured music model with a permissive licence, exact cue length and 48 kHz stereo; fits 8 GB with offload |
 | Temp TTS | Kokoro-82M | Qwen3-TTS-12Hz-0.6B-Base | Apache-2.0 / Apache-2.0 | `hexgrad/Kokoro-82M` / `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | 1055 MiB / 6820 MiB | 0.37 s per 10.7 s line / 98.6 s per 9.9 s line | About 30 times faster than real time at 1 GB, with a word-exact ASR round trip. Qwen3-TTS adds voice cloning |
-| Omni audio critic | Qwen2.5-Omni-7B Q4_K_M (llama.cpp) | LFM3-Omni-2B | Apache-2.0 / LFM Open License v1.0 | `ggml-org/Qwen2.5-Omni-7B-GGUF` / `LiquidAI/LFM3-Omni-2B` | 7253 MiB / LFM_VRAM | 11.9 s / LFM_SECS per clip | Heard both test clips plausibly and fits the 8 GB card fully on GPU. The smaller LFM leaves room for another model |
-| Image | Z-Image-Turbo GGUF Q4_K_M | FLUX.2 klein 4B GGUF | Apache-2.0 / Apache-2.0 | `jayn7/Z-Image-Turbo-GGUF` / `unsloth/FLUX.2-klein-4B-GGUF` | 8011 MiB | 37.2 s per 1024x1024 image | Best measured stills (sharp, readable on-screen text) under a permissive licence, and it fits 8 GB |
-| ASR / alignment | faster-whisper large-v3-turbo | - | MIT | `Systran/faster-whisper-large-v3-turbo` | ASR_VRAM | ASR_SECS | Exact transcript with word timestamps in well under a second |
-| CLAP | laion/larger_clap_general | - | Apache-2.0 | `laion/larger_clap_general` | CLAP_VRAM | CLAP_SECS | Small zero-shot audio-text similarity for SFX search and checks |
+| Omni audio critic | Qwen2.5-Omni-7B Q4_K_M (llama.cpp) | LFM3-Omni-2B | Apache-2.0 / LFM Open License v1.0 | `ggml-org/Qwen2.5-Omni-7B-GGUF` / `LiquidAI/LFM3-Omni-2B` | 7253 MiB / LFM not measured | 11.9 s per clip / LFM not measured | Heard both test clips plausibly and fits the 8 GB card fully on GPU. The smaller LFM leaves room for another model |
+| Image | Z-Image-Turbo GGUF Q4_K_M | FLUX.2 klein 4B GGUF | Apache-2.0 / Apache-2.0 | `jayn7/Z-Image-Turbo-GGUF` / `unsloth/FLUX.2-klein-4B-GGUF` | 8011 MiB / FLUX.2 klein not measured | 37.2 s per 1024x1024 image / FLUX.2 klein not measured | Best measured stills (sharp, readable on-screen text) under a permissive licence, and it fits 8 GB |
+| ASR / alignment | faster-whisper large-v3-turbo | - | MIT | `mobiuslabsgmbh/faster-whisper-large-v3-turbo` | 4790 MiB | 1.38 s per 10.7 s clip | Exact transcript with word timestamps in well under a second |
+| CLAP | laion/larger_clap_general | - | Apache-2.0 | `laion/larger_clap_general` | 1720 MiB | 1.04 s per clip | The only candidate, small and fast, for SFX search and checks. It failed the speech/music sanity check on `legion`, so its scores are not trusted until the preprocessing is fixed |
 
 ## Image-to-3D and motion
 
@@ -143,6 +143,7 @@ Each of these runs is ready to go; only the download is missing. Run `push.sh le
 | Foley | `run.ps1 tts dl_queue.py HunyuanVideo-Foley`, then `run_cli.py foley ...` | about 8 GB plus encoders |
 | Music | `setup_ace.ps1`, `run.ps1 tts dl_ace.py`, then `run_repo.ps1 ace ace music_ace.py lm offload` | about 7 GB plus the venv |
 | Image | `run.ps1 tts dl_queue.py FLUX.2-klein`, then `run.ps1 img image_diffusers.py flux2klein gguf-Q8_0` | about 12 GB |
+| Omni critic | `run.ps1 tts dl_queue.py LFM3-Omni`, then `run.ps1 omni omni_lfm.py` | about 5 GB |
 
 ## Owner actions
 

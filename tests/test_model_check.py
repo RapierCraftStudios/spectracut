@@ -104,8 +104,20 @@ def test_measured_on_legion(doc: str) -> None:
     jobs = {job for job, _ in measured}
     assert {"Temp TTS", "Omni audio critic", "Image"} <= jobs, measured
     tts = [m for job, m in measured if job == "Temp TTS"]
-    omni = [m for job, m in measured if job == "Omni audio critic"]
-    assert len(tts) >= 2 and len(omni) >= 2, measured
+    assert len(tts) >= 2, measured
+    support = _first_table(_section(doc, "ASR / alignment and CLAP (supporting models)"))
+    assert all(r["Card"] == "legion 8 GB" for r in support if "12 GB" not in r["Card"]), support
+
+
+def test_unmeasured_picks_are_listed_as_open_runs(doc: str) -> None:
+    """A pick or fallback without a legion number must say so and have an open run listed."""
+    rows = _first_table(_section(doc, "Picks"))
+    open_runs = {r["Job"] for r in _first_table(_section(doc, "Still to measure on legion"))}
+    run_name = {"Video-to-audio foley": "Foley", "Omni audio critic": "Omni critic"}
+    for r in rows:
+        if "not measured" in r["VRAM (legion)"] or "emulated" in r["VRAM (legion)"]:
+            job = run_name.get(r["Job"], r["Job"])
+            assert job in open_runs, f"{r['Job']}: unmeasured pick without an open run"
 
 
 def test_picks_table(doc: str) -> None:
