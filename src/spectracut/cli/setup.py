@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import os
 import secrets
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from spectracut.cli.render import HomeOpt, _home, _read_registry
+from spectracut.cli.render import HomeOpt, HostEntry, _home, _read_registry
 from spectracut.providers.base import redact
+from spectracut.queue.flamenco import FlamencoClient
 from spectracut.queue.signing import ensure_signing_key, read_public_key
 from spectracut.setup.manifest import HostFacts, StepRunner, load_manifest
 from spectracut.setup.plan import (
@@ -32,6 +34,7 @@ from spectracut.setup.plan import (
 )
 from spectracut.setup.storage import (
     CONTROL,
+    MANAGER_PORT,
     Credential,
     StorageError,
     StorageTarget,
@@ -40,12 +43,18 @@ from spectracut.setup.storage import (
     parse_storage_host,
 )
 from spectracut.setup.wheels import build_wheels
+from spectracut.setup.worker_tags import TagApi, desired_tags, sync_worker_tags
 
 SHARE_USER = "spectracut-share"
 # Shown in a dry run before the signing key exists; the real run creates the key first.
 PENDING_PUBLIC_KEY = "<created by setup>"
 NAS_USER_ENV = "SPECTRACUT_NAS_USER"
 NAS_PASSWORD_ENV = "SPECTRACUT_NAS_PASSWORD"
+
+
+def manager_client(url: str) -> TagApi:
+    """The Manager API client the worker-tag sync uses (replaced in tests)."""
+    return FlamencoClient(url)
 
 
 def _fail(message: str) -> typer.Exit:
@@ -114,7 +123,8 @@ def setup_cmd(
     manifest = load_manifest()
     try:
         state = load_state(root)
-        workers = [h.name for h in _read_registry(root).hosts]
+        registered = _read_registry(root).hosts
+        workers = [h.name for h in registered]
         set_id = state.set_id or manifest.sets[0].id
         if upgrade:
             nxt = manifest.next_tested_set(state.set_id)
@@ -156,12 +166,30 @@ def setup_cmd(
             typer.echo(f"warning: {note}")
         if not plan.steps:
             typer.echo(f"nothing to do: set {set_id}, storage {plan.storage.host} is up to date")
-            return
         for step in plan.steps:
             typer.echo(redact(f"{step.host}: {step.summary}"))
-        if dry_run:
+        if plan.steps and not dry_run:
+            apply_plan(plan, runner, state, root)
+        # Worker tags live in the Manager, so they are synced even when the hosts converged.
+        _sync_tags(f"http://{facts[CONTROL].address}:{MANAGER_PORT}", registered, dry_run)
+        if dry_run or not plan.steps:
             return
-        apply_plan(plan, runner, state, root)
     except (StorageError, SetupError, ValueError, OSError) as exc:
         raise _fail(str(exc)) from exc
     typer.echo(f"set {set_id} applied; storage on {plan.storage.host}")
+
+
+def _sync_tags(url: str, hosts: Sequence[HostEntry], dry_run: bool) -> None:
+    """Create and assign each registered host's worker tags (a dry run only reads)."""
+    desired = desired_tags(hosts)
+    if not desired:
+        return
+    try:
+        actions = sync_worker_tags(manager_client(url), desired, dry_run=dry_run)
+    except SetupError as exc:
+        if not dry_run:
+            raise
+        typer.echo(f"warning: {exc}")
+        actions = [f"{h}: worker tags {', '.join(t)}" for h, t in desired.items()]
+    for action in actions:
+        typer.echo(redact(action))

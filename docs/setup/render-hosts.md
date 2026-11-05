@@ -25,6 +25,28 @@ the worker task or service.
 spectracut hosts add mrdubey-1 --role gpu-only --gpu "RTX 4070 Ti:12"
 ```
 
+### Worker names and worker tags
+
+Setup names each host's Flamenco worker after its registered host name (`legion`,
+`mrdubey-1`). It does this through `FLAMENCO_WORKER_NAME`: the `Environment=` line of the
+Linux unit, or `Name` in `worker-args.json` on Windows. Setup then finds a host's worker in
+the Manager by that exact name. Workers whose names match no registered host, such as a CPU
+worker on the control plane, are left alone.
+
+Each host's worker tags come from its registered render profile and match what
+`spectracut-host tags` prints: the GPU slug (`RTX 3070 Laptop GPU` gives `3070laptopgpu`,
+`RTX 4070 Ti` gives `4070ti`), `vram-<N>gb`, and the capabilities `eevee`, `cycles` and
+`workbench`. On every run, `spectracut setup` does the following, also when nothing else
+changed:
+
+- waits for each host's worker to register, then fails naming the host if it never does;
+- creates the missing tags in the Manager, with the description `managed by spectracut setup`;
+- sets each worker's tags to its host's tags, keeping any tag you added by hand;
+- deletes managed tags that no host uses any more, for example after a GPU change.
+
+`--dry-run` lists these changes and writes nothing. A job's worker tag (for example
+`SPECTRACUT_FLAMENCO_TAG=4070ti`) must be one of these tags, not a worker name.
+
 ## Windows hosts
 
 On Windows, the worker runs as the scheduled task `spectracut-worker`. It starts at boot and
