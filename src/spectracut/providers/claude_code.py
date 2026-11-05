@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Claude through the official Claude Code sign-in (``claude`` OAuth).
 
-The vision judge runs ``claude -p`` headless with the user's signed-in session.
+The vision judge and the text provider run ``claude -p`` headless with the user's
+signed-in session.
 The command is configurable (``SPECTRACUT_CLAUDE_BIN`` or ``[ai] claude_bin``),
 so a multi-account wrapper such as ``tokenbaton-exec`` works. Every call uses a
 minimal isolated config: no user plugins, hooks, MCP servers or slash commands,
@@ -17,7 +18,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from pydantic import JsonValue
+
 from spectracut.providers.base import (
+    Completion,
     ProviderAuthError,
     ProviderError,
     SignInState,
@@ -155,6 +159,98 @@ class ClaudeCodeVisionJudge:
             )
         verdict, self.last_usage = parse_judge_output(stdout)
         return verdict
+
+
+#: Flags for text calls: the judge's isolation, but no tools at all.
+TEXT_ISOLATION_FLAGS = [
+    "--strict-mcp-config",
+    "--mcp-config",
+    '{"mcpServers":{}}',
+    "--setting-sources",
+    "",
+    "--disable-slash-commands",
+    "--tools",
+    "",
+    "--no-session-persistence",
+]
+
+
+def claude_text_argv(
+    claude_bin: str, system: str, prompt: str, schema: dict[str, Any]
+) -> list[str]:
+    """The isolated headless ``claude -p`` command line for one text completion."""
+    return [
+        claude_bin,
+        "-p",
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(schema, separators=(",", ":")),
+        *TEXT_ISOLATION_FLAGS,
+        "--system-prompt",
+        system,
+        prompt,
+    ]
+
+
+def parse_text_output(stdout: str) -> tuple[JsonValue, dict[str, Any]]:
+    """Parse ``claude -p --output-format json`` output into a JSON object and usage."""
+    try:
+        envelope = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise ProviderError(CLI, "claude returned output that is not JSON") from exc
+    if not isinstance(envelope, dict):
+        raise ProviderError(CLI, "claude returned an unexpected JSON value")
+    result_text = str(envelope.get("result") or "")
+    if envelope.get("is_error"):
+        if looks_like_auth_failure(result_text):
+            raise ProviderAuthError(CLI, result_text or "claude reported an error")
+        raise ProviderError(CLI, result_text or "claude reported an error")
+    payload = envelope.get("structured_output")
+    if not isinstance(payload, dict):
+        if not result_text.strip():
+            raise ProviderError(CLI, "claude returned an empty result")
+        try:
+            payload = _parse_json_text(result_text)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise ProviderError(CLI, "claude did not return a JSON object") from exc
+    if not isinstance(payload, dict):
+        raise ProviderError(CLI, "claude did not return a JSON object")
+    usage = envelope.get("usage")
+    return payload, (usage if isinstance(usage, dict) else {})
+
+
+class ClaudeCodeTextProvider:
+    """A :class:`~spectracut.providers.base.TextProvider` through headless Claude Code.
+
+    Each call runs in an empty scratch directory with no tools, plugins, hooks or
+    MCP servers, and with API keys removed so only the subscription sign-in works.
+    """
+
+    name = "claude-code-text"
+
+    def __init__(self, claude_bin: str | None = None, *, timeout: float = 600.0) -> None:
+        self.claude_bin = claude_bin or resolve_claude_bin() or configured_claude_bin()
+        self.timeout = timeout
+
+    def complete(self, system: str, prompt: str, *, schema: dict[str, Any]) -> Completion:
+        with tempfile.TemporaryDirectory(prefix="spectracut-claude-") as tmp:
+            stdout = run_cli(
+                claude_text_argv(self.claude_bin, system, prompt, schema),
+                cli=CLI,
+                cwd=Path(tmp),
+                env=subscription_env(),
+                timeout=self.timeout,
+            )
+        output, usage = parse_text_output(stdout)
+        return Completion(
+            output=output,
+            usage={
+                "claude_requests": 1,
+                "claude_input_tokens": context_tokens(usage),
+                "claude_output_tokens": int(usage.get("output_tokens") or 0),
+            },
+        )
 
 
 def claude_status(claude_bin: str | None = None) -> SignInState:
