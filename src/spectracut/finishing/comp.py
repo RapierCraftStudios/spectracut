@@ -184,7 +184,9 @@ def load_comp(path: Path) -> CompGraph:
     path = Path(path)
     graph = _parse(path)
     if path.stem != graph.id:
-        raise ValueError(f"comp graph {path} declares id {graph.id!r}; the file must be {graph.id}.yaml")
+        raise ValueError(
+            f"comp graph {path} declares id {graph.id!r}; the file must be {graph.id}.yaml"
+        )
     for case, (before, after) in legibility_check(graph).items():
         if not _legible(before, after):
             raise ValueError(
@@ -269,7 +271,10 @@ Rows = list[list[Pixel]]
 
 
 def _grade(px: Pixel, op: ScreenGrade) -> Pixel:
-    c = [max(v * s + o, 0.0) ** p for v, s, o, p in zip(px, op.slope, op.offset, op.power, strict=True)]
+    c = [
+        max(v * s + o, 0.0) ** p
+        for v, s, o, p in zip(px, op.slope, op.offset, op.power, strict=True)
+    ]
     luma = sum(w * v for w, v in zip(_LUMA, c, strict=True))
     r, g, b = (max(luma + op.saturation * (v - luma), 0.0) for v in c)
     return (r, g, b)
@@ -329,8 +334,10 @@ def screen_transfer(graph: CompGraph, rgb_rows: Sequence[Sequence[Sequence[float
 def ui_text_patch(text: float, background: float, size: int = 24, period: int = 6) -> Rows:
     """A synthetic UI patch: 2 px glyph strokes of grey ``text`` on grey ``background``."""
     return [
-        [(text, text, text) if x % period < 2 and 2 <= y < size - 2 else (background,) * 3
-         for x in range(size)]
+        [
+            (text, text, text) if x % period < 2 and 2 <= y < size - 2 else (background,) * 3
+            for x in range(size)
+        ]
         for y in range(size)
     ]
 

@@ -64,10 +64,11 @@ def _ui_sharpen(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _screen_glow(p: dict[str, Any]) -> dict[str, Any]:
-    check_only(p, {"op", "strength", "size"}, TOOL)
+    check_only(p, {"op", "strength", "size", "threshold"}, TOOL)
     return {
         "strength": _num(p, "strength", 0.0, 0.5, 0.0),
         "size": as_int(p.get("size", 6), f"{TOOL} screen_glow.size", 1, 9),
+        "threshold": _num(p, "threshold", 0.0, 2.0, 0.9),
     }
 
 
@@ -199,6 +200,7 @@ def _screen_glow_nodes(t: _Tree, p: dict[str, Any]) -> None:
     glare = t.node("CompositorNodeGlare", "screen_glow_glare")
     glare.glare_type = "FOG_GLOW"
     glare.size = p["size"]
+    glare.threshold = p["threshold"]
     glare.mix = 1.0
     t.link(iso.outputs[0], glare, "Image")
     t.tail = t.mix("ADD", "screen_glow", p["strength"], base, glare.outputs[0])
