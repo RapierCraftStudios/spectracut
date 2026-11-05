@@ -549,9 +549,11 @@ def _install_steps(
     """Install steps for every component this machine's roles need and does not yet have.
 
     A component built on the control plane (pinned to ``wheels.pin``) first gets its
-    wheels copied to the host.
+    wheels copied to the host. Copies come before the worker stop, so a stalled copy
+    never leaves a worker down.
     """
     steps: list[Step] = []
+    copies: list[Step] = []
     fields = install_fields(f.os, wheels)
     stop_at: int | None = None
     for cname, comp in manifest.components.items():
@@ -561,8 +563,8 @@ def _install_steps(
             continue
         if stop_at is None and cname in WORKER_FILES and "host" in roles:
             stop_at = len(steps)
-        if pins[cname] == wheels.pin:
-            steps += wheel_copy_steps(f, wheels)
+        if pins[cname] == wheels.pin and not copies:
+            copies = wheel_copy_steps(f, wheels)
         steps.append(
             Step(
                 f.name,
@@ -579,7 +581,7 @@ def _install_steps(
         stop, start = _worker_stop_start(f)
         steps.insert(stop_at, stop)
         steps.append(start)
-    return steps
+    return copies + steps
 
 
 def _worker_prep_steps(
@@ -771,8 +773,44 @@ def _run_steps(
     home: Path | None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
+    starts = {s.id: s for s in steps if s.id.startswith(START_PREFIX)}
+    pending: dict[str, Step] = {}  # worker:start steps for workers stopped and not yet started
+    try:
+        _run_each(steps, runner, state, home, sleep, starts, pending)
+    except Exception as exc:
+        failed: list[str] = []
+        for start in list(pending.values()):
+            try:
+                run_with_retry(partial(runner.run, start), start.kind, sleep)
+            except SetupError as again:
+                failed.append(str(again))
+        if failed:
+            raise SetupError(
+                f"{exc}; and restarting the worker failed: {'; '.join(failed)}"
+            ) from exc
+        raise
+
+
+STOP_PREFIX = "worker:stop:"
+START_PREFIX = "worker:start:"
+
+
+def _run_each(
+    steps: Sequence[Step],
+    runner: StepRunner,
+    state: SetupState,
+    home: Path | None,
+    sleep: Callable[[float], None],
+    starts: Mapping[str, Step],
+    pending: dict[str, Step],
+) -> None:
     for step in steps:
+        if step.id.startswith(STOP_PREFIX):
+            start = starts.get(START_PREFIX + step.id.removeprefix(STOP_PREFIX))
+            if start is not None:
+                pending[start.id] = start
         out = run_with_retry(partial(runner.run, step), step.kind, sleep)
+        pending.pop(step.id, None)
         if step.artifact and out:
             write_atomic(
                 (Path(home) if home is not None else spectracut_home())
@@ -795,6 +833,8 @@ def apply_plan(
     sleep: Callable[[float], None] = time.sleep,
 ) -> SetupState:
     """Run the steps in order; record each success. A failure stops the run (state kept).
+
+    A worker stopped for an upgrade is started again before the failure is raised.
 
     Idempotent steps (:data:`RETRY_KINDS`) are retried with backoff before failing.
     """

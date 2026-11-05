@@ -339,6 +339,11 @@ def test_worker_stopped_before_files_are_replaced_and_started_after(component: s
             f"worker:start:{name}",
         )
         assert ids.index(stop) < ids.index(inst) < ids.index(start)
+        assert all(
+            ids.index(i) < ids.index(stop)
+            for i in ids
+            if i.startswith("wheel:") and i.endswith(f":{name}")
+        )
         for sid in (stop, start):
             assert by_id[sid].shell == shell and by_id[sid].component is None
             assert "sudo" not in by_id[sid].command and "RunAs" not in by_id[sid].command

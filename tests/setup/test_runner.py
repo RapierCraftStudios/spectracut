@@ -296,3 +296,56 @@ def test_windows_wheel_copy_writes_part_checks_sha256_and_renames() -> None:
         assert cmd.index("Get-FileHash") < cmd.index("Move-Item")
         assert "exit 1" in cmd  # a mismatch fails the step
         assert base64.b64decode(step.stdin or "") == wheel.read_bytes()
+
+
+# --- a stopped worker is never left down ---------------------------------------
+
+
+class FailsOn(FakeRunner):  # type: ignore[misc]
+    def __init__(self, kind: str, *, also_start: bool = False) -> None:
+        super().__init__()
+        self.kind, self.also_start, self.attempts = kind, also_start, 0
+
+    def run(self, step: Step) -> str | None:
+        if (
+            step.kind == self.kind
+            and step.id.startswith(("install:spectracut-host:", "wheel:"))
+            and step.host == "legion"
+        ):
+            self.attempts += 1
+            raise StepTimeout(f"{step.host}: {step.summary} timed out")
+        if self.also_start and step.id.startswith("worker:start:"):
+            raise SetupError(f"{step.host}: start failed")
+        return super().run(step)  # type: ignore[no-any-return]
+
+
+def test_copies_run_before_the_worker_is_stopped() -> None:
+    ids = [s.id for s in _windows_plan().steps]
+    stop, start = ids.index("worker:stop:legion"), ids.index("worker:start:legion")
+    assert (
+        max(i for i, s in enumerate(ids) if s.startswith("wheel:") and s.endswith(":legion"))
+        < stop
+        < start
+    )
+
+
+def test_stalled_copy_fails_bounded_and_never_stops_the_worker(tmp_path: Path) -> None:
+    runner, slept = FailsOn("copy"), []
+    with pytest.raises(StepTimeout, match="copy"):
+        apply_plan(_windows_plan(), runner, SetupState(), tmp_path, sleep=slept.append)
+    assert runner.attempts == 4 and slept == [2.0, 4.0, 8.0]
+    assert not any(s.id.startswith("worker:stop:") for s in runner.ran)
+
+
+def test_failed_install_restarts_the_stopped_worker(tmp_path: Path) -> None:
+    runner = FailsOn("install")
+    with pytest.raises(StepTimeout, match="install"):
+        apply_plan(_windows_plan(), runner, SetupState(), tmp_path, sleep=_no_sleep)
+    ids = [s.id for s in runner.ran]
+    assert "worker:stop:legion" in ids and ids[-1] == "worker:start:legion"
+
+
+def test_failed_restart_is_reported_with_the_original_error(tmp_path: Path) -> None:
+    runner = FailsOn("install", also_start=True)
+    with pytest.raises(SetupError, match=r"install.*restarting the worker failed.*start failed"):
+        apply_plan(_windows_plan(), runner, SetupState(), tmp_path, sleep=_no_sleep)
