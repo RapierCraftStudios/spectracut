@@ -9,6 +9,9 @@
   completes without rendering and never reaches an executor.
 - A :class:`~spectracut.providers.base.ProviderExhausted` error parks the job in
   ``waiting_for_ai`` until its ``reset_at``; then it runs again.
+- An :class:`~spectracut.queue.executors.base.ExecutorBusy` with ``retry_at``
+  (a computeshare ``503`` + ``Retry-After``) keeps the job ``queued`` and skips
+  it until ``retry_at``.
 - :meth:`JobQueue.as_runner` plugs the queue into
   :meth:`~spectracut.studio.graph.ProductionGraph.run`, so a job's outcome
   becomes its node's status (clean or failed).
@@ -163,6 +166,10 @@ class JobQueue:
                     continue
                 job.resume_at = None
                 job.observe(JobStatus.QUEUED)
+            if job.status is JobStatus.QUEUED and job.resume_at is not None:
+                if job.resume_at > now:
+                    continue
+                job.resume_at = None
             if job.status is JobStatus.QUEUED and self._advance(job):
                 progressed.append(job)
         return progressed
@@ -187,8 +194,11 @@ class JobQueue:
             job.error = str(exc)
             job.observe(JobStatus.WAITING_FOR_AI)
             return True
-        except ExecutorBusy:
+        except ExecutorBusy as exc:
             job.observe(JobStatus.QUEUED)
+            if exc.retry_at is not None:
+                job.resume_at = exc.retry_at
+                job.error = str(exc)
             return False
         except Exception as exc:  # noqa: BLE001 - an executor failure fails the job
             job.error = f"{type(exc).__name__}: {exc}"

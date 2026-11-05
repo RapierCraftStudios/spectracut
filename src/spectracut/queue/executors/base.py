@@ -2,7 +2,8 @@
 """Executor protocol, resource requests and whole-GPU lease accounting.
 
 An executor runs one queue job at a time on capacity it owns (a pool of
-registered hosts, the Flamenco farm, later computeshare). Jobs declare the
+registered hosts, the Flamenco farm, optional computeshare sandboxes via
+``ComputeshareExecutor``). Jobs declare the
 :class:`Resources` they need; the queue only hands a job to an executor that
 can meet them. GPUs are leased as whole cards, never sliced: a job asking for
 ``gpus=1, vram_gb=12`` gets one free card with at least 12 GB of VRAM.
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Protocol, runtime_checkable
 
@@ -70,7 +72,16 @@ class NoCapableExecutor(LookupError):
 
 
 class ExecutorBusy(RuntimeError):
-    """The executor can meet the request, but not with its free capacity right now."""
+    """The executor can meet the request, but not with its free capacity right now.
+
+    ``retry_at``, when set, is the earliest time the job should be tried again
+    (e.g. a computeshare router ``503`` + ``Retry-After``); the queue keeps the
+    job queued until then. Without it the job is retried on the next tick.
+    """
+
+    def __init__(self, *args: object, retry_at: datetime | None = None) -> None:
+        super().__init__(*args)
+        self.retry_at = retry_at
 
 
 @dataclass(frozen=True)
