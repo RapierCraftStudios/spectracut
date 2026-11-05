@@ -757,3 +757,42 @@ def test_scene_graph_hash_canonical_and_content_addressed(tmp_path: Path) -> Non
     assert same_a == same_b == rounded  # image content, not its path; rounded matrices
     assert other_image != same_a and moved != same_a
     assert canon_1 == canon_2
+
+
+def test_render_set_property_cycles_seed_and_denoise(blender: Path, tmp_path: Path) -> None:
+    run = run_steps(
+        blender,
+        tmp_path,
+        [
+            ("render.set_engine", {"engine": "cycles"}),
+            ("render.set_property", {"property": "cycles.seed", "value": 1153}),
+            ("render.set_property", {"property": "cycles.use_denoising", "value": True}),
+            ("render.set_property", {"property": "cycles.denoiser", "value": "OPENIMAGEDENOISE"}),
+        ],
+    )
+    assert run.proc.returncode == 0, run.proc.stderr
+    reports = [s["report"] for s in run.reports if s["tool"] == "render.set_property"]
+    assert reports == [
+        {"property": "cycles.seed", "value": 1153},
+        {"property": "cycles.use_denoising", "value": True},
+        {"property": "cycles.denoiser", "value": "OPENIMAGEDENOISE"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("prop", "value"),
+    [
+        ("cycles.seed", -1),
+        ("cycles.seed", 1.5),
+        ("cycles.use_denoising", "yes"),
+        ("cycles.denoiser", "NLM"),
+    ],
+)
+def test_render_set_property_rejects_bad_cycles_values(
+    blender: Path, tmp_path: Path, prop: str, value: Any
+) -> None:
+    run = run_steps(
+        blender, tmp_path, [("render.set_property", {"property": prop, "value": value})]
+    )
+    assert run.proc.returncode == 1
+    assert "[args.invalid]" in run.proc.stderr, run.proc.stderr
