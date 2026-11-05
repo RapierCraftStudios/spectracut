@@ -22,6 +22,7 @@ from bpy_runtime.ops import as_name as _name
 from bpy_runtime.ops import as_num as _num
 from bpy_runtime.ops import as_vec3 as _vec3
 from bpy_runtime.ops import check_only as _only
+from bpy_runtime.ops.animate import object_animate
 from bpy_runtime.ops.camera import (
     camera_add_aspect,
     camera_move,
@@ -29,12 +30,15 @@ from bpy_runtime.ops.camera import (
     camera_use,
 )
 from bpy_runtime.ops.compositor import comp_apply_graph
+from bpy_runtime.ops.device import device_add
 from bpy_runtime.ops.finish import finish_apply_look
 from bpy_runtime.ops.inspect import inspect_bounds, inspect_framing
 from bpy_runtime.ops.look import look_set_view
 from bpy_runtime.ops.material import material_apply_preset, material_apply_screen
 from bpy_runtime.ops.props import render_set_output, render_set_passes, render_set_property
 from bpy_runtime.ops.scene import object_import_gltf
+from bpy_runtime.ops.text import text_add
+from bpy_runtime.ops.world import world_set_hdri
 from bpy_runtime.type3d import type_add_2d, type_add_3d
 
 __all__ = ["TOOL_NAMES", "TOOLS", "run_step"]
@@ -66,6 +70,10 @@ TOOL_NAMES = frozenset(
         "comp.apply_graph",
         "type.add_2d",
         "type.add_3d",
+        "device.add",
+        "object.animate",
+        "text.add",
+        "world.set_hdri",
     }
 )
 
@@ -186,6 +194,10 @@ TOOLS: dict[str, Callable[[Any, dict[str, Any]], Report]] = {
     "comp.apply_graph": comp_apply_graph,
     "type.add_2d": type_add_2d,
     "type.add_3d": type_add_3d,
+    "device.add": device_add,
+    "object.animate": object_animate,
+    "text.add": text_add,
+    "world.set_hdri": world_set_hdri,
 }
 
 assert frozenset(TOOLS) == TOOL_NAMES, "TOOLS and TOOL_NAMES must list the same tools"
