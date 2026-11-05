@@ -1,0 +1,18 @@
+# End card: the CTA in shallow extruded 3D, wiped on.
+id: end-card-wipe-3d
+version: 1
+kind: end_card
+dimension: 3d
+animation: mask_wipe
+easing: ease_in_out
+reveal_frames: 18
+font_role: display
+weight: 600
+size: 0.065
+extrude: 0.05
+bevel: 0.01
+distance: 1.5
+layout:
+  "16:9": {x: 0.1, y: 0.42, w: 0.8, h: 0.18}
+  "9:16": {x: 0.06, y: 0.44, w: 0.88, h: 0.1}
+  "1:1": {x: 0.06, y: 0.42, w: 0.88, h: 0.18}
