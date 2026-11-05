@@ -1,0 +1,7 @@
+{
+  "setup-storage-host-mrdubey-1-mount": {
+    "run": "findmnt -n -o SOURCE /srv/flamenco",
+    "pass": "/^\\/\\/100\\.\\d+\\.\\d+\\.\\d+\\//",
+    "timeout": 30
+  }
+}
