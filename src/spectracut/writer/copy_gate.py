@@ -8,7 +8,7 @@
 - :func:`check_brief` fails a creative brief that declares a source the product
   notes did not, so every proof point traces back to what Discovery read.
 - :func:`guarded` wraps a graph runner so script and brief outputs pass the gate
-  before they are accepted. A violation raises :class:`CopyGateError`, a
+  before they are accepted. A violation raises :class:`ScriptCopyGateError`, a
   :class:`~spectracut.studio.department.DepartmentOutputError`, so the graph
   records the node ``failed`` whatever its gate mode (even ``auto``).
 """
@@ -39,7 +39,7 @@ class Violation(StrictModel):
     detail: str
 
 
-class CopyGateError(DepartmentOutputError):
+class ScriptCopyGateError(DepartmentOutputError):
     """A department output failed the copy gate."""
 
     def __init__(self, department: str, node_id: str, violations: Sequence[Violation]) -> None:
@@ -161,7 +161,7 @@ def guarded(
                     ProductNotes.model_validate(product),
                 )
         if violations:
-            raise CopyGateError(spec.department, spec.id, violations)
+            raise ScriptCopyGateError(spec.department, spec.id, violations)
         return result
 
     return run

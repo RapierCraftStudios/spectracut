@@ -40,7 +40,7 @@ from spectracut.studio.departments.writer import (
     development_nodes,
     pick_concept,
 )
-from spectracut.writer.copy_gate import CopyGateError, check_brief, check_script, guarded
+from spectracut.writer.copy_gate import ScriptCopyGateError, check_brief, check_script, guarded
 
 FIXTURE = json.loads(
     (Path(__file__).resolve().parent / "fixtures" / "alterlab" / "discovery.json").read_text()
@@ -197,7 +197,7 @@ def test_brief_citing_a_source_product_understanding_never_read_fails_copy_gate(
     graph, runner = _studio(Studio(brief=bad))
     assert graph.run(runner).failed == ["brief"]
     error = graph.state("brief").error or ""
-    assert "CopyGateError" in error and "untraced_source" in error and "'blog'" in error
+    assert "ScriptCopyGateError" in error and "untraced_source" in error and "'blog'" in error
 
 
 # ---- AC: three concepts in parallel; the human gate picks one ---------------
@@ -314,14 +314,14 @@ def test_guarded_script_with_forbidden_word_fails_even_with_auto_gate() -> None:
     report = graph.run(runner)
     assert report.failed == ["script"]
     error = graph.state("script").error or ""
-    assert "CopyGateError" in error and "forbidden word 'revolutionary'" in error
+    assert "ScriptCopyGateError" in error and "forbidden word 'revolutionary'" in error
 
 
 def test_copy_gate_error_is_a_department_output_error() -> None:
     from spectracut.studio import DepartmentOutputError
     from spectracut.writer.copy_gate import Violation
 
-    err = CopyGateError(
+    err = ScriptCopyGateError(
         "script-writer", "script", [Violation(line=0, kind="unsourced", detail="x")]
     )
     assert isinstance(err, DepartmentOutputError)

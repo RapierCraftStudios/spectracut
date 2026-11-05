@@ -158,7 +158,7 @@ forbidden word (case-insensitive, whole word or phrase) in VO, on-screen text
 or claim text. `check_brief(brief, product)` flags brief sources the product
 notes did not declare. `guarded(runner, graph=..., forbidden_words=...)` wraps a
 graph runner: script and brief outputs are checked after the inner run, and a
-violation raises `CopyGateError` (a `DepartmentOutputError`), so the node is
+violation raises `ScriptCopyGateError` (a `DepartmentOutputError`), so the node is
 recorded `failed` whatever its gate mode, `auto` included.
 
 ### Claude Code text provider
