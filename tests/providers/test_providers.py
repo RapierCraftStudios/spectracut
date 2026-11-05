@@ -28,10 +28,13 @@ from spectracut.providers.base import (
 )
 from spectracut.providers.claude_code import (
     JUDGE_SYSTEM_PROMPT,
+    ClaudeCodeTextProvider,
     ClaudeCodeVisionJudge,
     claude_judge_argv,
     claude_status,
+    claude_text_argv,
     parse_judge_output,
+    parse_text_output,
 )
 from spectracut.providers.codex_cli import CodexCliImageProvider, codex_status
 from spectracut.providers.mock_image import MockImageProvider
@@ -401,3 +404,52 @@ def test_mock_judge_missing_frame(isolated_env: Path) -> None:
 
 def test_token_constant_is_token_shaped(fakes: Any) -> None:
     assert redact(fakes.token) != fakes.token
+
+
+# --- Claude Code text provider (#24) -----------------------------------------
+
+
+def test_claude_text_call_is_isolated_with_no_tools() -> None:
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    argv = claude_text_argv("claude", "SYSTEM", "PROMPT", schema)
+    assert "--bare" not in argv
+    assert argv[argv.index("--json-schema") + 1] == json.dumps(schema, separators=(",", ":"))
+    assert argv[argv.index("--tools") + 1] == ""
+    assert "--allowedTools" not in argv
+    assert argv[argv.index("--setting-sources") + 1] == ""
+    assert argv[argv.index("--system-prompt") + 1] == "SYSTEM"
+    assert argv[-1] == "PROMPT"
+
+
+def test_claude_text_provider_completes_through_sign_in(
+    fake_bins: dict[str, Path], api_keys: dict[str, str], fakes: Any
+) -> None:
+    provider = ClaudeCodeTextProvider()
+    assert isinstance(provider, base.TextProvider)
+    out = provider.complete("sys", "say it", schema={"type": "object"})
+    assert out.output == {"score": 0.8, "notes": "clear and legible"}
+    assert out.usage == {
+        "claude_requests": 1,
+        "claude_input_tokens": 3010,
+        "claude_output_tokens": 0,
+    }
+    call = fakes.calls(fake_bins["record"])[0]
+    assert call["keys"] == []
+    assert "--json-schema" in call["argv"]
+
+
+def test_claude_text_provider_expired_sign_in_is_auth_error(
+    fake_bins: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_MODE", "expired")
+    with pytest.raises(ProviderAuthError, match="claude"):
+        ClaudeCodeTextProvider().complete("sys", "say it", schema={"type": "object"})
+
+
+def test_parse_text_output_falls_back_and_rejects_non_objects() -> None:
+    out, _ = parse_text_output(json.dumps({"is_error": False, "result": '```json\n{"a": 1}\n```'}))
+    assert out == {"a": 1}
+    with pytest.raises(ProviderError, match="empty"):
+        parse_text_output(json.dumps({"is_error": False, "result": ""}))
+    with pytest.raises(ProviderError, match="JSON object"):
+        parse_text_output(json.dumps({"is_error": False, "result": "no json here"}))

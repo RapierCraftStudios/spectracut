@@ -32,3 +32,10 @@ fixture packs). `Department.pack()` loads and caches the pack,
   run or imported.
 - Packs never contain secrets: no API keys, tokens, account names or private
   URLs. They are shipped with the package and sent to AI providers as prompts.
+
+## Story departments
+
+The Discovery and Development departments (`spectracut.studio.departments.discovery` and `.writer`)
+keep their packs together under `skills/story/<department>/`: `intake`,
+`product-understanding`, `strategist`, `concept-writer` and `script-writer`.
+Each of those classes sets `skill_pack` to its folder.

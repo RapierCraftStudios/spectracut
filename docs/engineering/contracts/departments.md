@@ -124,8 +124,56 @@ order.
 4. Register it with the `DepartmentRunner`, and test it end to end with
    `MockTextProvider`.
 
+## Discovery and Development
+
+Code: `src/spectracut/studio/departments/` (import from `discovery` and `writer`),
+packs under `src/spectracut/skills/story/<department>/` (each class sets
+`skill_pack`), and the copy gate in `src/spectracut/writer/copy_gate.py`.
+
+| Department | Node kind | Inputs | Output |
+| --- | --- | --- | --- |
+| `intake` | `intake` | (none; node param `answers`) | `IntakeNotes`: goal, product, offer, deadline, platforms |
+| `product-understanding` | `product` | `intake` | `ProductNotes`: summary, sources (`ClaimSource`), features citing a source |
+| `strategist` | `brief` | `intake`, `product` | `CreativeBrief` (`spec/brief.py`) |
+| `concept-writer` | `concept` | `brief` (node param `angle`) | `Concept`: title, logline, structure, fit |
+| `script-writer` | `script` | `brief`, chosen `concept` | `Script`: lines of beat, VO, on-screen text and claims |
+
+- `discovery_nodes(answers, pages)` declares `intake` -> `product` -> `brief`.
+  `pages` are `{url, text}` excerpts of the site and docs; product
+  understanding never fetches a URL (live capture is `packages/capture`).
+- `development_nodes(brief_id="brief", n=3)` declares `concept-1`..`concept-n`,
+  each with its own `angle` and reading only the brief, so
+  `run(max_workers>=n)` writes them at the same time. Give `concept` a human
+  gate; the concepts then wait at `awaiting_approval`.
+- `pick_concept(graph, chosen_id)` approves the chosen concept, rejects every
+  other concept still awaiting, and adds (or rewires) the `script` node to read
+  the brief and the chosen concept. It raises `ValueError` for a node that is
+  not a concept or not awaiting approval.
+
+### Copy gate
+
+`check_script(script, brief, forbidden_words)` returns a `Violation` for each
+claim with no source id or one not among the brief's sources, and for each
+forbidden word (case-insensitive, whole word or phrase) in VO, on-screen text
+or claim text. `check_brief(brief, product)` flags brief sources the product
+notes did not declare. `guarded(runner, graph=..., forbidden_words=...)` wraps a
+graph runner: script and brief outputs are checked after the inner run, and a
+violation raises `ScriptCopyGateError` (a `DepartmentOutputError`), so the node is
+recorded `failed` whatever its gate mode, `auto` included.
+
+### Claude Code text provider
+
+`ClaudeCodeTextProvider` (`providers/claude_code.py`, name `claude-code-text`)
+implements `TextProvider` with headless `claude -p --output-format json
+--json-schema <schema>`, the judge's isolation flags and no tools, in an empty
+scratch directory with API keys removed so only the subscription sign-in is
+used. Usage is reported as `claude_requests`, `claude_input_tokens` and
+`claude_output_tokens`. The real-model acceptance test is
+`tests/acceptance/test_m2_discovery.py` (`SPECTRACUT_E2E=1`, post-deploy check
+`m2-discovery-concepts-claude-e2e`).
+
 ## Not in scope here
 
-Real Claude Code and Codex text providers, the `waiting_for_ai` and
-`ProviderExhausted` queue states and the Producer's estimates (#53), the
-skill-pack content (#28) and Critic scoring (#30).
+A Codex text provider, the `waiting_for_ai` and `ProviderExhausted` queue
+states and the Producer's estimates (#53), the skill-pack content of other
+departments (#28) and Critic scoring (#30).

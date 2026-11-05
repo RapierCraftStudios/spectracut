@@ -1,0 +1,20 @@
+{
+  "answers": {
+    "goal": "Launch film that gets developers to try the AlterLab API",
+    "product": "AlterLab",
+    "offer": "Free credits to start",
+    "deadline": "2026-12-01",
+    "platforms": ["youtube", "x", "linkedin"]
+  },
+  "pages": [
+    {
+      "url": "https://alterlab.io/",
+      "text": "AlterLab is a web scraping API. Send a URL, get back the page as HTML, markdown or structured JSON."
+    },
+    {
+      "url": "https://alterlab.io/docs",
+      "text": "AlterLab renders JavaScript pages in a headless browser and rotates proxies so requests are not blocked."
+    }
+  ],
+  "forbidden_words": ["revolutionary", "best-in-class"]
+}
