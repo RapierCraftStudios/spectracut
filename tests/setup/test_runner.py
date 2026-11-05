@@ -138,7 +138,8 @@ def test_quick_step_still_returns_its_output() -> None:
 
 def test_idempotent_kinds_are_retried_with_backoff() -> None:
     assert {"copy", "write", "probe", "task"} == set(RETRY_KINDS)
-    calls, slept = [], []
+    calls: list[int] = []
+    slept: list[float] = []
 
     def flaky() -> str:
         calls.append(1)
@@ -151,7 +152,8 @@ def test_idempotent_kinds_are_retried_with_backoff() -> None:
 
 
 def test_retries_give_up_after_three() -> None:
-    calls, slept = [], []
+    calls: list[int] = []
+    slept: list[float] = []
 
     def broken() -> None:
         calls.append(1)
@@ -175,7 +177,7 @@ def test_non_idempotent_kinds_run_once(kind: str) -> None:
     assert calls == [1]
 
 
-class FirstCopyHangs(FakeRunner):
+class FirstCopyHangs(FakeRunner):  # type: ignore[misc]
     """The first wheel copy really hangs (a sleeping process) and is killed by its timeout."""
 
     def __init__(self) -> None:
@@ -186,7 +188,7 @@ class FirstCopyHangs(FakeRunner):
         if step.kind == "copy" and not self.hung:
             self.hung = True
             CommandRunner(timeout=0.3).run(Step(CONTROL, step.id, step.summary, "sleep 30"))
-        return super().run(step)
+        return super().run(step)  # type: ignore[no-any-return]
 
 
 def test_setup_completes_when_the_first_copy_hangs(tmp_path: Path) -> None:
@@ -200,11 +202,11 @@ def test_setup_completes_when_the_first_copy_hangs(tmp_path: Path) -> None:
 
 
 def test_a_hanging_install_is_not_retried(tmp_path: Path) -> None:
-    class InstallHangs(FakeRunner):
+    class InstallHangs(FakeRunner):  # type: ignore[misc]
         def run(self, step: Step) -> str | None:
             if step.kind == "install":
                 raise StepTimeout(f"{step.host}: {step.summary} timed out")
-            return super().run(step)
+            return super().run(step)  # type: ignore[no-any-return]
 
     runner = InstallHangs()
     with pytest.raises(StepTimeout, match="install"):

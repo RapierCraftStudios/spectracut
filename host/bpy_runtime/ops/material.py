@@ -1,11 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""``material.apply_preset``: Principled BSDF presets plus a base colour."""
+"""Material ops.
+
+``material.apply_preset``: Principled BSDF presets plus a base colour.
+``material.apply_screen``: an emissive image texture (a product UI on a device
+screen), loaded only from the host's assets directory and checked against the
+recipe's sha256 before Blender reads it.
+"""
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Any
 
 from bpy_runtime.ops import Report, ToolError, as_choice, as_name, as_num, check_only, find_object
+from bpy_runtime.ops.scene import assets_root, resolve_asset
 
 # Principled BSDF socket values per preset (Blender 4.x socket names).
 PRESETS: dict[str, dict[str, float]] = {
@@ -58,3 +67,55 @@ def material_apply_preset(bpy: Any, args: dict[str, Any]) -> Report:
     obj.data.materials.clear()
     obj.data.materials.append(mat)
     return {"object": args["object"], "material": str(mat.name), "preset": preset}
+
+
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".exr", ".webp")
+_HEX = frozenset("0123456789abcdef")
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def material_apply_screen(bpy: Any, args: dict[str, Any]) -> Report:
+    tool = "material.apply_screen"
+    check_only(args, {"object", "image", "image_sha256", "strength"}, tool)
+    want = args.get("image_sha256")
+    if not isinstance(want, str) or len(want) != 64 or not set(want) <= _HEX:
+        raise ToolError(f"{tool}: image_sha256 must be 64 lowercase hex characters")
+    strength = as_num(args.get("strength", 1.0), "strength", 0, 100)
+    obj = find_object(bpy, args.get("object"), tool)
+    if obj.type != "MESH":
+        raise ToolError(f"{tool}: {args['object']!r} is not a mesh object")
+    full = resolve_asset(args.get("image"), assets_root(), IMAGE_SUFFIXES)
+    got = file_sha256(full)
+    if got != want:
+        raise ToolError(
+            f"{tool}: image {args['image']!r} has sha256 {got}, the recipe expects {want}",
+            "asset.hash_mismatch",
+        )
+    image = bpy.data.images.load(str(full), check_existing=True)
+    mat = bpy.data.materials.new(f"screen.{args['object']}"[:63])
+    mat.use_nodes = True
+    tree = mat.node_tree
+    tree.nodes.clear()
+    output = tree.nodes.new("ShaderNodeOutputMaterial")
+    emission = tree.nodes.new("ShaderNodeEmission")
+    texture = tree.nodes.new("ShaderNodeTexImage")
+    texture.image = image
+    emission.inputs["Strength"].default_value = strength
+    tree.links.new(texture.outputs["Color"], emission.inputs["Color"])
+    tree.links.new(emission.outputs["Emission"], output.inputs["Surface"])
+    obj.data.materials.clear()
+    obj.data.materials.append(mat)
+    return {
+        "object": args["object"],
+        "material": str(mat.name),
+        "image": args["image"],
+        "image_sha256": want,
+        "strength": strength,
+    }

@@ -4,7 +4,8 @@
 A ``blender`` job's payload names a signed job file on shared storage and its
 :class:`~spectracut.queue.signing.JobEnvelope`. The executor resolves the
 worker tag, submits a ``spectracut-shot`` job and polls its status until it
-finishes, mirroring every status change onto the queue job.
+finishes, mirroring every status change onto the queue job. GPU minutes are the
+submit-to-complete wall time on one card.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from spectracut.queue.flamenco import (
     select_worker_tag,
 )
 from spectracut.queue.signing import JobEnvelope
+from spectracut.studio.ledger import Usage
 from spectracut.studio.node import Tier
 
 if TYPE_CHECKING:
@@ -91,6 +93,8 @@ class FlamencoExecutor:
         capacity: Resources | None = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         on_status: Callable[[Job, JobStatus], None] | None = None,
+        assets_dir: str | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.name = name
         self.client = client
@@ -101,6 +105,8 @@ class FlamencoExecutor:
         self.capacity = capacity
         self.chunk_size = chunk_size
         self._on_status = on_status
+        self.assets_dir = assets_dir
+        self._clock = clock
 
     def can_ever_run(self, req: Resources) -> bool:
         cap = self.capacity
@@ -130,6 +136,8 @@ class FlamencoExecutor:
             raise ValueError(f"blender job {job.id} names no worker tag")
         tag = select_worker_tag(str(requirement), self.client.list_tags())
         output_dir = str(payload.get("output_dir") or self.output_dir)
+        assets_dir = payload.get("assets_dir") or self.assets_dir
+        started = self._clock()
         submitted = self.client.submit(
             build_shot_job(
                 job_file,
@@ -138,6 +146,7 @@ class FlamencoExecutor:
                 output_dir=output_dir,
                 chunk_size=self.chunk_size,
                 priority=TIER_PRIORITY[job.tier],
+                assets_dir=str(assets_dir) if assets_dir else None,
             )
         )
         flamenco_id = str(submitted["id"])
@@ -154,6 +163,7 @@ class FlamencoExecutor:
                         "worker_tag": tag.name,
                     },
                     render_profile=job.render_profile,
+                    usage=Usage(gpu_minutes=max(0.0, self._clock() - started) / 60.0),
                 )
             if status is JobStatus.FAILED:
                 raise FlamencoJobFailed(flamenco_id, raw)

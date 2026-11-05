@@ -3,8 +3,9 @@
 
 Commands::
 
-    spectracut-host run --job-file JOB.json [--frames A-B] --output DIR
+    spectracut-host run --job-file JOB.json [--frames A-B] --output DIR [--assets-dir DIR]
         Flamenco task entry: verify a signed job through the guard and render it.
+        ``--assets-dir`` overrides SPECTRACUT_ASSETS_DIR.
     spectracut-host --once --job ID [--jobs-dir DIR] --output DIR
         Pull exactly one signed job (shared storage or the control plane over
         HTTP via SPECTRACUT_CONTROL_URL), run it and exit. Used in computeshare
@@ -110,7 +111,23 @@ def result_name(envelope_range: tuple[int, int], frames: tuple[int, int]) -> str
     return f"result-{frames[0]}-{frames[1]}.json"
 
 
-def execute(signed: SignedJob, frames: str | None, output: Path, blender: str) -> int:
+def read_scene_graph_hash(output: Path) -> str | None:
+    """The ``scene_graph_hash`` the bpy runtime wrote to ``report.json``, if any."""
+    try:
+        data = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = data.get("scene_graph_hash") if isinstance(data, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def execute(
+    signed: SignedJob,
+    frames: str | None,
+    output: Path,
+    blender: str,
+    assets_dir: str | None = None,
+) -> int:
     """Verify, render and write the result manifest; return an exit code."""
     registration = load_registration()
     profile: RenderProfile = probe_profile(blender)
@@ -123,7 +140,7 @@ def execute(signed: SignedJob, frames: str | None, output: Path, blender: str) -
     except (OSError, ValueError) as exc:
         print(f"spectracut-host: bpy runtime unavailable: {exc}", file=sys.stderr)
         return EXIT_REFUSED
-    proc = guard.launch(envelope, chunk, output, blender_bin=blender)
+    proc = guard.launch(envelope, chunk, output, blender_bin=blender, assets_dir=assets_dir)
     if proc.returncode != 0:
         tail = "\n".join((proc.stderr or "").splitlines()[-20:])
         print(f"spectracut-host: Blender exited {proc.returncode}\n{tail}", file=sys.stderr)
@@ -135,6 +152,7 @@ def execute(signed: SignedJob, frames: str | None, output: Path, blender: str) -
         "frames": list(chunk),
         "render_profile": profile.model_dump(mode="json"),
         "frame_cache_key": frame_cache_key(envelope.recipe_hash, profile),
+        "scene_graph_hash": read_scene_graph_hash(output),
     }
     name = result_name((envelope.frame_start, envelope.frame_end), chunk)
     (output / name).write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
@@ -151,7 +169,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     except JobSignatureError as exc:
         print(f"spectracut-host: refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
-    return execute(signed, args.frames, Path(args.output), _blender(args))
+    return execute(signed, args.frames, Path(args.output), _blender(args), args.assets_dir)
 
 
 def cmd_once(args: argparse.Namespace) -> int:
@@ -199,6 +217,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--frames", help="frame range to render, within the signed range")
     run.add_argument("--output", required=True)
     run.add_argument("--blender")
+    run.add_argument("--assets-dir", help="assets root (overrides SPECTRACUT_ASSETS_DIR)")
 
     prof = sub.add_parser("profile", help="print this host's render profile")
     prof.add_argument("--blender")

@@ -23,6 +23,11 @@ def set_context(assets_dir: str | None) -> None:
     _CONTEXT["assets_dir"] = Path(assets_dir) if assets_dir else None
 
 
+def assets_root() -> Path | None:
+    """The assets root for this run, or ``None`` when the host configured none."""
+    return _CONTEXT["assets_dir"]
+
+
 def resolve_asset(path: Any, assets_dir: Path | None, suffixes: tuple[str, ...]) -> Path:
     """Resolve ``path`` inside ``assets_dir`` or raise ``asset.path_refused``."""
     if assets_dir is None:

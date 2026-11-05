@@ -74,26 +74,34 @@ def build_shot_job(
     output_dir: str,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     priority: int = 50,
+    assets_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Build the Flamenco ``SubmittedJob`` for one signed shot job."""
+    """Build the Flamenco ``SubmittedJob`` for one signed shot job.
+
+    ``assets_dir`` (a path on shared storage) becomes the optional ``assets_dir``
+    setting; Flamenco's two-way storage variables map it per worker platform.
+    """
     if chunk_size < 1:
         raise ValueError("chunk_size must be >= 1")
     if envelope.required_tag is not None and normalize_tag(envelope.required_tag) != (
         normalize_tag(tag.name)
     ):
         raise ValueError(f"job requires worker tag {envelope.required_tag!r}, not {tag.name!r}")
+    settings: dict[str, Any] = {
+        "job_file": signed_job_path,
+        "frames": f"{envelope.frame_start}-{envelope.frame_end}",
+        "chunk_size": chunk_size,
+        "output_dir": output_dir,
+    }
+    if assets_dir:
+        settings["assets_dir"] = assets_dir
     return {
         "name": f"{envelope.job_id} ({envelope.recipe.shot_id})",
         "type": JOB_TYPE,
         "priority": priority,
         "submitter_platform": "linux",
         "worker_tag": tag.id,
-        "settings": {
-            "job_file": signed_job_path,
-            "frames": f"{envelope.frame_start}-{envelope.frame_end}",
-            "chunk_size": chunk_size,
-            "output_dir": output_dir,
-        },
+        "settings": settings,
         "metadata": {
             "spectracut.job_id": envelope.job_id,
             "spectracut.recipe_hash": envelope.recipe_hash,

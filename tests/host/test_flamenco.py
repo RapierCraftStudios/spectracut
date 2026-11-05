@@ -162,3 +162,15 @@ def test_client_errors(manager: str) -> None:
         FlamencoClient(manager).job_status("missing")
     with pytest.raises(FlamencoError):
         FlamencoClient("http://127.0.0.1:9", timeout=1).list_tags()
+
+
+def test_build_shot_job_sets_optional_assets_dir(
+    make_envelope: Callable[..., JobEnvelope],
+) -> None:
+    envelope = make_envelope()
+    job = build_shot_job("/j.json", envelope, TAGS[0], output_dir="/o", assets_dir="/shared/assets")
+    assert job["settings"]["assets_dir"] == "/shared/assets"
+    assert (
+        "assets_dir"
+        not in build_shot_job("/j.json", envelope, TAGS[0], output_dir="/o")["settings"]
+    )

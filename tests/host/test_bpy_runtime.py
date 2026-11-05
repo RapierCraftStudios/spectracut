@@ -75,6 +75,7 @@ def test_runs_registered_tools_and_renders(fake_bin: Path, tmp_path: Path) -> No
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == [
         "frame_0001.png",
         "frame_0002.png",
+        "report.json",
     ]
     calls = _calls(tmp_path)
     assert any("cameras.new('Cam')" in c for c in calls)

@@ -190,13 +190,18 @@ class ExecutionGuard:
         blender_bin: str = "blender",
         env: Mapping[str, str] | None = None,
         launcher: Launcher = subprocess.run,
+        assets_dir: Path | str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        """Write the run manifest and run Blender headless with the bpy runtime."""
+        """Write the run manifest and run Blender headless with the bpy runtime.
+
+        ``assets_dir`` (``spectracut-host run --assets-dir``) overrides
+        ``SPECTRACUT_ASSETS_DIR``.
+        """
         output_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ if env is None else env
         # Blender's env drops every SPECTRACUT_* variable, so the assets root
-        # for object.import_gltf travels in the manifest instead.
-        assets = env.get(ASSETS_DIR_ENV)
+        # for the asset ops travels in the manifest instead.
+        assets = str(assets_dir) if assets_dir else env.get(ASSETS_DIR_ENV)
         token = secrets.token_urlsafe(32)
         manifest = {
             "token": token,
