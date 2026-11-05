@@ -111,7 +111,9 @@ def check_legibility(
     return out
 
 
-def min_read_time(words: int, *, rate_wps: float = READ_RATE_WPS, lead_s: float = READ_LEAD_S) -> float:
+def min_read_time(
+    words: int, *, rate_wps: float = READ_RATE_WPS, lead_s: float = READ_LEAD_S
+) -> float:
     return lead_s + words / rate_wps
 
 

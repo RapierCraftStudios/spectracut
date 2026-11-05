@@ -13,6 +13,7 @@ preview only.
 from __future__ import annotations
 
 import math
+import operator
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -59,9 +60,7 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
 )
 
-_TLDS = (
-    "com|net|org|io|dev|app|ai|co|gov|edu|info|biz|me|tv|us|uk|de|fr|eu|cloud|xyz|site|so|gg"
-)
+_TLDS = "com|net|org|io|dev|app|ai|co|gov|edu|info|biz|me|tv|us|uk|de|fr|eu|cloud|xyz|site|so|gg"
 URL_RE = re.compile(
     rf"(?:https?://)?(?:www\.)?((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:{_TLDS}))\b(?:/\S*)?",
     re.IGNORECASE,
@@ -156,14 +155,12 @@ def _normalised(values: Sequence[float]) -> tuple[list[float], float]:
     return centred, norm
 
 
-def _window_signature(table: Integral, x: int, y: int, w: int, h: int) -> list[float]:
-    out: list[float] = []
-    for j in range(SIGNATURE):
-        y0, y1 = y + j * h // SIGNATURE, y + (j + 1) * h // SIGNATURE
-        for i in range(SIGNATURE):
-            x0, x1 = x + i * w // SIGNATURE, x + (i + 1) * w // SIGNATURE
-            out.append(table.mean(x0, y0, max(x1, x0 + 1), max(y1, y0 + 1)))
-    return out
+def _cell_means(table: Integral, cw: int, ch: int) -> list[list[float]]:
+    """``out[y][x]``: mean of the ``cw`` x ``ch`` box with top-left ``(x, y)``."""
+    return [
+        [table.mean(x, y, x + cw, y + ch) for x in range(table.width - cw + 1)]
+        for y in range(table.height - ch + 1)
+    ]
 
 
 def detect_marks(
@@ -173,39 +170,53 @@ def detect_marks(
     threshold: float = MATCH_THRESHOLD,
     widths: Sequence[float] = MARK_WIDTHS,
 ) -> list[tuple[str, float, BBox]]:
-    """``(mark name, score, box)`` of the best match of each mark found in ``frame``."""
+    """``(mark name, score, box)`` of the best match of each mark found in ``frame``.
+
+    Each window is reduced to a ``SIGNATURE`` x ``SIGNATURE`` grid of whole-pixel
+    cells and scored by normalised cross-correlation against the mark's grid.
+    """
     work = downscale(frame)
     table = Integral(work)
-    found: list[tuple[str, float, BBox]] = []
+    n = SIGNATURE * SIGNATURE
+    refs = []
     for mark in marks:
         ref, ref_norm = _normalised(resample(mark.image, SIGNATURE, SIGNATURE).pixels)
-        if ref_norm < 1e-6:
-            continue
-        best: tuple[float, BBox] | None = None
-        for fraction in widths:
-            w = max(SIGNATURE, round(fraction * work.width))
-            h = max(SIGNATURE, round(w * mark.aspect))
+        if ref_norm >= 1e-6:
+            refs.append((mark, ref, ref_norm))
+    best: dict[str, tuple[float, BBox]] = {}
+    for fraction in widths:
+        cw = max(1, round(fraction * work.width / SIGNATURE))
+        by_ch: dict[int, list[tuple[ReferenceMark, list[float], float]]] = {}
+        for entry in refs:
+            by_ch.setdefault(max(1, round(cw * entry[0].aspect)), []).append(entry)
+        for ch, group in by_ch.items():
+            w, h = cw * SIGNATURE, ch * SIGNATURE
             if w > work.width or h > work.height:
                 continue
-            for y in range(0, work.height - h + 1):
-                for x in range(0, work.width - w + 1):
-                    sig, norm = _normalised(_window_signature(table, x, y, w, h))
-                    if norm < 0.05:
+            cells = _cell_means(table, cw, ch)
+            offsets = [(j * ch, i * cw) for j in range(SIGNATURE) for i in range(SIGNATURE)]
+            for y in range(work.height - h + 1):
+                for x in range(work.width - w + 1):
+                    sig = [cells[y + dy][x + dx] for dy, dx in offsets]
+                    total = sum(sig)
+                    var = sum(map(operator.mul, sig, sig)) - total * total / n
+                    if var < 0.0025:
                         continue
-                    score = sum(a * b for a, b in zip(ref, sig, strict=True)) / (ref_norm * norm)
-                    if score >= threshold and (best is None or score > best[0]):
-                        best = (
-                            score,
-                            BBox(
+                    norm = math.sqrt(var)
+                    for mark, ref, ref_norm in group:
+                        score = sum(map(operator.mul, ref, sig)) / (ref_norm * norm)
+                        prev = best.get(mark.name)
+                        if score >= threshold and (prev is None or score > prev[0]):
+                            box = BBox(
                                 x=x / work.width,
                                 y=y / work.height,
                                 w=w / work.width,
                                 h=h / work.height,
-                            ),
-                        )
-        if best is not None:
-            found.append((mark.name, round(best[0], 4), best[1]))
-    return found
+                            )
+                            best[mark.name] = (score, box)
+    return [
+        (m.name, round(best[m.name][0], 4), best[m.name][1]) for m, _, _ in refs if m.name in best
+    ]
 
 
 def check_logos(frame: Gray, marks: Sequence[ReferenceMark], *, frame_index: int) -> list[QACheck]:

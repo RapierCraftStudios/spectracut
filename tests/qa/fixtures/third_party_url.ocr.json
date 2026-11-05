@@ -1,0 +1,22 @@
+[
+  {
+    "text": "Revenue up 12%",
+    "box": {
+      "x": 0.325,
+      "y": 0.4,
+      "w": 0.35,
+      "h": 0.06666666666666667
+    },
+    "confidence": 0.95
+  },
+  {
+    "text": "Sign in at accounts.acme-cloud.io/login",
+    "box": {
+      "x": 0.3,
+      "y": 0.62,
+      "w": 0.4,
+      "h": 0.05
+    },
+    "confidence": 0.9
+  }
+]
