@@ -458,6 +458,36 @@ def _attach_steps(name: str, server: str, share: str, cred: Credential) -> list[
     ]
 
 
+MANAGER_CONFIG_PATH = "$HOME/.local/opt/flamenco/flamenco-manager.yaml"
+
+
+def manager_config_steps(
+    facts: Mapping[str, HostFacts], layout: StorageLayout | None = None
+) -> list[Step]:
+    """Write the Manager config (listen address, two-way storage variables), then restart it.
+
+    Part of every storage change, and planned on its own when the file is missing on disk.
+    """
+    layout = layout or StorageLayout()
+    listen = f"{facts[CONTROL].address}:{MANAGER_PORT}"
+    return [
+        write_file_step(
+            CONTROL,
+            "linux",
+            "storage:variables",
+            "write the Manager config with the two-way storage variables",
+            MANAGER_CONFIG_PATH,
+            manager_config(listen, normalize_drive(layout.drive)),
+        ),
+        Step(
+            CONTROL,
+            "storage:restart-manager",
+            "restart the Flamenco Manager",
+            "systemctl --user restart flamenco-manager",
+        ),
+    ]
+
+
 def plan_storage(
     target: StorageTarget,
     previous: StorageTarget | None,
@@ -500,25 +530,7 @@ def plan_storage(
         if facts[name].os == "windows":
             continue  # mapped in the worker task's session (worker-args.json)
         steps += _attach_steps(name, server, target.share, cred)
-    listen = f"{facts[CONTROL].address}:{MANAGER_PORT}"
-    steps.append(
-        write_file_step(
-            CONTROL,
-            "linux",
-            "storage:variables",
-            "write the Manager config with the two-way storage variables",
-            "$HOME/.local/opt/flamenco/flamenco-manager.yaml",
-            manager_config(listen, normalize_drive(layout.drive)),
-        )
-    )
-    steps.append(
-        Step(
-            CONTROL,
-            "storage:restart-manager",
-            "restart the Flamenco Manager",
-            "systemctl --user restart flamenco-manager",
-        )
-    )
+    steps += manager_config_steps(facts, layout)
     for name in workers:
         steps.append(
             Step(

@@ -33,6 +33,9 @@ from spectracut.setup.plan import SetupError, worker_name
 MANAGED_TAG_DESCRIPTION = "managed by spectracut setup"
 REGISTER_TIMEOUT = 180.0  # seconds to wait for a restarted worker to sign on
 POLL_INTERVAL = 5.0
+# Seconds a host may stay unknown to the Manager before setup resets its worker's
+# credentials (once per run); a first-install worker signs on well within it.
+RESET_AFTER = 60.0
 
 
 class TagApi(Protocol):
@@ -68,21 +71,49 @@ def _wait_for_workers(
     timeout: float,
     sleep: Callable[[float], None],
     clock: Callable[[], float],
+    reset: Callable[[str], None] | None = None,
+    reset_after: float = RESET_AFTER,
 ) -> dict[str, list[Worker]]:
-    deadline = clock() + timeout
+    """Wait until every host has a worker of its name; reset an unknown one's credentials once.
+
+    The Manager lists every worker it knows, online or not, so a host absent from the
+    list after ``reset_after`` s is unknown to it (a new Manager database) and is passed
+    to ``reset`` exactly once; the wait then gets a fresh ``timeout``. A listed worker
+    is never reset.
+    """
+    start = clock()
+    deadline = start + timeout
+    done: list[str] = []
     while True:
         workers = client.list_workers()
         found = {h: [w for w in workers if w.name == worker_name(h)] for h in hosts}
         missing = [h for h, ws in found.items() if not ws]
         if not missing:
             return found
-        if clock() >= deadline:
+        now = clock()
+        due = [h for h in missing if h not in done]
+        if reset is not None and due and now - start >= min(reset_after, timeout):
+            for h in due:
+                try:
+                    reset(h)
+                except SetupError as exc:
+                    raise SetupError(f"{h}: resetting the worker credentials: {exc}") from exc
+                done.append(h)
+            deadline = max(deadline, clock() + timeout)
+            continue
+        if now >= deadline:
             names = ", ".join(f"{h} (worker name {worker_name(h)!r})" for h in missing)
+            hint = (
+                " (its credentials were reset and the worker restarted)"
+                if all(h in done for h in missing)
+                else ""
+            )
             raise SetupError(
-                f"no Flamenco worker registered for {names} after {timeout:.0f}s; "
+                f"no Flamenco worker registered for {names} after {timeout:.0f}s{hint}; "
                 "check the worker service on that host and run `spectracut setup` again"
             )
-        sleep(min(POLL_INTERVAL, max(deadline - clock(), 0.0)))
+        wake = deadline if reset is None or not due else min(deadline, start + reset_after)
+        sleep(min(POLL_INTERVAL, max(wake - clock(), 0.0)))
 
 
 def sync_worker_tags(
@@ -93,19 +124,26 @@ def sync_worker_tags(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     dry_run: bool = False,
+    reset: Callable[[str], None] | None = None,
+    reset_after: float | None = None,
 ) -> list[str]:
     """Bring the Manager's tags and worker memberships to ``desired``; return the actions.
 
     ``timeout`` defaults to :data:`REGISTER_TIMEOUT`. With ``dry_run`` only reads are made
     (no waiting): the actions say what would change, and hosts with no worker yet are
-    reported instead of failing.
+    reported instead of failing. ``reset(host)`` is called at most once per host whose
+    worker the Manager still does not know after ``reset_after`` s (default
+    :data:`RESET_AFTER`; never in a dry run):
+    it should delete that worker's credentials and restart it so it registers again.
     """
     if not desired:
         return []
     if timeout is None:
         timeout = REGISTER_TIMEOUT
+    if reset_after is None:
+        reset_after = RESET_AFTER
     try:
-        return _sync(client, desired, timeout, sleep, clock, dry_run)
+        return _sync(client, desired, timeout, sleep, clock, dry_run, reset, reset_after)
     except FlamencoError as exc:
         raise SetupError(f"worker tags: {exc}") from exc
 
@@ -117,6 +155,8 @@ def _sync(
     sleep: Callable[[float], None],
     clock: Callable[[], float],
     dry_run: bool,
+    reset: Callable[[str], None] | None = None,
+    reset_after: float = RESET_AFTER,
 ) -> list[str]:
     actions: list[str] = []
     hosts = list(desired)
@@ -127,7 +167,7 @@ def _sync(
             if not workers[h]:
                 actions.append(f"{h}: no worker named {worker_name(h)!r} registered yet")
     else:
-        workers = _wait_for_workers(client, hosts, timeout, sleep, clock)
+        workers = _wait_for_workers(client, hosts, timeout, sleep, clock, reset, reset_after)
 
     wanted = {normalize_tag(t): t for tags in desired.values() for t in tags}
     existing = {normalize_tag(t.name): t for t in client.list_tags()}

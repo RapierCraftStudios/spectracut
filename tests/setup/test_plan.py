@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import subprocess
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -22,10 +23,14 @@ from spectracut.queue.flamenco import Worker, WorkerTag
 from spectracut.setup.manifest import HostFacts, Step, load_manifest
 from spectracut.setup.plan import (
     LINUX_PROBE,
+    MISSING_CONFIG,
+    MISSING_JOB_TYPES,
+    MISSING_UNIT,
     CommandRunner,
     SetupState,
     apply_plan,
     build_plan,
+    control_probe,
     gpu_script_source,
     load_state,
     parse_probe,
@@ -720,3 +725,107 @@ def test_parse_probe_rejects_non_ip_address_so_it_never_reaches_a_shell() -> Non
     assert parse_probe("rig", "linux", evil).address == "rig"
     assert parse_probe("rig", "linux", "address=rig.tail.ts.net\n").address == "rig"
     assert parse_probe("rig", "linux", "address=100.64.0.4\n").address == "100.64.0.4"
+
+
+# ---- control-plane files are checked on disk, not trusted from setup state (#181) ------
+
+
+def _converged_state(tmp_path: Path) -> SetupState:
+    state = load_state(tmp_path)
+    apply_plan(_plan(state), FakeRunner(), state, tmp_path)
+    state = load_state(tmp_path)
+    assert _plan(state).steps == ()
+    return state
+
+
+def _plan_missing(state: SetupState, *missing: str):  # type: ignore[no-untyped-def]
+    facts = {**FACTS, CONTROL: dataclasses.replace(FACTS[CONTROL], missing=missing)}
+    return build_plan(load_manifest(), "2026.11", facts, WORKERS, state, CRED, wheels=WHEELS)
+
+
+def test_missing_manager_unit_is_rewritten_though_state_records_it(tmp_path: Path) -> None:
+    ids = [s.id for s in _plan_missing(_converged_state(tmp_path), MISSING_UNIT).steps]
+    assert ids == ["service:manager-unit", "service:manager"]
+
+
+def test_missing_job_types_are_reinstalled_though_state_records_them(tmp_path: Path) -> None:
+    ids = [s.id for s in _plan_missing(_converged_state(tmp_path), MISSING_JOB_TYPES).steps]
+    assert ids == ["manager:job-types"]
+
+
+def test_missing_manager_config_is_rewritten_though_storage_converged(tmp_path: Path) -> None:
+    steps = _plan_missing(_converged_state(tmp_path), MISSING_CONFIG).steps
+    assert [s.id for s in steps] == ["storage:variables", "storage:restart-manager"]
+    assert "flamenco-manager.yaml" in steps[0].command
+    assert "variables:" in (steps[0].stdin or "")
+
+
+def test_missing_manager_config_is_written_once_when_storage_also_changes() -> None:
+    ids = [s.id for s in _plan_missing(SetupState(), MISSING_CONFIG).steps]
+    assert ids.count("storage:variables") == 1
+
+
+def test_nothing_missing_keeps_the_converged_plan_empty(tmp_path: Path) -> None:
+    assert _plan_missing(_converged_state(tmp_path)).steps == ()
+
+
+def test_parse_probe_reads_missing_files_and_ignores_unknown_tokens() -> None:
+    out = "address=100.64.0.1\nmissing=manager-unit,bogus,job-types,job-types\n"
+    assert parse_probe(CONTROL, "linux", out).missing == (MISSING_UNIT, MISSING_JOB_TYPES)
+    assert parse_probe(CONTROL, "linux", "missing=\n").missing == ()
+    assert parse_probe("rig", "linux", "free=1\n").missing == ()
+
+
+def _run_control_probe(home: Path, bin_dir: Path) -> tuple[str, ...]:
+    out = subprocess.run(
+        ["sh", "-c", control_probe(["spectracut-shot.js"])],
+        env={"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return parse_probe(CONTROL, "linux", out).missing
+
+
+def test_control_probe_reports_missing_files_on_disk(tmp_path: Path) -> None:
+    home, bin_dir = tmp_path / "home", tmp_path / "bin"
+    home.mkdir()
+    bin_dir.mkdir()
+    fake = bin_dir / "systemctl"  # no Manager unit loaded: an empty WorkingDirectory
+    fake.write_text("#!/bin/sh\nexit 1\n")
+    fake.chmod(0o755)
+    every = (MISSING_UNIT, MISSING_CONFIG, MISSING_JOB_TYPES)
+    assert _run_control_probe(home, bin_dir) == every
+    # Files under a literal "$HOME" folder (the #173 bug) are not the Manager's files.
+    for root in (home / "$HOME", home):
+        unit = root / ".config/systemd/user/flamenco-manager.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text("[Unit]\n")
+        opt = root / ".local/opt/flamenco"
+        (opt / "scripts").mkdir(parents=True)
+        (opt / "flamenco-manager.yaml").write_text("_meta: {}\n")
+        if root != home:
+            (opt / "scripts/spectracut-shot.js").write_text("//\n")
+            assert _run_control_probe(home, bin_dir) == every
+    assert _run_control_probe(home, bin_dir) == (MISSING_JOB_TYPES,)
+    (home / ".local/opt/flamenco/scripts/spectracut-shot.js").write_text("//\n")
+    assert _run_control_probe(home, bin_dir) == ()
+
+
+def test_command_runner_probes_control_plane_files_only_on_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts: dict[str, str] = {}
+
+    def fake_exec(self, host, script, shell, stdin):  # type: ignore[no-untyped-def]
+        scripts[host] = script
+        out = "Linux\n" if script == "uname -s" else "missing=manager-config\n"
+        return subprocess.CompletedProcess([], 0, out, "")
+
+    monkeypatch.setattr(CommandRunner, "_exec", fake_exec)
+    monkeypatch.setattr(CommandRunner, "resolve_address", lambda self, host: None)
+    runner = CommandRunner()
+    assert runner.probe(CONTROL).missing == (MISSING_CONFIG,)
+    assert "spectracut-shot.js" in scripts[CONTROL]
+    runner.probe("rig")
+    assert scripts["rig"] == LINUX_PROBE
