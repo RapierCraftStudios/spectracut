@@ -26,6 +26,7 @@ from pydantic import AwareDatetime, ValidationError
 from spectracut.spec._base import ContentHash, Slug, StrictModel, canonical_json, content_hash
 from spectracut.spec.brief import Brief, CreativeBrief
 from spectracut.studio.graph import GraphSnapshot, ProductionGraph
+from spectracut.studio.producer import BudgetCaps
 
 HOME_ENV = "SPECTRACUT_HOME"
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -64,6 +65,10 @@ class ProductionMeta(StrictModel):
     brief_kind: Literal["brief", "creative_brief"]
     brief_hash: ContentHash
     created_at: AwareDatetime
+    caps: BudgetCaps | None = None
+    """Budget caps ``studio run`` enforces; ``None`` means no cap."""
+    budget_approvals: tuple[Slug, ...] = ()
+    """Nodes approved to run past a budget cap."""
 
 
 class ProductionStore:
@@ -89,6 +94,7 @@ class ProductionStore:
         *,
         force: bool = False,
         now: datetime | None = None,
+        caps: BudgetCaps | None = None,
     ) -> Path:
         """Store a new production; refuses to replace one unless ``force``."""
         path = self.path(production_id)
@@ -106,6 +112,7 @@ class ProductionStore:
             brief_kind="creative_brief" if isinstance(brief, CreativeBrief) else "brief",
             brief_hash=content_hash(brief),
             created_at=now or datetime.now(UTC),
+            caps=caps,
         )
         write_atomic(path / "brief.json", canonical_json(brief))
         write_atomic(path / "production.json", canonical_json(meta))
@@ -114,6 +121,13 @@ class ProductionStore:
 
     def save(self, production_id: str, graph: ProductionGraph) -> None:
         write_atomic(self.path(production_id) / "graph.json", canonical_json(graph.snapshot()))
+
+    def update_meta(self, production_id: str, meta: ProductionMeta) -> None:
+        """Replace ``production.json`` of an existing production."""
+        if meta.id != production_id:
+            raise ProductionError(f"metadata is for production {meta.id!r}, not {production_id!r}")
+        self.meta(production_id)
+        write_atomic(self.path(production_id) / "production.json", canonical_json(meta))
 
     def meta(self, production_id: str) -> ProductionMeta:
         return self._read(production_id, "production.json", ProductionMeta)

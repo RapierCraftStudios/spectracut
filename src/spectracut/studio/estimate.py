@@ -144,9 +144,7 @@ class ProductionEstimate(StrictModel):
             f"wall_minutes={self.wall_minutes:g}, {_cost_text(self.total)}"
         )
         if self.unknown_departments:
-            out.append(
-                "default rates used for departments: " + ", ".join(self.unknown_departments)
-            )
+            out.append("default rates used for departments: " + ", ".join(self.unknown_departments))
         return out
 
 

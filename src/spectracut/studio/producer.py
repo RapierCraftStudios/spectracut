@@ -162,7 +162,9 @@ class Producer:
             length = float(duration_s)
             count = max(1, math.ceil(length / AVG_SHOT_S))
             each = round(length / count, 3)
-            shots = tuple(PlannedShot(id=f"shot-{i:02d}", duration_s=each) for i in range(1, count + 1))
+            shots = tuple(
+                PlannedShot(id=f"shot-{i:02d}", duration_s=each) for i in range(1, count + 1)
+            )
             vo = None
         else:
             raise ValueError("a breakdown needs a script or a positive duration_s")
@@ -354,6 +356,7 @@ class TaskState(StrEnum):
     QUEUED = "queued"
     WAITING_FOR_GPU = "waiting_for_gpu"
     WAITING_FOR_AI = "waiting_for_ai"
+    """Same value as ``JobStatus.WAITING_FOR_AI`` of the queue."""
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
@@ -420,4 +423,18 @@ class ScheduledRunner:
                     self._gpu.release()
             self.sleep(max(0.0, (reset_at - self.now()).total_seconds()))
         self._note(nid, TaskState.FAILED)
-        raise RuntimeError(f"node {nid!r}: AI capacity still exhausted after {self.max_ai_waits} waits")
+        raise RuntimeError(
+            f"node {nid!r}: AI capacity still exhausted after {self.max_ai_waits} waits"
+        )
+
+
+def scheduled(
+    runner: Runner,
+    *,
+    departments: Mapping[str, type[Department]] | None = None,
+    limits: CapacityLimits | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> ScheduledRunner:
+    """Wrap ``runner`` so tasks wait for GPU leases and AI capacity (:class:`ScheduledRunner`)."""
+    return ScheduledRunner(runner, departments=departments, limits=limits, sleep=sleep, now=now)
