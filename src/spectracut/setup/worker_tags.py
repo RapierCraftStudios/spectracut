@@ -89,18 +89,21 @@ def sync_worker_tags(
     client: TagApi,
     desired: Mapping[str, Sequence[str]],
     *,
-    timeout: float = REGISTER_TIMEOUT,
+    timeout: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     dry_run: bool = False,
 ) -> list[str]:
     """Bring the Manager's tags and worker memberships to ``desired``; return the actions.
 
-    With ``dry_run`` only reads are made (no waiting): the actions say what would change,
-    and hosts with no worker yet are reported instead of failing.
+    ``timeout`` defaults to :data:`REGISTER_TIMEOUT`. With ``dry_run`` only reads are made
+    (no waiting): the actions say what would change, and hosts with no worker yet are
+    reported instead of failing.
     """
     if not desired:
         return []
+    if timeout is None:
+        timeout = REGISTER_TIMEOUT
     try:
         return _sync(client, desired, timeout, sleep, clock, dry_run)
     except FlamencoError as exc:

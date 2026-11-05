@@ -36,7 +36,9 @@ from spectracut.setup.worker_tags import (
 LEGION = RenderProfile(
     blender_version="4.5.15", gpu_model="NVIDIA GeForce RTX 3070 Laptop GPU", vram_gb=8
 )
-MRDUBEY = RenderProfile(blender_version="4.5.15", gpu_model="NVIDIA GeForce RTX 4070 Ti", vram_gb=12)
+MRDUBEY = RenderProfile(
+    blender_version="4.5.15", gpu_model="NVIDIA GeForce RTX 4070 Ti", vram_gb=12
+)
 
 
 class Host:
@@ -178,9 +180,13 @@ def test_unmanaged_tags_and_unregistered_workers_are_left_alone() -> None:
     assert by_hand.id in manager.tags and existing.id in manager.tags  # never pruned
 
 
+def _no_sleep(seconds: float) -> None:
+    pytest.fail(f"a dry run waited {seconds}s")
+
+
 def test_dry_run_reads_only_and_reports() -> None:
     manager = FakeManager(workers=("mrdubey-1",))
-    actions = sync_worker_tags(manager, _desired(), dry_run=True, sleep=pytest.fail)
+    actions = sync_worker_tags(manager, _desired(), dry_run=True, sleep=_no_sleep)
     assert manager.writes == [] and manager.tags == {}
     assert "legion: no worker named 'legion' registered yet" in actions
     assert any(a.startswith("mrdubey-1: set worker mrdubey-1 tags to 4070ti") for a in actions)
@@ -291,11 +297,6 @@ def test_cli_setup_fails_when_a_worker_never_registers(
     monkeypatch.setattr(setup_cli, "build_wheels", lambda _out: WHEELS)
     monkeypatch.setattr(setup_cli, "manager_client", lambda _url: FakeManager(workers=()))
     monkeypatch.setattr("spectracut.setup.worker_tags.REGISTER_TIMEOUT", 0.0)
-    monkeypatch.setattr(
-        "spectracut.setup.worker_tags.sync_worker_tags.__defaults__",
-        None,
-        raising=False,
-    )
     hosts = [{"name": "rig", "cpus": 8, "mem_gb": 32, "profile": MRDUBEY.model_dump()}]
     (home / "hosts.json").write_text(json.dumps({"hosts": hosts}), encoding="utf-8")
     result = CliRunner().invoke(app, ["setup"])

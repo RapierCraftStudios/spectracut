@@ -85,7 +85,9 @@ def worker_tags(
 
 
 def _tag(t: dict[str, Any]) -> WorkerTag:
-    return WorkerTag(id=str(t["id"]), name=str(t["name"]), description=str(t.get("description", "")))
+    return WorkerTag(
+        id=str(t["id"]), name=str(t["name"]), description=str(t.get("description", ""))
+    )
 
 
 def normalize_tag(name: str) -> str:

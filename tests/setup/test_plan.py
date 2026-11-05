@@ -7,6 +7,7 @@ import dataclasses
 import json
 import re
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from typer.testing import CliRunner
 import spectracut
 from spectracut.cli import setup as setup_cli
 from spectracut.cli.app import app
+from spectracut.queue.flamenco import Worker, WorkerTag
 from spectracut.setup.manifest import HostFacts, Step, load_manifest
 from spectracut.setup.plan import (
     LINUX_PROBE,
@@ -183,6 +185,7 @@ def test_storage_move_repoints_manager_and_all_workers(tmp_path: Path) -> None:
         "Share": "films",
         "Server": "nas.lan",
         "User": CRED.user,
+        "Name": "legion",
     }
 
 
@@ -550,12 +553,39 @@ def test_windows_probe_lists_drives_without_cim(monkeypatch: pytest.MonkeyPatch)
     assert "Cim" not in calls[1][1] and "Wmi" not in calls[1][1]
 
 
+class StubManager:
+    """A Manager whose workers are the registered hosts, already tagged by setup."""
+
+    def __init__(self) -> None:
+        self.tags: list[WorkerTag] = []
+
+    def list_tags(self) -> list[WorkerTag]:
+        return list(self.tags)
+
+    def create_tag(self, name: str, description: str = "") -> None:
+        self.tags.append(WorkerTag(id=name, name=name, description=description))
+
+    def delete_tag(self, tag_id: str) -> None:
+        self.tags = [t for t in self.tags if t.id != tag_id]
+
+    def list_workers(self) -> list[Worker]:
+        return [Worker(id=n, name=n) for n in WORKERS]
+
+    def worker_tags_of(self, worker_id: str) -> list[WorkerTag]:
+        return []
+
+    def set_worker_tags(self, worker_id: str, tag_ids: Sequence[str]) -> None:
+        pass
+
+
 def _cli_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, FakeRunner]:
     home = tmp_path / "home"
     monkeypatch.setenv("SPECTRACUT_HOME", str(home))
     runner = FakeRunner()
+    manager = StubManager()
     monkeypatch.setattr(setup_cli, "CommandRunner", lambda: runner)
     monkeypatch.setattr(setup_cli, "build_wheels", lambda _out: WHEELS)
+    monkeypatch.setattr(setup_cli, "manager_client", lambda _url: manager)
     home.mkdir()
     return home, runner
 
