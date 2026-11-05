@@ -73,6 +73,8 @@ GPU_PSEUDO = "gpu-script"
 SERVICE_PSEUDO = "worker-service"
 MANAGER_SERVICE = "manager-service"
 HOST_PSEUDO = "host-profile"
+HOST_REG_PSEUDO = "host-registration"
+HOST_REG_REL = ".config/spectracut/host.json"
 WORKER_SCRIPT = "windows_worker.ps1"
 TASK_SCRIPT = "windows_worker_task.ps1"
 WORKER_ARGS = "worker-args.json"
@@ -516,6 +518,33 @@ def _worker_prep_steps(
     return steps
 
 
+def host_registration(name: str, public_key: str) -> str:
+    """``host.json`` for a worker: its registered name and the control plane's public key."""
+    return json.dumps({"control_plane_public_key": public_key, "host_id": name}, sort_keys=True)
+
+
+def _registration_step(f: HostFacts, public_key: str) -> Step:
+    """Write ``host.json`` in the account the Worker runs as (the SSH account); no sudo.
+
+    The execution guard reads it from that account's home on every job, so no restart.
+    Only the public key is written; the private key never leaves the control plane.
+    """
+    content = host_registration(f.name, public_key)
+    version = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+    summary = "register the host (host.json with the control plane's public key)"
+    if f.os == "windows":
+        step = profile_write_step(
+            f.name, f"host-registration:{f.name}", summary, HOST_REG_REL, content
+        )
+    else:
+        cmd = (
+            f'p="$HOME/{HOST_REG_REL}"; mkdir -p "$(dirname "$p")" && '
+            '(umask 077 && cat > "$p.tmp") && chmod 600 "$p.tmp" && mv -f "$p.tmp" "$p"'
+        )
+        step = Step(f.name, f"host-registration:{f.name}", summary, cmd, "sh", stdin=content)
+    return replace(step, component=HOST_REG_PSEUDO, version=version)
+
+
 def build_plan(
     manifest: Manifest,
     set_id: str,
@@ -526,11 +555,13 @@ def build_plan(
     storage: StorageTarget | None = None,
     *,
     wheels: LocalWheels,
+    signing_public_key: str | None = None,
 ) -> Plan:
     """Steps still needed to bring every machine to ``set_id`` with storage on ``storage``.
 
     ``storage`` defaults to the target already in ``state``, else the wired
-    machine with the most free space.
+    machine with the most free space. With ``signing_public_key`` every worker gets
+    a ``host.json`` registering it under its registered name with that key.
     """
     target = storage or state.storage or choose_default_host(facts)
     layout = state.layout()
@@ -551,6 +582,10 @@ def build_plan(
             svc = _service_steps(f, manager_url, pins["flamenco-manager"])
         elif name in workers:
             steps += _worker_prep_steps(f, have, pins, gpu_src, gpu_hash)
+            if signing_public_key is not None:
+                reg = _registration_step(f, signing_public_key)
+                if have.get(HOST_REG_PSEUDO) != reg.version:
+                    steps.append(reg)
             args = _worker_args(manager_url, target, facts, name, cred.user, layout)
             digest = hashlib.sha256((worker_src + args).encode("utf-8")).hexdigest()[:12]
             svc = _service_steps(f, manager_url, pins["flamenco-worker"], args, digest)

@@ -11,11 +11,14 @@ Flamenco (Manager with native Windows and Linux workers on shared storage)::
 
     SPECTRACUT_E2E=1 SPECTRACUT_FLAMENCO_URL=http://manager:8080 \
     SPECTRACUT_FLAMENCO_TAGS=windows-4070ti,linux-3090 \
-    SPECTRACUT_FLAMENCO_SHARED=/mnt/flamenco SPECTRACUT_JOB_SIGNING_KEY=... \
+    SPECTRACUT_FLAMENCO_SHARED=/mnt/flamenco \
     uv run pytest -m e2e tests/host/test_host_e2e.py -k flamenco
 
 ``SPECTRACUT_FLAMENCO_SHARED`` is the shared-storage path as the workers see it.
-Workers need a host registration holding the matching public key.
+After ``spectracut setup`` no hand-placed key is needed: the signing key is read
+from ``<SPECTRACUT_HOME>/job-signing.key`` (``SPECTRACUT_JOB_SIGNING_KEY`` still
+overrides it), and setup wrote each worker's ``host.json`` with the matching
+public key.
 """
 
 from __future__ import annotations
