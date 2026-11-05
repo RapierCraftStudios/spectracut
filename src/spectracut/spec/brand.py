@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field, ValidationInfo, field_validator
+import yaml
+from pydantic import Field, ValidationError, ValidationInfo, field_validator
 
 from spectracut.spec._base import (
     HexColor,
@@ -148,3 +150,29 @@ class BrandKit(StrictModel):
     def _unique_sources(cls, v: list[ClaimSource]) -> list[ClaimSource]:
         ensure_unique_ids(v, "claim source")
         return v
+
+
+def load_brand_kit(path: Path) -> BrandKit:
+    """Read a ``brand-kit.yaml`` and validate it as a :class:`BrandKit`.
+
+    Raises :class:`ValueError` naming the file for unreadable YAML, a document
+    that is not a mapping, or one that fails the schema.
+    """
+    path = Path(path)
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"cannot read brand kit {path}: {exc.strerror or exc}") from None
+    except yaml.YAMLError as exc:
+        raise ValueError(f"brand kit {path} is not valid YAML: {exc}") from None
+    if not isinstance(raw, dict):
+        raise ValueError(f"brand kit {path} must be a YAML mapping")
+    try:
+        return BrandKit.model_validate(raw)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        loc = ".".join(str(p) for p in first["loc"]) or "<root>"
+        raise ValueError(
+            f"brand kit {path} is invalid: {exc.error_count()} error(s), "
+            f"first: {loc}: {first['msg']}"
+        ) from None

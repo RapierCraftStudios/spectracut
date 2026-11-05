@@ -18,7 +18,7 @@ from spectracut.spec._base import NonEmptyStr, Slug, StrictModel
 from spectracut.studio.gates import GateMode, GatePolicy
 from spectracut.studio.node import Tier
 
-PROFILE_NAMES: tuple[str, ...] = ("draft", "standard", "premium", "cinema")
+PROFILE_NAMES: tuple[str, ...] = ("draft", "standard", "premium", "cinema", "device-shot")
 """Built-in profiles, cheapest first."""
 
 

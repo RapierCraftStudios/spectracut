@@ -13,5 +13,10 @@
     "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && env -u SPECTRACUT_JOB_SIGNING_KEY SPECTRACUT_E2E=1 SPECTRACUT_FLAMENCO_URL=http://127.0.0.1:8085 SPECTRACUT_FLAMENCO_TAGS=legion-rtx3070,mrdubey-rtx4070ti SPECTRACUT_FLAMENCO_SHARED=/srv/flamenco uv run pytest -q -m e2e tests/host/test_host_e2e.py -k flamenco",
     "pass": "/\\b1 passed\\b/",
     "timeout": 1800
+  },
+  "m1-device-shot-farm-e2e": {
+    "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && SPECTRACUT_E2E=1 SPECTRACUT_HOME=$HOME/.local/share/spectracut SPECTRACUT_FLAMENCO_URL=http://100.105.62.23:8085 SPECTRACUT_FLAMENCO_SHARED=/srv/flamenco SPECTRACUT_FLAMENCO_TAG=legion-rtx3070 uv run pytest -q -m e2e tests/acceptance/test_m1_device_shot.py",
+    "pass": "/\\b[1-9]\\d* passed in\\b/",
+    "timeout": 3600
   }
 }

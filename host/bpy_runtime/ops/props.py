@@ -54,6 +54,18 @@ def _set_cycles_samples(s: Any, v: Any) -> None:
     s.cycles.samples = v
 
 
+def _set_cycles_seed(s: Any, v: Any) -> None:
+    s.cycles.seed = v
+
+
+def _set_cycles_use_denoising(s: Any, v: Any) -> None:
+    s.cycles.use_denoising = v
+
+
+def _set_cycles_denoiser(s: Any, v: Any) -> None:
+    s.cycles.denoiser = v
+
+
 def _set_eevee_samples(s: Any, v: Any) -> None:
     s.eevee.taa_render_samples = v
 
@@ -80,6 +92,9 @@ PROPERTIES: dict[str, tuple[Validator, Setter]] = {
     "render.use_motion_blur": (as_bool, _set_motion_blur),
     "render.motion_blur_shutter": (_float_in(0.0, 2.0), _set_motion_blur_shutter),
     "cycles.samples": (_int_in(1, 65536), _set_cycles_samples),
+    "cycles.seed": (_int_in(0, 2**31 - 1), _set_cycles_seed),
+    "cycles.use_denoising": (as_bool, _set_cycles_use_denoising),
+    "cycles.denoiser": (_one_of("OPENIMAGEDENOISE", "OPTIX"), _set_cycles_denoiser),
     "eevee.taa_render_samples": (_int_in(1, 65536), _set_eevee_samples),
     "view_settings.view_transform": (
         _one_of("AgX", "Standard", "Filmic", "Khronos PBR Neutral"),
