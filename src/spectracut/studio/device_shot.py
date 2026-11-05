@@ -34,6 +34,18 @@ The ``device-shot-graded`` profile (``profiles/device-shot-graded.json``) adds:
     compositor job. Only this node keys on the Look's finishing, so switching
     Looks re-runs ``finish`` alone and reuses the render.
 
+The ``device-shot-comped`` profile (``profiles/device-shot-comped.json``) puts a
+``comp`` stage between them:
+
+``render_scene`` with param ``render_passes: true``
+    Enables the view-layer passes (AOVs, depth, motion vectors, object
+    cryptomatte) and writes 32-bit multilayer EXR (:func:`comp.passes_steps`).
+``comp``
+    :func:`spectracut.finishing.comp.comp_runner`: the node's comp graph (param
+    ``comp_id`` in ``comps_dir``, the repo's ``comps/`` by default) as a
+    compositor-only job on the multilayer EXRs. A comp change re-runs ``comp``
+    and ``finish``, never the render.
+
 :func:`replay` re-renders a recorded render node with a fresh job id into a
 fresh output dir, bypassing the FrameCache and the graph cache, and compares
 the scene-graph hash and per-frame hashes.
@@ -61,6 +73,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
 
+from spectracut.finishing import comp
 from spectracut.finishing.color import ColorPipeline
 from spectracut.finishing.looks import finish_runner, render_rules, resolve_look
 from spectracut.harness.imagecmp import ImageError, decode_png
@@ -88,6 +101,13 @@ RENDER_SCENE_STAGE = "render_scene"
 """Graded profile: final-tier render to linear scene-referred EXR (no Look baked in)."""
 FINISH_STAGE = "finish"
 """Graded profile: the Look's finishing as a separate compositor job on the EXRs."""
+COMP_STAGE = "comp"
+"""Comped profile: the shot's compositing graph as a compositor job on the multilayer EXRs."""
+COMP_ID_PARAM = "comp_id"
+COMPS_DIR_PARAM = "comps_dir"
+RENDER_PASSES_PARAM = "render_passes"
+"""A ``render_scene`` param: when true, render passes to multilayer EXR for ``comp``."""
+COMPED_PROFILE = "device-shot-comped"
 LOOK_ID_PARAM = "look_id"
 COLOR_PARAM = "color"
 LOOKS_DIR_PARAM = "looks_dir"
@@ -555,6 +575,26 @@ def graded_profile() -> QualityProfile:
     return QualityProfile.model_validate(json.loads(text.read_text("utf-8")))
 
 
+def comped_profile() -> QualityProfile:
+    """The ``device-shot-comped`` profile from ``profiles/device-shot-comped.json``."""
+    text = resources.files("spectracut.studio").joinpath("profiles", f"{COMPED_PROFILE}.json")
+    return QualityProfile.model_validate(json.loads(text.read_text("utf-8")))
+
+
+def _node_comp(ctx: RunContext) -> comp.CompGraph:
+    """The node's comp graph: param ``comp_id`` in param ``comps_dir`` (repo ``comps/``)."""
+    comp_id = ctx.spec.params.get(COMP_ID_PARAM)
+    if not isinstance(comp_id, str) or not comp_id:
+        raise ValueError(f"node {ctx.spec.id!r} needs param {COMP_ID_PARAM!r} to pick a comp graph")
+    comps_dir = ctx.spec.params.get(COMPS_DIR_PARAM)
+    directory = Path(comps_dir) if isinstance(comps_dir, str) and comps_dir else None
+    library = comp.load_comps(directory or comp.default_comps_dir())
+    if comp_id not in library:
+        known = ", ".join(sorted(library))
+        raise ValueError(f"no comp graph {comp_id!r}; the library has: {known}")
+    return library[comp_id]
+
+
 def _node_look(ctx: RunContext) -> Look:
     """The node's Look: param ``look_id`` (else the kit default) in param ``brand_kit``."""
     kit = ctx.spec.params.get(BRAND_KIT_PARAM)
@@ -571,15 +611,22 @@ def _node_pipeline(ctx: RunContext) -> ColorPipeline:
     return pipeline
 
 
-def scene_render_recipe(base: Recipe, look: Look, pipeline: ColorPipeline) -> Recipe:
+def scene_render_recipe(
+    base: Recipe, look: Look, pipeline: ColorPipeline, *, passes: bool = False
+) -> Recipe:
     """``base`` at the final tier, colour-managed, with ``look``'s render rules, to linear EXR.
 
     ``image_settings.color_management = FOLLOW_SCENE`` with OpenEXR writes
     scene-linear values: the view transform is applied later, in finishing.
+    With ``passes`` the output is 32-bit multilayer EXR with the view-layer
+    passes :func:`comp.passes_steps` enables, for the ``comp`` stage.
     """
     steps = list(base.steps) + tier_steps(Tier.FINAL, start=len(base.steps))
     steps += pipeline.render_steps(start=len(steps))
     steps += render_rules(look, start=len(steps))
+    if passes:
+        steps += comp.passes_steps(start=len(steps))
+        return base.model_copy(update={"steps": steps})
     steps.append(
         RecipeStep(
             index=len(steps),
@@ -607,7 +654,7 @@ def device_shot_runner(
     now: Callable[[], datetime] | None = None,
     options: ExecutorOptions | None = None,
 ) -> Runner:
-    """A graph Runner for the ``device-shot`` and ``device-shot-graded`` profiles' stages."""
+    """A graph Runner for the ``device-shot``, ``-graded`` and ``-comped`` profiles' stages."""
     opts = options or ExecutorOptions()
     clock_now = now or opts.now
 
@@ -631,10 +678,11 @@ def device_shot_runner(
     def render(ctx: RunContext) -> RunResult:
         base = _base_recipe(ctx)
         scene_referred = ctx.spec.kind == RENDER_SCENE_STAGE
+        passes = scene_referred and bool(ctx.spec.params.get(RENDER_PASSES_PARAM))
         if scene_referred:
             look = _node_look(ctx)
             pipeline = _node_pipeline(ctx)
-            recipe = scene_render_recipe(base, look, pipeline)
+            recipe = scene_render_recipe(base, look, pipeline, passes=passes)
         else:
             recipe = with_tier(base, ctx.tier)
         source = _shot_assets_source(ctx)
@@ -669,6 +717,8 @@ def device_shot_runner(
         if scene_referred:
             output[LOOK_ID_PARAM] = look.id
             output["render_rules"] = [{"tool": s.tool, "args": s.args} for s in render_rules(look)]
+        if passes:
+            output["render_passes"] = list(comp.RENDER_PASSES)
         usage = result.usage
         if ctx.tier is Tier.PREVIEW and not scene_referred:
             active = judge
@@ -687,6 +737,17 @@ def device_shot_runner(
             return shot(ctx)
         if ctx.spec.kind in RENDER_STAGES or ctx.spec.kind == RENDER_SCENE_STAGE:
             return render(ctx)
+        if ctx.spec.kind == COMP_STAGE:
+            return comp.comp_runner(
+                ctx,
+                graph=_node_comp(ctx),
+                production_id=graph.production_id,
+                config=config,
+                client=client,
+                key=key,
+                now=clock_now,
+                options=opts,
+            )
         if ctx.spec.kind == FINISH_STAGE:
             looks_dir = ctx.spec.params.get(LOOKS_DIR_PARAM)
             return finish_runner(

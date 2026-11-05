@@ -1,0 +1,14 @@
+# Screen grade: a per-shot ASC CDL on the device screen alone, isolated by
+# the device_screen cryptomatte, plus a UI sharpen. The scene is untouched.
+id: screen-grade
+version: 1
+screen_matte: device_screen
+ops:
+  - op: screen_grade
+    slope: [1.04, 1.0, 0.97]
+    offset: [0.0, 0.0, 0.0]
+    power: [1.02, 1.0, 1.0]
+    saturation: 0.95
+  - op: ui_sharpen
+    amount: 0.25
+    radius: 1
