@@ -106,3 +106,12 @@ def test_assets_dir_is_passed_to_the_host_when_set() -> None:
         assert cmd["params"]["args"][-2:] == ["--assets-dir", "/shared/assets"]
     (cmd,) = _compile({**SETTINGS, "assets_dir": ""})["tasks"][0]["commands"]
     assert "--assets-dir" not in cmd["params"]["args"]
+
+
+def test_storage_variable_assets_dir_passes_through_unchanged() -> None:
+    value = "{storage}/assets/" + "ab" * 32
+    for task in _compile({**SETTINGS, "assets_dir": value})["tasks"]:
+        (cmd,) = task["commands"]
+        assert cmd["params"]["args"][-2:] == ["--assets-dir", value]
+    (assets,) = [s for s in _compile(SETTINGS)["jobType"]["settings"] if s["key"] == "assets_dir"]
+    assert "{storage}/assets/<sha>" in assets["description"]

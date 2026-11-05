@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -455,6 +456,127 @@ def test_studio_replay_exit_2_for_unknown_production_node_or_unbuilt_node(
             app, ["studio", "replay", "alterlab-dashboard", node, "--home", str(home)]
         )
         assert result.exit_code == 2, result.output
+
+
+# ---- asset staging into shared storage (#162) ----------------------------------------
+
+
+@pytest.fixture
+def staging_farm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[FakeFlamenco, Path]]:
+    """A fake farm with no SPECTRACUT_ASSETS_DIR override: the runner must stage assets."""
+    private, _ = generate_keypair()
+    fake, shared = FakeFlamenco(), tmp_path / "shared"
+    config = ds.DeviceShotConfig(flamenco_url="http://fake", shared=shared, worker_tag=TAG)
+
+    def factory(production: studio_mod.Production) -> studio_mod.DeviceShotDeps:
+        return studio_mod.DeviceShotDeps(
+            config=config,
+            client=fake,
+            key=load_private_key(private),
+            judge=MockJudge(),
+            options=ds.ExecutorOptions(clock=Ticks(), sleep=lambda _s: None, poll_interval=0.0),
+        )
+
+    monkeypatch.setattr(studio_mod, "device_shot_factory", factory)
+    yield fake, shared
+
+
+def _staged_sha(shared: Path) -> str:
+    (staged,) = [p for p in (shared / "assets").iterdir()]
+    assert re.fullmatch(r"[0-9a-f]{64}", staged.name), staged.name
+    return staged.name
+
+
+def test_render_stages_brand_assets_and_passes_a_storage_path(
+    tmp_path: Path, staging_farm: tuple[FakeFlamenco, Path]
+) -> None:
+    fake, shared = staging_farm
+    home = _new_and_run(tmp_path)
+    sha = _staged_sha(shared)
+    staged = shared / "assets" / sha
+    assert (staged / "ui" / "dashboard.png").read_bytes() == SCREEN.read_bytes()
+    assert (staged / "ui" / "dashboard.png.license.json").is_file()  # provenance travels too
+    assert len(fake.submitted) == 2
+    for job in fake.submitted:
+        assert job["settings"]["assets_dir"] == f"{{storage}}/assets/{sha}"
+        # the screen sha256 pinned in the signed recipe is the staged file the host reads
+        signed = json.loads(Path(job["settings"]["job_file"]).read_text(encoding="utf-8"))
+        (screen,) = [
+            s for s in signed["envelope"]["recipe"]["steps"] if s["tool"] == "material.apply_screen"
+        ]
+        assert screen["args"]["image_sha256"] == _sha(staged / screen["args"]["image"])
+    graph, _ = ProductionStore(home).load("alterlab-dashboard")
+    for node in ("render_preview", "render_final"):
+        out = graph.output(node)
+        assert isinstance(out, dict) and out["assets_sha"] == sha
+    replay = ["studio", "replay", "alterlab-dashboard", "render_final", "--home", str(home)]
+    ok = runner.invoke(app, replay)
+    assert ok.exit_code == 0, ok.output
+    assert fake.submitted[-1]["settings"]["assets_dir"] == f"{{storage}}/assets/{sha}"
+    assert [p.name for p in (shared / "assets").iterdir()] == [sha]  # copied once
+
+
+def test_stage_assets_copies_once_and_is_content_addressed(tmp_path: Path) -> None:
+    source, shared = tmp_path / "src", tmp_path / "shared"
+    (source / "ui").mkdir(parents=True)
+    (source / "ui" / "a.png").write_bytes(b"one")
+    refs = {"ui/a.png": hashlib.sha256(b"one").hexdigest()}
+    sha = ds.stage_assets(source, shared, refs)
+    staged = shared / "assets" / sha / "ui" / "a.png"
+    before = staged.stat()
+    assert ds.stage_assets(source, shared, refs) == sha
+    after = staged.stat()
+    assert (before.st_ino, before.st_mtime_ns) == (after.st_ino, after.st_mtime_ns)
+    assert [p.name for p in (shared / "assets").iterdir()] == [sha]  # no leftover temp dirs
+    (source / "ui" / "a.png").write_bytes(b"two")
+    refs2 = {"ui/a.png": hashlib.sha256(b"two").hexdigest()}
+    assert ds.stage_assets(source, shared, refs2) != sha
+    assert ds.storage_assets_dir(sha) == f"{{storage}}/assets/{sha}"
+
+
+def test_stage_assets_refuses_missing_or_mismatched_referenced_files(tmp_path: Path) -> None:
+    source, shared = tmp_path / "src", tmp_path / "shared"
+    source.mkdir()
+    (source / "a.png").write_bytes(b"one")
+    with pytest.raises(ValueError, match="the recipe expects"):
+        ds.stage_assets(source, shared, {"a.png": "0" * 64})
+    with pytest.raises(ValueError, match="missing"):
+        ds.stage_assets(source, shared, {"b.png": "0" * 64})
+    with pytest.raises(ValueError, match="does not exist"):
+        ds.stage_assets(tmp_path / "nope", shared, {})
+
+
+def test_changed_screen_fails_before_any_job_is_submitted(
+    tmp_path: Path, staging_farm: tuple[FakeFlamenco, Path]
+) -> None:
+    fake, shared = staging_farm
+    kit_dir = tmp_path / "kit"
+    shutil.copytree(KIT.parent, kit_dir)
+    home, brief = tmp_path / "home", tmp_path / "brief.json"
+    brief.write_text(_brief().model_dump_json(), encoding="utf-8")
+    new = runner.invoke(
+        app,
+        ["studio", "new", str(brief), "--profile", "device-shot"]
+        + ["--brand-kit", str(kit_dir / KIT.name), "--home", str(home)],
+    )
+    assert new.exit_code == 0, new.output
+    screen = kit_dir / "assets" / "ui" / "dashboard.png"
+    screen.write_bytes(screen.read_bytes() + b"\0")  # bytes no longer match the pinned sha
+    run = runner.invoke(app, ["studio", "run", "alterlab-dashboard", "--home", str(home)])
+    assert run.exit_code == 1 and "the recipe expects" in run.output, run.output
+    assert fake.submitted == []
+    assert not (shared / "jobs").exists()
+
+
+def test_assets_override_is_passed_verbatim_and_nothing_is_staged(
+    tmp_path: Path, farm: tuple[FakeFlamenco, MockJudge, Path, str]
+) -> None:
+    fake, _judge, shared, _ = farm
+    _new_and_run(tmp_path)
+    assert {j["settings"]["assets_dir"] for j in fake.submitted} == {str(tmp_path / "a")}
+    assert not (shared / "assets").exists()
 
 
 # ---- E2E on the farm ----------------------------------------------------------------
