@@ -96,5 +96,27 @@
     "immersive_mix": "critic",
     "render": "critic",
     "delivery": "human"
+  },
+  "critique": {
+    "pass_score": 0.75,
+    "window": 5,
+    "best_of_n": {
+      "style_frames": 4,
+      "storyboard": 4,
+      "animatic": 4,
+      "previs": 4,
+      "template_shots": 4,
+      "shots": 4,
+      "render": 4
+    },
+    "verify_samples": {
+      "style_frames": 3,
+      "storyboard": 3,
+      "animatic": 3,
+      "previs": 3,
+      "template_shots": 3,
+      "shots": 3,
+      "render": 3
+    }
   }
 }

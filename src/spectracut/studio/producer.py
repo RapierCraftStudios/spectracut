@@ -265,6 +265,8 @@ class Producer:
             data["stages"] = [s for s in profile.stages if s != dropped.kind]
             for table in ("revision_budget", "tier", "gates"):
                 data[table].pop(dropped.kind, None)
+            for table in ("best_of_n", "verify_samples"):
+                data["critique"][table].pop(dropped.kind, None)
             self._set_profile(graph, QualityProfile.model_validate(data), None, None)
         return self.estimate(graph)
 

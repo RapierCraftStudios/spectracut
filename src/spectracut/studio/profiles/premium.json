@@ -88,5 +88,27 @@
     "mix": "critic",
     "render": "critic",
     "delivery": "human"
+  },
+  "critique": {
+    "pass_score": 0.7,
+    "window": 4,
+    "best_of_n": {
+      "style_frames": 3,
+      "storyboard": 3,
+      "animatic": 3,
+      "previs": 3,
+      "template_shots": 3,
+      "shots": 3,
+      "render": 3
+    },
+    "verify_samples": {
+      "style_frames": 2,
+      "storyboard": 2,
+      "animatic": 2,
+      "previs": 2,
+      "template_shots": 2,
+      "shots": 2,
+      "render": 2
+    }
   }
 }

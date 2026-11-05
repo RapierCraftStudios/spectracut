@@ -64,5 +64,25 @@
     "mix": "critic",
     "render": "critic",
     "delivery": "human"
+  },
+  "critique": {
+    "pass_score": 0.6,
+    "window": 3,
+    "best_of_n": {
+      "style_frames": 2,
+      "storyboard": 2,
+      "animatic": 2,
+      "template_shots": 2,
+      "shots": 2,
+      "render": 2
+    },
+    "verify_samples": {
+      "style_frames": 1,
+      "storyboard": 1,
+      "animatic": 1,
+      "template_shots": 1,
+      "shots": 1,
+      "render": 1
+    }
   }
 }
