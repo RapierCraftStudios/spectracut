@@ -37,7 +37,7 @@ class RejectedApproach(StrictModel):
     why: str
 
 
-class Finding(StrictModel):
+class FactFinding(StrictModel):
     key: Slug
     example: str
 
@@ -54,7 +54,7 @@ class FactsRecord(StrictModel):
     node_id: Slug
     decisions: tuple[Decision, ...] = ()
     rejected: tuple[RejectedApproach, ...] = ()
-    findings: tuple[Finding, ...] = ()
+    findings: tuple[FactFinding, ...] = ()
 
 
 class PreserveRow(StrictModel):
@@ -87,7 +87,7 @@ def bounded(record: FactsRecord) -> FactsRecord:
                 for r in record.rejected[:MAX_ENTRIES]
             ),
             "findings": tuple(
-                Finding(key=f.key, example=_clip(f.example)) for f in record.findings[:MAX_ENTRIES]
+                FactFinding(key=f.key, example=_clip(f.example)) for f in record.findings[:MAX_ENTRIES]
             ),
         }
     )

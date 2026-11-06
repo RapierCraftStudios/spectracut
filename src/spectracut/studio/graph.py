@@ -31,6 +31,7 @@ from pydantic import AwareDatetime, Field, JsonValue
 
 from spectracut.spec._base import ContentHash, Slug, StrictModel, content_hash
 from spectracut.studio.facts import (
+    FactFinding,
     FactsDraft,
     FactsRecord,
     FactsStore,
@@ -38,9 +39,6 @@ from spectracut.studio.facts import (
     RejectedApproach,
     check_preserve,
     touched_ids,
-)
-from spectracut.studio.facts import (
-    Finding as FactFinding,
 )
 from spectracut.studio.gates import (
     Critic,
