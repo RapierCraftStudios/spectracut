@@ -25,6 +25,7 @@ from spectracut.studio.autonomy import AutonomyPolicy, BudgetApproval, load_auto
 from spectracut.studio.department import Department
 from spectracut.studio.departments import all_departments
 from spectracut.studio.departments import art as art_depts
+from spectracut.studio.departments import finishing as finishing_depts
 from spectracut.studio.departments import shots as shot_depts
 from spectracut.studio.departments.style_frame_farm import FarmStyleFrameRenderer
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
@@ -124,7 +125,10 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
     a local concept image (when a local image model is reachable) and a final-tier
     Blender render on the farm, and the animatic is cut in code. Farm dependencies
     (:data:`device_shot_factory`) are built on the first shot or style-frame render,
-    so text-only runs never need the Flamenco env or the signing key.
+    so text-only runs never need the Flamenco env or the signing key. ``edit``,
+    ``render`` and ``delivery`` nodes are built in code by
+    :class:`~spectracut.studio.departments.finishing.FinishingRunner` (on the same lazily
+    built farm dependencies), never by the text runner.
     """
     if graph.profile is not None and graph.profile.name == ds.PROFILE:
         deps = device_shot_factory(production)
@@ -140,6 +144,7 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
     shots: shot_depts.ShotRunner | None = None
     preproduction: art_depts.PreproductionRunner | None = None
     farm: DeviceShotDeps | None = None
+    finishing: finishing_depts.FinishingRunner | None = None
     lock = threading.Lock()
     farm_lock = threading.Lock()
 
@@ -186,10 +191,33 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
             runner = preproduction
         return runner(ctx)
 
+    def finish(ctx: RunContext) -> RunResult:
+        nonlocal finishing
+        with lock:
+            if finishing is None:
+                deps = farm_deps()
+                brief = production.brief
+                finishing = finishing_depts.FinishingRunner(
+                    text,
+                    DEPARTMENTS,
+                    config=deps.config,
+                    client=deps.client,
+                    key=deps.key,
+                    judge=deps.judge,
+                    production_id=graph.production_id,
+                    workdir=production.store.path(production.id) / "finishing",
+                    options=deps.options,
+                    brief=brief if isinstance(brief, Brief) else None,
+                )
+            runner = finishing
+        return runner(ctx)
+
     def run(ctx: RunContext) -> RunResult:
         nonlocal shots
         if ctx.spec.kind == art_depts.BRAND_KIT:
             return art_depts.build_brand_kit(ctx)
+        if ctx.spec.kind in FINISHING_KINDS:
+            return finish(ctx)
         if ctx.spec.kind in (art_depts.STYLE_FRAMES, art_depts.ANIMATIC):
             return pre(ctx)
         if ctx.spec.kind not in (shot_depts.TEMPLATE_SHOTS, shot_depts.SHOTS):
@@ -211,6 +239,12 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
         return runner(ctx)
 
     return run
+
+
+FINISHING_KINDS = frozenset(
+    {finishing_depts.EDIT, finishing_depts.RENDER, finishing_depts.DELIVERY}
+)
+"""Node kinds :class:`~spectracut.studio.departments.finishing.FinishingRunner` builds."""
 
 
 runner_factory: Callable[[Production, ProductionGraph], Runner] = default_runner
@@ -379,7 +413,7 @@ def new(
             if template_params:
                 specs = [
                     s.model_copy(update={"params": {**s.params, **template_params}})
-                    if s.kind in (shot_depts.TEMPLATE_SHOTS, shot_depts.SHOTS)
+                    if s.kind in (shot_depts.TEMPLATE_SHOTS, shot_depts.SHOTS, *FINISHING_KINDS)
                     else s
                     for s in specs
                 ]

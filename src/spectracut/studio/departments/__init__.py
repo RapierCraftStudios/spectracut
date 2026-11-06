@@ -3,10 +3,11 @@
 
 Discovery (intake, product understanding, brief) lives in ``.discovery``,
 Development (concepts, script) in ``.writer``, Art in ``.art``, Shots (template
-shots and shots rendered on the farm) in ``.shots`` and Sound (voiceover, sound
-design, music, mix) in ``.sound``; import from those modules. The ``brand_kit``
-node (department ``brand-kit``, in ``.art``) carries the production's brand kit,
-built in code, so the art departments read it as a declared input.
+shots and shots rendered on the farm) in ``.shots``, Sound (voiceover, sound
+design, music, mix) in ``.sound`` and Finishing (edit, graded master, delivery) in
+``.finishing``; import from those modules. The ``brand_kit`` node (department
+``brand-kit``, in ``.art``) carries the production's brand kit, built in code, so
+the art departments read it as a declared input.
 :func:`all_departments` lists every department ``studio run`` can use, and
 :data:`STAGE_DEPARTMENTS` says which one builds each profile stage (node kind). A
 stage with no entry keeps its own name as the department name, so it shows up as
@@ -36,6 +37,9 @@ STAGE_DEPARTMENTS: dict[str, str] = {
     "sound_design": "sound-designer",
     "music": "composer",
     "mix": "mixer",
+    "edit": "editor",
+    "render": "finisher",
+    "delivery": "delivery",
 }
 """Profile stage (node kind) -> name of the department that builds it."""
 
@@ -49,6 +53,7 @@ def all_departments() -> dict[str, type[Department]]:
     """Every implemented department by name (imported lazily to avoid import cycles)."""
     from spectracut.studio.departments.art import ART_DEPARTMENTS
     from spectracut.studio.departments.discovery import DISCOVERY_DEPARTMENTS
+    from spectracut.studio.departments.finishing import FINISHING_DEPARTMENTS
     from spectracut.studio.departments.shots import SHOT_DEPARTMENTS
     from spectracut.studio.departments.sound import SOUND_DEPARTMENTS
     from spectracut.studio.departments.writer import DEVELOPMENT_DEPARTMENTS
@@ -61,5 +66,6 @@ def all_departments() -> dict[str, type[Department]]:
             *ART_DEPARTMENTS,
             *SHOT_DEPARTMENTS,
             *SOUND_DEPARTMENTS,
+            *FINISHING_DEPARTMENTS,
         )
     }

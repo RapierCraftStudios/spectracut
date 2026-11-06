@@ -17,11 +17,8 @@ UNIMPLEMENTED = frozenset(
         "assets",
         "animation_polish",
         "fx",
-        "edit",
         "grade",
         "immersive_mix",
-        "render",
-        "delivery",
     }
 )
 """Stages with no department yet (separate work); the estimate reports them."""
@@ -71,3 +68,8 @@ def test_standard_estimate_lists_the_missing_departments_before_any_spend() -> N
     assert set(est.unknown_departments) == UNIMPLEMENTED & set(profile.stages)
     assert graph.spec("script").inputs == ("brief", "concept")
     assert graph.spec("style_frames").inputs == ("brief", "concept", "art_direction")
+    # Finishing (#252) is wired from its departments' declared inputs; standard has
+    # no music stage, so music is not an input here.
+    assert graph.spec("edit").inputs == ("animatic", "template_shots", "shots", "voiceover")
+    assert graph.spec("render").inputs == ("edit", "mix")
+    assert graph.spec("delivery").inputs == ("render", "voiceover", "mix")
