@@ -55,7 +55,7 @@ def _scene(kit: BrandKit, slots: TypeSlots, pipeline: ColorPipeline) -> list[Cal
         ),
         (
             "material.apply_preset",
-            {"object": BACKDROP, "preset": "matte_plastic", "color": swatch(kit, "accent", 2)},
+            {"object": BACKDROP, "preset": "matte_plastic", "color": swatch(kit, "accent")},
         ),
     ]
     text: dict[str, object] = {
@@ -75,7 +75,7 @@ def _scene(kit: BrandKit, slots: TypeSlots, pipeline: ColorPipeline) -> list[Cal
             ),
             (
                 "material.apply_preset",
-                {"object": PLATE, "preset": "matte_plastic", "color": swatch(kit, "ink", 0)},
+                {"object": PLATE, "preset": "matte_plastic", "color": swatch(kit, "ink")},
             ),
         ]
         text["plate"] = PLATE
@@ -86,7 +86,10 @@ def _scene(kit: BrandKit, slots: TypeSlots, pipeline: ColorPipeline) -> list[Cal
     calls.append(("text.add", text))  # type: ignore[arg-type]
     calls += [
         ("light.add", {"kind": "area", "name": "key", "energy": 200, "location": [0.8, -1.6, 1.4]}),
-        ("light.add", {"kind": "area", "name": "fill", "energy": 80, "location": [-1.2, -1.0, 0.4]}),
+        (
+            "light.add",
+            {"kind": "area", "name": "fill", "energy": 80, "location": [-1.2, -1.0, 0.4]},
+        ),
     ]
     return calls
 

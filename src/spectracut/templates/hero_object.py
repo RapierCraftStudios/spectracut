@@ -90,15 +90,20 @@ def _scene(kit: BrandKit, slots: HeroSlots, pipeline: ColorPipeline) -> list[Cal
         ),
         (
             "material.apply_preset",
-            {"object": "backdrop", "preset": "matte_plastic", "color": swatch(kit, "ink", 0)},
+            {"object": "backdrop", "preset": "matte_plastic", "color": swatch(kit, "ink")},
         ),
         (
             "object.add_primitive",
-            {"kind": "cylinder", "name": PLINTH, "location": [0, 0, 0.05], "scale": [0.5, 0.5, 0.05]},
+            {
+                "kind": "cylinder",
+                "name": PLINTH,
+                "location": [0, 0, 0.05],
+                "scale": [0.5, 0.5, 0.05],
+            },
         ),
         (
             "material.apply_preset",
-            {"object": PLINTH, "preset": "ceramic", "color": swatch(kit, "surface", 1)},
+            {"object": PLINTH, "preset": "ceramic", "color": swatch(kit, "surface")},
         ),
         hero,
         ("object.animate", _animate(slots)),

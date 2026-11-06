@@ -69,7 +69,7 @@ def _scene(kind: DeviceKind) -> object:
             ),
             (
                 "material.apply_preset",
-                {"object": FLOOR, "preset": "matte_plastic", "color": swatch(kit, "surface", 1)},
+                {"object": FLOOR, "preset": "matte_plastic", "color": swatch(kit, "surface")},
             ),
             (
                 "device.add",

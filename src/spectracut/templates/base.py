@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Annotated, Generic, Literal, TypeVar
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, JsonValue, field_validator
 
@@ -80,11 +80,8 @@ class CameraVariant(StrictModel):
     vertical_lens: Annotated[float, Field(ge=1, le=5000)]
 
 
-S = TypeVar("S", bound=BaseModel)
-
-
 @dataclass(frozen=True)
-class Template(Generic[S]):
+class Template[S: BaseModel]:
     """A brand-kit-driven shot template.
 
     ``scene(kit, slots, pipeline)`` returns the template's tool calls (geometry, materials,
@@ -180,17 +177,19 @@ def _rgb(hex_colour: str) -> list[JsonValue]:
     return [round(int(h[i : i + 2], 16) / 255.0, 4) for i in (0, 2, 4)]
 
 
-def swatch(kit: BrandKit, role: str, fallback: int) -> list[JsonValue]:
-    """The kit swatch ``role`` as linear-ish RGB, else the ``fallback``-th swatch by name.
+def swatch(kit: BrandKit, role: str) -> list[JsonValue]:
+    """The kit swatch ``role`` as RGB in [0, 1]; a kit without that role is refused.
 
-    The fallback keeps any kit renderable without a code change: kits name their
-    swatches freely, and the choice is deterministic (sorted swatch names).
+    Templates name the roles they paint with (``ink``, ``surface``, ``accent``), so
+    any kit that defines them renders with no code change, and a kit that does not
+    fails loudly instead of silently picking an unrelated colour.
     """
     swatches = kit.palette.swatches
-    if role in swatches:
-        return _rgb(swatches[role])
-    ordered = [swatches[k] for k in sorted(swatches)]
-    return _rgb(ordered[min(fallback, len(ordered) - 1)])
+    if role not in swatches:
+        raise TemplateError(
+            f"brand kit {kit.id!r} has no {role!r} swatch (has {', '.join(sorted(swatches))})"
+        )
+    return _rgb(swatches[role])
 
 
 def check_copy(kit: BrandKit, text: str) -> str:

@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """End-card template: palette background, logo plate and the CTA in 3D type.
 
-The logo is a slot: a sha256-pinned image shown on an emissive plate
-(``material.apply_screen``, exposed so its white reads as display white). With no
-logo the plate is a plain accent-coloured card, so no mark is ever invented. The
+The logo is the kit's ``logo`` asset: its sha256-pinned file (the ``logo`` slot)
+is shown on an emissive plate (``material.apply_screen``, exposed so its white
+reads as display white). A kit with no logo gets a plain accent-coloured card, so
+no mark is ever invented or borrowed. The
 CTA is checked against the kit's forbidden words and set in the kit's display
 family through ``text.add``.
 """
@@ -11,6 +12,7 @@ family through ``text.add``.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import PurePosixPath
 
 from pydantic import Field
 
@@ -23,6 +25,7 @@ from spectracut.templates.base import (
     CameraVariant,
     PinnedAsset,
     Template,
+    TemplateError,
     check_copy,
     font_arg,
     swatch,
@@ -35,15 +38,33 @@ _UPRIGHT = [1.570796, 0, 0]
 
 
 class EndCardSlots(StrictModel):
-    """The CTA line, an optional pinned logo image and the kit's pinned font files."""
+    """The CTA line, the pinned file of the kit's logo (if it has one) and pinned fonts."""
 
     cta: NonEmptyStr = Field(max_length=80)
     logo: PinnedAsset | None = None
     fonts: Mapping[str, FontFile] = Field(default_factory=dict)
 
 
+def kit_logo(kit: BrandKit, logo: PinnedAsset | None) -> PinnedAsset | None:
+    """The pinned file of the kit's ``logo`` asset id, refusing a mark the kit does not own.
+
+    A kit with a ``logo`` needs its pinned file (``logo`` slot, file stem = the asset
+    id); a kit without one gets the plain accent plate, never a supplied mark.
+    """
+    if kit.logo is None:
+        if logo is not None:
+            raise TemplateError(f"brand kit {kit.id!r} has no logo; refusing {logo.path!r}")
+        return None
+    if logo is None:
+        raise TemplateError(f"brand kit {kit.id!r} logo {kit.logo!r} needs its pinned file")
+    if PurePosixPath(logo.path).stem != kit.logo:
+        raise TemplateError(f"logo file {logo.path!r} is not the kit's logo {kit.logo!r}")
+    return logo
+
+
 def _scene(kit: BrandKit, slots: EndCardSlots, pipeline: ColorPipeline) -> list[Call]:
     text = check_copy(kit, slots.cta)
+    logo = kit_logo(kit, slots.logo)
     calls: list[Call] = [
         (
             "object.add_primitive",
@@ -51,21 +72,26 @@ def _scene(kit: BrandKit, slots: EndCardSlots, pipeline: ColorPipeline) -> list[
         ),
         (
             "material.apply_preset",
-            {"object": BACKGROUND, "preset": "matte_plastic", "color": swatch(kit, "ink", 0)},
+            {"object": BACKGROUND, "preset": "matte_plastic", "color": swatch(kit, "ink")},
         ),
         (
             "object.add_primitive",
-            {"kind": "cube", "name": LOGO_PLATE, "location": [0, 0, 0.32], "scale": [0.4, 0.01, 0.2]},
+            {
+                "kind": "cube",
+                "name": LOGO_PLATE,
+                "location": [0, 0, 0.32],
+                "scale": [0.4, 0.01, 0.2],
+            },
         ),
     ]
-    if slots.logo is not None:
+    if logo is not None:
         calls.append(
             (
                 "material.apply_screen",
                 {
                     "object": LOGO_PLATE,
-                    "image": slots.logo.path,
-                    "image_sha256": slots.logo.sha256,
+                    "image": logo.path,
+                    "image_sha256": logo.sha256,
                     "strength": screen_white_strength(pipeline),
                 },
             )
@@ -74,7 +100,7 @@ def _scene(kit: BrandKit, slots: EndCardSlots, pipeline: ColorPipeline) -> list[
         calls.append(
             (
                 "material.apply_preset",
-                {"object": LOGO_PLATE, "preset": "glossy_plastic", "color": swatch(kit, "accent", 2)},
+                {"object": LOGO_PLATE, "preset": "glossy_plastic", "color": swatch(kit, "accent")},
             )
         )
     cta: dict[str, object] = {
