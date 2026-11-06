@@ -16,3 +16,4 @@ export * from "./clock.js";
 export * from "./dsl.js";
 export * from "./framing.js";
 export * from "./layers.js";
+export * from "./cli.js";
