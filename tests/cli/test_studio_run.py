@@ -65,7 +65,9 @@ def test_new_lists_the_stages_with_no_department(home: Path, brief_file: Path) -
     assert result.exit_code == 0, result.output
     assert "  brief: department=strategist" in result.output
     assert "no department registered yet for:" in result.output
-    assert "voiceover" in result.output.split("no department registered yet for:")[1]
+    unregistered = result.output.split("no department registered yet for:")[1]
+    assert "render" in unregistered
+    assert "voiceover" not in unregistered
 
 
 def test_run_builds_brief_and_stops_at_the_brief_human_gate(home: Path, brief_file: Path) -> None:
@@ -104,10 +106,13 @@ def test_approving_each_gate_builds_concept_then_script(
         assert approved.exit_code == 0, approved.output
     # Art direction builds beside the concept (it reads only the brief); style frames
     # read the brief and the art direction, never the script.
+    # Voiceover (#251) reads only the script, so it builds here too; edit has no
+    # department yet and reads the stage before it, so it is reached and fails clearly.
     result = runner.invoke(app, ["studio", "run", "film"])
-    assert result.exit_code == 0, result.output
     assert "executed: script" in result.output
     assert "undeclared kind" not in result.output
+    assert result.exit_code == 1, result.output
+    assert "no department registered for 'edit'" in result.output
 
 
 # ---- template_shots / shots through default_runner (#250) -----------------------
