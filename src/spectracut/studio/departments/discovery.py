@@ -150,3 +150,24 @@ def discovery_nodes(
         ),
         NodeSpec(id=BRIEF, kind=BRIEF, department=Strategist.name, inputs=(INTAKE, PRODUCT)),
     ]
+
+
+def intake_inputs(
+    idea: str, values: Mapping[str, str], sources: Sequence[Mapping[str, str]]
+) -> tuple[dict[str, JsonValue], list[dict[str, str]]]:
+    """Intake ``answers`` and product ``pages`` built from an idea, aspect values and sources.
+
+    ``values`` maps aspect ids (``product``, ``platforms``, ``offer``, ``deadline``)
+    to their resolved text; ``sources`` are ``{ref, text}`` mappings already
+    loaded by the caller, so no department touches the network. The result
+    validates as :class:`IntakeNotes` and feeds :func:`discovery_nodes`.
+    """
+    answers: dict[str, JsonValue] = {
+        "goal": idea,
+        "product": values["product"],
+        "offer": values.get("offer", ""),
+        "deadline": values.get("deadline", ""),
+        "platforms": [p.strip() for p in values["platforms"].split(",") if p.strip()],
+    }
+    pages = [{"url": s["ref"], "text": s["text"]} for s in sources]
+    return answers, pages

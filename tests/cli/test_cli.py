@@ -25,7 +25,14 @@ from spectracut.queue.signing import (
     parse_signed_job,
     verify_job,
 )
-from spectracut.spec.brief import AudienceProfile, Brief, ClaimSource, Persona, ProofPoint
+from spectracut.spec.brief import (
+    AudienceProfile,
+    Brief,
+    ClaimSource,
+    CreativeBrief,
+    Persona,
+    ProofPoint,
+)
 from spectracut.spec.recipe import Recipe, RecipeStep
 from spectracut.studio import (
     NodeStatus,
@@ -395,3 +402,29 @@ def test_mcp_command_is_listed_and_documented() -> None:
     result = runner.invoke(app, ["mcp", "--help"])
     assert result.exit_code == 0
     assert "MCP over stdio" in result.output
+
+
+def test_studio_new_idea_headless_writes_brief_and_assumptions(home: Path, tmp_path: Path) -> None:
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "# AlterLab\n\nAlterLab renders product films from a short idea with agents.\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "studio",
+            "new",
+            "--idea",
+            "launch film for AlterLab",
+            "--source",
+            str(readme),
+            "--headless",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    prod = home / "productions" / "alterlab-launch"
+    assert CreativeBrief.model_validate_json((prod / "brief.json").read_bytes()).assumptions
+    assert "**tone**" in (prod / "assumptions.md").read_text(encoding="utf-8")
+    both = runner.invoke(app, ["studio", "new", "x.json", "--idea", "i"])
+    assert both.exit_code == 2 and "exactly one" in both.output
