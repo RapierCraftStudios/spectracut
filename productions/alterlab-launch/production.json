@@ -1,0 +1,319 @@
+{
+  "id": "alterlab-launch",
+  "title": "AlterLab SaaS launch film",
+  "profile": "standard",
+  "owner_gates": [
+    "brief",
+    "style-frames",
+    "animatic",
+    "delivery"
+  ],
+  "external_usage": {
+    "ai_metric_prefixes": [
+      "claude_",
+      "chatgpt_",
+      "codex_"
+    ],
+    "elevenlabs": "voiceover"
+  },
+  "nodes": [
+    {
+      "id": "brief",
+      "kind": "brief",
+      "department": "strategist",
+      "inputs": [],
+      "params": {
+        "product": "AlterLab",
+        "goal": "SaaS launch film"
+      }
+    },
+    {
+      "id": "concept",
+      "kind": "concept",
+      "department": "writer",
+      "inputs": [
+        "brief"
+      ],
+      "params": {}
+    },
+    {
+      "id": "script",
+      "kind": "script",
+      "department": "writer",
+      "inputs": [
+        "concept"
+      ],
+      "params": {}
+    },
+    {
+      "id": "style-frames",
+      "kind": "style_frames",
+      "department": "art",
+      "inputs": [
+        "script"
+      ],
+      "params": {}
+    },
+    {
+      "id": "storyboard",
+      "kind": "storyboard",
+      "department": "art",
+      "inputs": [
+        "script",
+        "style-frames"
+      ],
+      "params": {}
+    },
+    {
+      "id": "animatic",
+      "kind": "animatic",
+      "department": "art",
+      "inputs": [
+        "storyboard"
+      ],
+      "params": {}
+    },
+    {
+      "id": "shot-hook",
+      "kind": "shots",
+      "department": "layout",
+      "inputs": [
+        "animatic"
+      ],
+      "params": {
+        "shot_id": "shot-hook"
+      }
+    },
+    {
+      "id": "shot-tour",
+      "kind": "shots",
+      "department": "layout",
+      "inputs": [
+        "animatic"
+      ],
+      "params": {
+        "shot_id": "shot-tour"
+      }
+    },
+    {
+      "id": "shot-cta",
+      "kind": "shots",
+      "department": "layout",
+      "inputs": [
+        "animatic"
+      ],
+      "params": {
+        "shot_id": "shot-cta"
+      }
+    },
+    {
+      "id": "grade",
+      "kind": "grade",
+      "department": "finishing",
+      "inputs": [
+        "shot-hook",
+        "shot-tour",
+        "shot-cta"
+      ],
+      "params": {
+        "look": "clean-ui"
+      }
+    },
+    {
+      "id": "vo-01",
+      "kind": "voiceover",
+      "department": "voice",
+      "inputs": [
+        "script"
+      ],
+      "params": {
+        "text": "Meet AlterLab."
+      }
+    },
+    {
+      "id": "vo-02",
+      "kind": "voiceover",
+      "department": "voice",
+      "inputs": [
+        "script"
+      ],
+      "params": {
+        "text": "Every page, one API."
+      }
+    },
+    {
+      "id": "vo-03",
+      "kind": "voiceover",
+      "department": "voice",
+      "inputs": [
+        "script"
+      ],
+      "params": {
+        "text": "Start free today."
+      }
+    },
+    {
+      "id": "sound-design",
+      "kind": "sound_design",
+      "department": "sound",
+      "inputs": [
+        "animatic"
+      ],
+      "params": {}
+    },
+    {
+      "id": "edit",
+      "kind": "edit",
+      "department": "editor",
+      "inputs": [
+        "grade",
+        "vo-01",
+        "vo-02",
+        "vo-03"
+      ],
+      "params": {}
+    },
+    {
+      "id": "mix",
+      "kind": "mix",
+      "department": "sound",
+      "inputs": [
+        "edit",
+        "sound-design",
+        "vo-01",
+        "vo-02",
+        "vo-03"
+      ],
+      "params": {}
+    },
+    {
+      "id": "render",
+      "kind": "render",
+      "department": "lighter",
+      "inputs": [
+        "edit",
+        "mix"
+      ],
+      "params": {}
+    },
+    {
+      "id": "qa",
+      "kind": "qa",
+      "department": "qa",
+      "inputs": [
+        "render"
+      ],
+      "params": {}
+    },
+    {
+      "id": "audio-qa",
+      "kind": "audio_qa",
+      "department": "qa",
+      "inputs": [
+        "mix"
+      ],
+      "params": {}
+    },
+    {
+      "id": "delivery",
+      "kind": "delivery",
+      "department": "producer",
+      "inputs": [
+        "render",
+        "qa",
+        "audio-qa"
+      ],
+      "params": {}
+    }
+  ],
+  "cutdowns": [
+    {
+      "id": "launch-15s-16x9",
+      "length_s": 15,
+      "aspect": "16:9",
+      "platform": "youtube",
+      "shots": [
+        "shot-hook",
+        "shot-tour",
+        "shot-cta"
+      ]
+    },
+    {
+      "id": "launch-15s-9x16",
+      "length_s": 15,
+      "aspect": "9:16",
+      "platform": "tiktok",
+      "shots": [
+        "shot-hook",
+        "shot-tour",
+        "shot-cta"
+      ]
+    },
+    {
+      "id": "launch-15s-1x1",
+      "length_s": 15,
+      "aspect": "1:1",
+      "platform": "meta_feed",
+      "shots": [
+        "shot-hook",
+        "shot-tour",
+        "shot-cta"
+      ]
+    },
+    {
+      "id": "launch-15s-4x5",
+      "length_s": 15,
+      "aspect": "4:5",
+      "platform": "meta_feed",
+      "shots": [
+        "shot-hook",
+        "shot-tour",
+        "shot-cta"
+      ]
+    },
+    {
+      "id": "launch-30s-16x9",
+      "length_s": 30,
+      "aspect": "16:9",
+      "platform": "youtube",
+      "shots": [
+        "shot-hook",
+        "shot-tour",
+        "shot-cta"
+      ]
+    },
+    {
+      "id": "launch-30s-9x16",
+      "length_s": 30,
+      "aspect": "9:16",
+      "platform": "tiktok",
+      "shots": [
+        "shot-hook",
+        "shot-tour",
+        "shot-cta"
+      ]
+    },
+    {
+      "id": "launch-30s-1x1",
+      "length_s": 30,
+      "aspect": "1:1",
+      "platform": "meta_feed",
+      "shots": [
+        "shot-hook",
+        "shot-tour",
+        "shot-cta"
+      ]
+    },
+    {
+      "id": "launch-30s-4x5",
+      "length_s": 30,
+      "aspect": "4:5",
+      "platform": "meta_feed",
+      "shots": [
+        "shot-hook",
+        "shot-tour",
+        "shot-cta"
+      ]
+    }
+  ]
+}
