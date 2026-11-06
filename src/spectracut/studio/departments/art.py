@@ -25,17 +25,21 @@
 
 from __future__ import annotations
 
+import wave
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, JsonValue
 
 from spectracut.edit.timeline import Edit
+from spectracut.providers.local.registry import get_provider, mock_mode
+from spectracut.providers.local.runtime import ModelRuntime
+from spectracut.providers.local.tts import LocalTts
 from spectracut.spec.brand import BrandKit
 from spectracut.spec.brief import CreativeBrief
 from spectracut.storyboard.animatic import TempAudio, build_animatic, check_locked_timing
-from spectracut.storyboard.explore import ExploreProvider, explore
+from spectracut.storyboard.explore import ExploreProvider, choose_exploration_provider, explore
 from spectracut.storyboard.models import (
     ArtDirection,
     ImageRecord,
@@ -220,8 +224,13 @@ ART_DEPARTMENTS: tuple[type[Department], ...] = (
     AnimaticEditor,
 )
 
-StyleFrameRenderer = Callable[[StyleFrame, ArtDirection, Path], ImageRecord]
-"""Renders one style frame to ``path`` at the final tier (the farm, in production)."""
+StyleFrameRenderer = Callable[
+    [StyleFrame, ArtDirection, Path], ImageRecord | tuple[ImageRecord, Usage]
+]
+"""Renders one style frame to ``path`` at the final tier (the farm, in production).
+
+It may also return the :class:`Usage` the render consumed (GPU minutes) for the ledger.
+"""
 VoiceFn = Callable[[str, Path], TempAudio]
 """Local temp VO: ``voice(text, path) -> TempAudio``."""
 
@@ -246,6 +255,41 @@ def build_brand_kit(ctx: RunContext) -> RunResult:
         )
     kit = BrandKit.model_validate(raw)
     return RunResult(output=kit.model_dump(mode="json"), usage=Usage())
+
+
+def default_explorer(
+    config: Mapping[str, Any] | None = None, *, runtime: ModelRuntime | None = None
+) -> ExploreProvider | None:
+    """The concept-image provider: the mock in mock mode, else the local ``image`` model.
+
+    The local model needs a ``runtime`` (the control plane on a render host); with
+    none there is no explorer and style frames render from the art direction alone.
+    ``config`` may opt in to ChatGPT images (``choose_exploration_provider``).
+    """
+    if mock_mode():
+        return get_provider("image")
+    if runtime is None:
+        return None
+    return choose_exploration_provider(config, local=get_provider("image", runtime))
+
+
+def _wav_seconds(path: Path) -> float:
+    with wave.open(str(path), "rb") as wav:
+        rate = wav.getframerate()
+        return wav.getnframes() / rate if rate else 0.0
+
+
+def default_voice(*, runtime: ModelRuntime | None = None) -> VoiceFn | None:
+    """Local temp VO through :class:`LocalTts` (the mock in mock mode), else ``None``."""
+    if not mock_mode() and runtime is None:
+        return None
+    tts = LocalTts(runtime=runtime)
+
+    def voice(text: str, path: Path) -> TempAudio:
+        out = tts.synthesize(text, path)
+        return TempAudio(media_ref=str(out), duration_s=_wav_seconds(out))
+
+    return voice
 
 
 def preproduction_nodes(
@@ -299,8 +343,10 @@ class PreproductionRunner:
     """Wraps a :class:`~spectracut.studio.runner.DepartmentRunner` for the art nodes.
 
     ``style_frames`` outputs gain a concept image (``explorer``) and a final-tier
-    render (``renderer``); ``animatic`` is built in code from the script and boards,
-    and ``brand_kit`` from its param (:func:`build_brand_kit`). Other kinds pass
+    render (``renderer``), whose GPU minutes go to the node's usage; ``animatic`` is
+    built in code from the script and boards, and ``brand_kit`` from its param
+    (:func:`build_brand_kit`). With no ``explorer`` frames render without a concept;
+    with no ``voice`` the animatic has no temp VO. Other kinds pass
     through to ``inner``.
     """
 
@@ -309,9 +355,9 @@ class PreproductionRunner:
         inner: Runner,
         departments: Mapping[str, type[Department]],
         *,
-        explorer: ExploreProvider,
+        explorer: ExploreProvider | None,
         renderer: StyleFrameRenderer,
-        voice: VoiceFn,
+        voice: VoiceFn | None,
         workdir: Path,
         music: TempAudio | None = None,
     ) -> None:
@@ -339,28 +385,49 @@ class PreproductionRunner:
         art = ArtDirection.model_validate(ctx.inputs[ART_DIRECTION])
         frames = StyleFrames.model_validate(planned.output)
         done: list[StyleFrame] = []
+        gpu = 0.0
+        explored = 0
         for frame in frames.frames:
-            concept = explore(self.explorer, frame.prompt, self.workdir / f"{frame.id}-concept.png")
-            render = self.renderer(
+            concept = None
+            if self.explorer is not None:
+                path = self.workdir / f"{frame.id}-concept.png"
+                concept = explore(self.explorer, frame.prompt, path)
+                explored += 1
+            rendered = self.renderer(
                 frame.model_copy(update={"concept": concept}), art, self.workdir / f"{frame.id}.png"
             )
+            if isinstance(rendered, tuple):
+                render, used = rendered
+                gpu += used.gpu_minutes
+            else:
+                render = rendered
             done.append(
                 frame.model_copy(update={"concept": concept, "render": render, "tier": "final"})
             )
         dept = self.departments[ctx.spec.department]
         output = dept.validate_output(ctx.spec.id, StyleFrames(frames=done).model_dump(mode="json"))
-        ai = {**planned.usage.ai_usage, "image_exploration_requests": len(done)}
-        return RunResult(output=output, usage=planned.usage.model_copy(update={"ai_usage": ai}))
+        ai = dict(planned.usage.ai_usage)
+        if explored:
+            ai["image_exploration_requests"] = explored
+        usage = planned.usage.model_copy(
+            update={"ai_usage": ai, "gpu_minutes": planned.usage.gpu_minutes + gpu}
+        )
+        return RunResult(output=output, usage=usage)
 
     def _animatic(self, ctx: RunContext) -> RunResult:
         dept = self.departments[ctx.spec.department]
         script = Script.model_validate(ctx.inputs[SCRIPT])
         storyboard = Storyboard.model_validate(ctx.inputs[STORYBOARD])
-        vo = {
-            line.beat: self.voice(line.vo, self.workdir / f"vo-{n}.wav")
-            for n, line in enumerate(script.lines)
-            if line.vo
-        }
+        voice = self.voice
+        vo = (
+            {
+                line.beat: voice(line.vo, self.workdir / f"vo-{n}.wav")
+                for n, line in enumerate(script.lines)
+                if line.vo
+            }
+            if voice is not None
+            else {}
+        )
         edit = build_animatic(ctx.spec.id, storyboard, vo, self.music)
         problems = check_locked_timing(edit, storyboard)
         if problems:

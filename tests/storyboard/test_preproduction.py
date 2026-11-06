@@ -45,6 +45,7 @@ from spectracut.studio.departments.art import (
     preproduction_nodes,
 )
 from spectracut.studio.graph import RunContext, RunResult
+from spectracut.studio.ledger import Usage
 from spectracut.studio.node import Tier
 
 SCRIPT: dict[str, Any] = {
@@ -251,3 +252,64 @@ def test_exploration_runs_on_the_local_provider(tmp_path: Path) -> None:
     graph.run(runner)
     frames = StyleFrames.model_validate(graph._pending["style_frames"][1].output)
     assert {f.concept.provider for f in frames.frames if f.concept} == {"mock-image"}
+
+
+# ---- the farm renderer's GPU minutes; optional explorer and voice (#271) -----
+
+
+class _UsageRenderer:
+    """Returns the render with the GPU minutes it used, and takes frames with no concept."""
+
+    def __init__(self) -> None:
+        self.concepts: list[ImageRecord | None] = []
+
+    def __call__(
+        self, frame: StyleFrame, art: ArtDirection, path: Path
+    ) -> tuple[ImageRecord, Usage]:
+        self.concepts.append(frame.concept)
+        MockImageProvider().generate(f"render {frame.id}", path)
+        return record_image(path, "blender-farm"), Usage(gpu_minutes=2.0)
+
+
+def _runner(tmp: Path, *, explorer: Any, renderer: Any, voice: Any) -> Any:
+    inner = DepartmentRunner(ART_DEPARTMENTS, MockTextProvider(respond=_respond))
+    return PreproductionRunner(
+        inner,
+        {d.name: d for d in ART_DEPARTMENTS},
+        explorer=explorer,
+        renderer=renderer,
+        voice=voice,
+        workdir=tmp / "work",
+    )
+
+
+def _ctx(node: str, inputs: dict[str, Any]) -> RunContext:
+    spec = {n.id: n for n in preproduction_nodes()}[node]
+    return RunContext(spec=spec, tier=Tier.FINAL, key="k", inputs=inputs, attempt=1)
+
+
+def test_style_frames_sum_the_renderers_gpu_minutes_into_the_node_usage(tmp_path: Path) -> None:
+    runner = _runner(
+        tmp_path, explorer=MockLocalProvider("image"), renderer=_UsageRenderer(), voice=_voice
+    )
+    result = runner(_ctx("style_frames", {"brief": BRIEF_OUT, "art_direction": ART}))
+    assert result.usage.gpu_minutes == 2.0 * len(FRAMES["frames"])
+    assert result.usage.ai_usage["image_exploration_requests"] == len(FRAMES["frames"])
+
+
+def test_style_frames_with_no_explorer_render_without_a_concept(tmp_path: Path) -> None:
+    renderer = _UsageRenderer()
+    runner = _runner(tmp_path, explorer=None, renderer=renderer, voice=_voice)
+    result = runner(_ctx("style_frames", {"brief": BRIEF_OUT, "art_direction": ART}))
+    frames = StyleFrames.model_validate(result.output)
+    assert renderer.concepts == [None, None]
+    assert all(f.concept is None and f.render is not None for f in frames.frames)
+    assert "image_exploration_requests" not in result.usage.ai_usage
+
+
+def test_animatic_with_no_voice_has_no_vo_clips(tmp_path: Path) -> None:
+    runner = _runner(tmp_path, explorer=None, renderer=_UsageRenderer(), voice=None)
+    result = runner(_ctx("animatic", {"script": SCRIPT, "storyboard": BOARDS}))
+    edit = Edit.model_validate(result.output)
+    assert check_locked_timing(edit, Storyboard.model_validate(BOARDS)) == []
+    assert all(not t.clips() for t in edit.tracks if t.id == "vo")
