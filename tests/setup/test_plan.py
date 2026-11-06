@@ -21,6 +21,7 @@ import spectracut
 from spectracut.cli import setup as setup_cli
 from spectracut.cli.app import app
 from spectracut.queue.flamenco import Worker, WorkerTag
+from spectracut.setup import plan as plan_mod
 from spectracut.setup.manifest import HostFacts, Step, load_manifest
 from spectracut.setup.plan import (
     LINUX_PROBE,
@@ -31,6 +32,7 @@ from spectracut.setup.plan import (
     CommandRunner,
     SetupError,
     SetupState,
+    StepTimeout,
     apply_plan,
     build_plan,
     control_probe,
@@ -56,7 +58,7 @@ from spectracut.setup.storage import (
     wifi_warnings,
     windows_storage_source,
 )
-from spectracut.setup.wheels import LocalWheels
+from spectracut.setup.wheels import COPY_MIN_RATE, LocalWheels, copy_timeout, wheel_copy_steps
 
 CRED = Credential("spectracut-share", "pw-secret-value")
 FACTS = {
@@ -883,3 +885,42 @@ def test_command_runner_probes_control_plane_files_only_on_control(
     assert "spectracut-shot.js" in scripts[CONTROL]
     runner.probe("rig")
     assert scripts["rig"] == LINUX_PROBE
+
+
+class FailingRunner(FakeRunner):
+    def __init__(self, host: str) -> None:
+        super().__init__()
+        self.host = host
+
+    def run(self, step: Step) -> str | None:
+        if step.host == self.host:
+            raise StepTimeout(f"{step.host}: {step.summary} timed out after 120 s")
+        return super().run(step)
+
+
+def test_failed_step_exits_nonzero_with_per_host_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cli_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(setup_cli, "CommandRunner", lambda: FailingRunner(CONTROL))
+    real = plan_mod.apply_plan
+    monkeypatch.setattr(
+        setup_cli, "apply_plan", lambda *a, **k: real(*a, **k, sleep=lambda _s: None)
+    )
+    res = CliRunner().invoke(app, ["setup"])
+    assert res.exit_code == 2, res.output
+    assert f"error: {CONTROL}:" in res.output and "timed out" in res.output
+    assert "failed steps:" in res.output
+    assert re.search(rf"^  {CONTROL}: .+$", res.output, re.MULTILINE), res.output
+
+
+def test_copy_timeout_scales_to_chunk_size_for_a_slow_link() -> None:
+    facts = FACTS["legion"]
+    copies = [s for s in wheel_copy_steps(facts, WHEELS) if s.stdin is not None]
+    assert copies
+    for step in copies:
+        assert step.timeout == copy_timeout(len(step.stdin or ""))
+        assert step.timeout is not None and step.timeout >= 120
+        # a 2 MB/s link moves the chunk far inside its timeout
+        assert len(step.stdin or "") / (2 * 1024 * 1024) < step.timeout
+    assert copy_timeout(10 * COPY_MIN_RATE) == copy_timeout(0) + 10

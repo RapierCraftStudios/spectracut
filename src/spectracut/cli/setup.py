@@ -191,7 +191,10 @@ def setup_cmd(
         if dry_run or not plan.steps:
             return
     except (StorageError, SetupError, ValueError, OSError) as exc:
-        raise _fail(str(exc)) from exc
+        failure = _fail(str(exc))
+        if isinstance(exc, SetupError) and exc.host is not None:
+            typer.echo(redact(f"failed steps:\n  {exc.host}: {exc.summary}"), err=True)
+        raise failure from exc
     typer.echo(f"set {set_id} applied; storage on {plan.storage.host}")
 
 

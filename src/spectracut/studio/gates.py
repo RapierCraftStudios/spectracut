@@ -49,6 +49,8 @@ class Finding(StrictModel):
     frame: int | None = Field(default=None, ge=0)
     confirmed: bool = False
     """A HIGH finding a second independent check upheld; only these block a node."""
+    key: Slug | None = None
+    """Stable slug for the problem; recurrence across productions feeds the failure corpus."""
     reviewers: list[Slug] = Field(default_factory=list)
     """Every reviewer that raised this finding, once duplicates are merged."""
 
