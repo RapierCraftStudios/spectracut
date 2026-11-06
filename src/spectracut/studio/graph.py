@@ -34,13 +34,23 @@ from spectracut.studio.facts import (
     FactsDraft,
     FactsRecord,
     FactsStore,
-    Finding,
     PreserveRow,
     RejectedApproach,
     check_preserve,
     touched_ids,
 )
-from spectracut.studio.gates import Critic, CriticVerdict, GateDecision, GateMode, GatePolicy
+from spectracut.studio.facts import (
+    Finding as FactFinding,
+)
+from spectracut.studio.gates import (
+    Critic,
+    CriticVerdict,
+    Finding,
+    GateDecision,
+    GateMode,
+    GatePolicy,
+    Severity,
+)
 from spectracut.studio.ledger import Ledger, LedgerEntry, Outcome, Usage, usage_of
 from spectracut.studio.node import NEEDS_BUILD, NodeSpec, NodeState, NodeStatus, Tier, node_key
 from spectracut.studio.profiles import QualityProfile
@@ -92,6 +102,9 @@ class RunResult(StrictModel):
 
 
 Runner = Callable[[RunContext], RunResult]
+
+Escalate = Callable[[NodeSpec, Tier], Tier | None]
+"""``escalate(spec, tier) -> next tier``: one more build at that tier before a rejection stands."""
 
 Hold = Callable[[NodeSpec], str | None]
 """``hold(spec) -> reason``: a reason keeps a ready node from building this run."""
@@ -188,6 +201,7 @@ class ProductionGraph:
         self._decisions: dict[str, GateDecision] = {}
         self._notes: dict[str, tuple[RevisionNote, ...]] = {}
         self._lock = threading.RLock()
+        self._escalate: Escalate | None = None
 
     # ---- persistence -------------------------------------------------------
 
@@ -439,6 +453,7 @@ class ProductionGraph:
         critic: Critic | None = None,
         max_workers: int = 1,
         hold: Hold | None = None,
+        escalate: Escalate | None = None,
     ) -> RunReport:
         """Build every pending or dirty node whose inputs are clean, in dependency order.
 
@@ -448,10 +463,12 @@ class ProductionGraph:
 
         ``hold`` is asked about each ready node that is not reused from the cache;
         a returned reason keeps that node unbuilt (listed in ``report.held``) and
-        its dependants blocked.
+        its dependants blocked. ``escalate`` may name a higher tier for a node the
+        Critic rejected after its revision budget; it is rebuilt there once.
         """
         if max_workers < 1:
             raise ValueError(f"max_workers must be at least 1, got {max_workers}")
+        self._escalate = escalate
         if max_workers > 1:
             return self._run_parallel(runner, critic, max_workers, hold)
         report = RunReport()
@@ -570,7 +587,30 @@ class ProductionGraph:
         assert output_hash is not None, node_id
         return output_hash
 
+    def add_decisions(self, node_id: str, decisions: Iterable[str]) -> None:
+        """Append supervisor ``decisions`` to the node's state."""
+        extra = tuple(decisions)
+        with self._lock:
+            state = self._states[node_id]
+            self._states[node_id] = state.model_copy(
+                update={"decisions": (*state.decisions, *extra)}
+            )
+
     def _build(
+        self, spec: NodeSpec, tier: Tier, key: str, runner: Runner, critic: Critic | None
+    ) -> NodeStatus:
+        status = self._build_at(spec, tier, key, runner, critic)
+        escalate = self._escalate
+        if status is not NodeStatus.REJECTED or escalate is None:
+            return status
+        higher = escalate(spec, tier)
+        if higher is None:
+            return status
+        with self._lock:
+            hashes = {i: self._require_hash(i) for i in spec.inputs}
+        return self._build_at(spec, higher, node_key(spec, hashes, higher), runner, critic)
+
+    def _build_at(
         self, spec: NodeSpec, tier: Tier, key: str, runner: Runner, critic: Critic | None
     ) -> NodeStatus:
         mode = self.gate_for(spec)
@@ -585,7 +625,10 @@ class ProductionGraph:
             else ()
         )
         feedback: CriticVerdict | None = None
-        for attempt in range(1, max_attempts + 1):
+        polished = False
+        attempt = 0
+        while attempt < max_attempts:
+            attempt += 1
             with self._lock:
                 self._states[spec.id] = NodeState(
                     status=NodeStatus.RUNNING, tier=tier, key=key, attempts=attempt
@@ -627,8 +670,12 @@ class ProductionGraph:
                     result,
                     accepted,
                     verdict,
+                    polish=reviewed is not None and not polished,
                 )
             if status is None:
+                if verdict is not None and verdict.passed:
+                    polished = True  # one bounded polish pass, on top of the revision budget
+                    max_attempts += 1
                 feedback = verdict
                 continue
             return status
@@ -647,9 +694,21 @@ class ProductionGraph:
         result: RunResult,
         accepted: _Accepted,
         verdict: CriticVerdict | None,
+        *,
+        polish: bool = False,
     ) -> NodeStatus | None:
-        """Record one attempt's gate outcome; ``None`` means revise and try again."""
+        """Record one attempt's gate outcome; ``None`` means revise and try again.
+
+        Only a failed verdict (a confirmed HIGH finding) rejects. A passing verdict
+        with MEDIUM findings asks for one polish revision when ``polish`` allows it;
+        the findings still on an accepted output are pinned to the node as notes.
+        """
         usage = _with_critic_usage(result.usage, verdict)
+        if verdict is not None and verdict.passed and polish and _has_medium(verdict):
+            self._record(spec, tier, key, attempt, started_at, start, usage, "revise")
+            return None
+        if verdict is not None and verdict.passed:
+            self._note_findings(spec.id, verdict)
         if verdict is not None and not verdict.passed:
             last = attempt == max_attempts
             self._revised.setdefault(spec.id, []).append(
@@ -686,17 +745,39 @@ class ProductionGraph:
         if self.facts is None:
             return
         draft = result.facts or FactsDraft()
-        findings = verdict.findings if verdict is not None else ()
-        example = verdict.comment if verdict is not None else ""
+        findings = verdict.findings if verdict is not None else []
         self.facts.write(
             FactsRecord(
                 production_id=self.production_id,
                 node_id=spec.id,
                 decisions=draft.decisions,
                 rejected=(*draft.rejected, *revised),
-                findings=tuple(Finding(key=k, example=example) for k in findings),
+                findings=tuple(
+                    FactFinding(key=f.key or f.reviewer, example=f.text) for f in findings
+                ),
             )
         )
+
+    def _note_findings(self, node_id: str, verdict: CriticVerdict) -> None:
+        """Record the MEDIUM and LOW findings left on an accepted output as node notes."""
+        seen = {n.text for n in self._notes.get(node_id, ())}
+        for f in verdict.findings:
+            if f.severity is Severity.HIGH:
+                continue
+            text = f"[{f.severity.value}] {', '.join(f.reviewers or [f.reviewer])}: {f.text}"
+            if text[:4000] in seen:
+                continue
+            seen.add(text[:4000])
+            self._notes[node_id] = (
+                *self._notes.get(node_id, ()),
+                RevisionNote(
+                    node_id=node_id,
+                    frame=f.frame,
+                    text=text[:4000],
+                    author="critic",
+                    created_at=self._now(),
+                ),
+            )
 
     def _set(
         self,
@@ -752,9 +833,22 @@ def _with_conformance(
         update={
             "passed": False,
             "comment": f"{verdict.comment} [preserve] {note}".strip(),
-            "findings": (*verdict.findings, "preserve-violation"),
+            "findings": [
+                *verdict.findings,
+                Finding(
+                    reviewer="preserve",
+                    key="preserve-violation",
+                    severity=Severity.HIGH,
+                    confirmed=True,
+                    text=note[:4000],
+                ),
+            ],
         }
     )
+
+
+def _has_medium(verdict: CriticVerdict) -> bool:
+    return any(f.severity is Severity.MEDIUM for f in verdict.findings)
 
 
 def _with_critic_usage(usage: Usage, verdict: CriticVerdict | None) -> Usage:

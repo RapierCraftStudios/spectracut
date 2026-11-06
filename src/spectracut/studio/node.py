@@ -93,6 +93,8 @@ class NodeState(StrictModel):
     attempts: int = Field(default=0, ge=0)
     """Department runs in the last build (1 plus revisions used)."""
     error: str | None = None
+    decisions: tuple[str, ...] = ()
+    """Supervisor decisions (retries, breaker, escalation) for the run report."""
 
 
 def node_key(spec: NodeSpec, input_hashes: Mapping[str, str], tier: Tier) -> str:

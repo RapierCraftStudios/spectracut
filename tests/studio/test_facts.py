@@ -25,6 +25,7 @@ from spectracut.studio.facts import (
     RejectedApproach,
     propose_failures,
 )
+from spectracut.studio.gates import Finding, Severity
 
 
 def _graph(
@@ -98,7 +99,9 @@ def test_anchored_decision_reaches_touching_node_and_gate_checks_it() -> None:
     assert seen["good"].preserve == ()
     decision = g.decision("bad")
     assert decision is not None and decision.critic is not None
-    assert not decision.critic.passed and "preserve-violation" in decision.critic.findings
+    assert not decision.critic.passed and any(
+        f.key == "preserve-violation" for f in decision.critic.findings
+    )
 
 
 def test_recurring_finding_proposed_at_three_productions_not_two(tmp_path: Path) -> None:
@@ -108,7 +111,16 @@ def test_recurring_finding_proposed_at_three_productions_not_two(tmp_path: Path)
         g.run(
             lambda _c: RunResult(output=pid),
             critic=lambda _s, _o: CriticVerdict(
-                passed=True, comment=f"flat light in {pid}", findings=("flat-light",)
+                passed=True,
+                comment=f"flat light in {pid}",
+                findings=[
+                    Finding(
+                        reviewer="critic",
+                        key="flat-light",
+                        severity=Severity.LOW,
+                        text=f"flat light in {pid}",
+                    )
+                ],
             ),
         )
 

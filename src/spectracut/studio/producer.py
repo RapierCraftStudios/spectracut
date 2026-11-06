@@ -51,6 +51,7 @@ from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunRepo
 from spectracut.studio.node import NodeSpec, Tier
 from spectracut.studio.profiles import QualityProfile
 from spectracut.studio.runner import CapacityLimits
+from spectracut.studio.supervisor import Supervisor, SupervisorHold
 
 AVG_SHOT_S = 4.0
 """Average shot length used to plan a shot list when there is no script yet."""
@@ -118,6 +119,8 @@ class ProducerReport:
     run: RunReport
     estimate: ProductionEstimate
     needs_approval: list[BudgetHold] = field(default_factory=list)
+    supervisor_hold: SupervisorHold | None = None
+    """The tripped breaker, when the supervisor stopped new admissions."""
 
 
 def _metric(c: CostEstimate, name: str) -> float:
@@ -295,8 +298,14 @@ class Producer:
         approved: Iterable[str] = (),
         critic: Critic | None = None,
         max_workers: int = 1,
+        supervisor: Supervisor | None = None,
     ) -> ProducerReport:
-        """Run ``graph``, holding any node that could push usage past a cap."""
+        """Run ``graph``, holding any node that could push usage past a cap.
+
+        With a ``supervisor``, transient failures retry with backoff, a burst of
+        permanent failures stops new admissions, and a node out of revisions is
+        retried once at the next tier; its decisions are recorded on the node.
+        """
         est = self.estimate(graph)
         limits = caps.limits() if caps is not None else {}
         approvals = frozenset(approved)
@@ -312,6 +321,8 @@ class Producer:
         lock = threading.Lock()
 
         def hold(spec: NodeSpec) -> str | None:
+            if supervisor is not None and (reason := supervisor.hold(spec)) is not None:
+                return reason
             try:
                 cost = est.stage(spec.id).cost
             except KeyError:
@@ -330,9 +341,27 @@ class Producer:
                     spent[metric] += _metric(cost, metric)
             return None
 
-        report = graph.run(runner, critic=critic, max_workers=max_workers, hold=hold)
+        if supervisor is None:
+            report = graph.run(runner, critic=critic, max_workers=max_workers, hold=hold)
+        else:
+            mark = {n: len(d) for n, d in supervisor.decisions.items()}
+            report = graph.run(
+                supervisor.wrap(runner),
+                critic=critic,
+                max_workers=max_workers,
+                hold=hold,
+                escalate=supervisor.escalate,
+            )
+            for nid, log in supervisor.decisions.items():
+                if nid in graph.order() and len(log) > mark.get(nid, 0):
+                    graph.add_decisions(nid, log[mark.get(nid, 0) :])
         held = [holds[n] for n in report.held if n in holds]
-        return ProducerReport(run=report, estimate=self.estimate(graph), needs_approval=held)
+        return ProducerReport(
+            run=report,
+            estimate=self.estimate(graph),
+            needs_approval=held,
+            supervisor_hold=supervisor.hold_record() if supervisor is not None else None,
+        )
 
 
 def _assets(brief: Brief | CreativeBrief, profile: QualityProfile) -> tuple[PlannedAsset, ...]:

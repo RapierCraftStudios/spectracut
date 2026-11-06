@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -17,6 +17,7 @@ from spectracut.queue.executors.flamenco import FlamencoApi
 from spectracut.spec.brand import BrandKit, load_brand_kit
 from spectracut.spec.brief import Brief, CreativeBrief
 from spectracut.studio import device_shot as ds
+from spectracut.studio import intake
 from spectracut.studio.department import Department
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
@@ -24,7 +25,7 @@ from spectracut.studio.node import NodeSpec
 from spectracut.studio.producer import BudgetCaps, Producer, scheduled
 from spectracut.studio.profiles import available_profiles, load_profile
 from spectracut.studio.runner import DepartmentRunner
-from spectracut.studio.store import ProductionError, ProductionStore
+from spectracut.studio.store import ProductionError, ProductionStore, write_atomic
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -165,7 +166,19 @@ def _save(store: ProductionStore, production_id: str, graph: ProductionGraph) ->
 
 @studio_app.command("new")
 def new(
-    brief_file: Annotated[Path, typer.Argument(metavar="BRIEF", help="Brief JSON file.")],
+    brief_file: Annotated[
+        Path | None, typer.Argument(metavar="[BRIEF]", help="Brief JSON file (or use --idea).")
+    ] = None,
+    idea: Annotated[
+        str | None, typer.Option("--idea", help="A vague idea; the brief is generated from it.")
+    ] = None,
+    source: Annotated[
+        list[str] | None,
+        typer.Option("--source", help="README, file path or URL to source claims from."),
+    ] = None,
+    headless: Annotated[
+        bool, typer.Option("--headless", help="With --idea: take every recommended option.")
+    ] = False,
     profile: Annotated[
         str, typer.Option("--profile", help=f"Quality profile: {', '.join(available_profiles())}.")
     ] = "standard",
@@ -196,7 +209,13 @@ def new(
 
     Over-cap nodes are held by ``studio run`` until ``studio approve-budget``.
     """
-    brief = _load_brief(brief_file)
+    if (brief_file is None) == (idea is None):
+        raise _fail("give exactly one of BRIEF or --idea")
+    if brief_file is not None:
+        brief = _load_brief(brief_file)
+    else:
+        assert idea is not None
+        brief = _autofill(idea, source or [], headless, brand_kit)
     try:
         quality = load_profile(profile)
     except ValueError as exc:
@@ -218,11 +237,38 @@ def new(
             specs = list(Producer(DEPARTMENTS).breakdown(brief, quality, duration_s=duration).nodes)
         graph.add_nodes(specs)
         path = store.create(pid, brief, graph, force=force, caps=caps if caps.limits() else None)
-    except (ProductionError, ValueError) as exc:
+        if isinstance(brief, CreativeBrief) and idea is not None:
+            write_atomic(path / "assumptions.md", intake.assumptions_markdown(brief).encode())
+    except (ProductionError, ValueError, OSError) as exc:
         raise _fail(str(exc)) from exc
     typer.echo(f"production {pid} created at {path}")
     for line in estimate(graph, DEPARTMENTS).lines():
         typer.echo(line)
+
+
+def _ask_doubts(batch: Sequence[intake.Aspect]) -> list[int]:
+    answers: list[int] = []
+    for aspect in batch:
+        typer.echo(aspect.question)
+        for i, option in enumerate(aspect.options, 1):
+            star = " (recommended)" if i - 1 == aspect.recommended else ""
+            typer.echo(f"  {i}. {option}{star}")
+        answers.append(int(typer.prompt("choice", default=aspect.recommended + 1)) - 1)
+    return answers
+
+
+def _autofill(idea: str, refs: list[str], headless: bool, kit_path: Path | None) -> CreativeBrief:
+    try:
+        words = load_brand_kit(kit_path).forbidden_words if kit_path else []
+        return intake.build_brief(
+            idea,
+            intake.load_sources(refs),
+            headless=headless,
+            ask=None if headless else _ask_doubts,
+            forbidden_words=words,
+        )
+    except ValueError as exc:  # IntakeError is a ValueError
+        raise _fail(str(exc)) from exc
 
 
 def _device_shot_params(kit_path: Path) -> dict[str, JsonValue]:

@@ -75,6 +75,14 @@ class Brief(StrictModel):
         return _check_proof_sources(v, info)
 
 
+class Assumption(StrictModel):
+    """A brief aspect nobody answered, filled with a default and a one-line rationale."""
+
+    aspect: Slug
+    value: NonEmptyStr
+    rationale: NonEmptyStr
+
+
 class CreativeBrief(StrictModel):
     """The approved output of Discovery."""
 
@@ -87,6 +95,10 @@ class CreativeBrief(StrictModel):
     success_measure: NonEmptyStr
     offer: str = ""
     cta: NonEmptyStr
+    assumptions: list[Assumption] = Field(default_factory=list)
+    """Defaults taken for aspects the idea and sources did not answer (intake autofill)."""
+    dropped_claims: list[NonEmptyStr] = Field(default_factory=list)
+    """Candidate claims dropped for lacking a source or using a forbidden word."""
 
     @field_validator("sources")
     @classmethod
