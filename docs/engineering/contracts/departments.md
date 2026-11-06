@@ -177,3 +177,22 @@ used. Usage is reported as `claude_requests`, `claude_input_tokens` and
 A Codex text provider, the `waiting_for_ai` and `ProviderExhausted` queue
 states and the Producer's estimates (#53), the skill-pack content of other
 departments (#28) and Critic scoring (#30).
+
+## Pre-production
+
+`src/spectracut/studio/departments/art.py` declares four departments and
+`preproduction_nodes()` wires them: `art-director` (kind `art_direction`: mood
+board, palette, Look), `style-frame-artist` (`style_frames`), `storyboard`
+(`storyboard`: a board per shot with camera and action) and `animatic-editor`
+(`animatic`: an `Edit`). `PreproductionRunner` wraps the department runner:
+
+- **Style frames** build at the final tier (the runner refuses a lower one).
+  Each frame is explored on an image provider, then rendered by an injected
+  renderer (Blender on the farm; the control plane never runs Blender). The node
+  waits at its human gate (`PREPRODUCTION_GATES`).
+- **Image exploration** uses a local model unless `image_provider = "chatgpt"` is
+  set in the `[ai]` config (`storyboard.select_image_provider`); opting in without
+  a ChatGPT provider is an error, not a fallback.
+- **Animatic** is built in code (`storyboard.build_animatic`): boards as picture
+  clips, temp VO from the local TTS and optional music on audio tracks, each board
+  held for the longer of its plan and its VO. `check_locked_timing` must pass.
