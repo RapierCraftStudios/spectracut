@@ -30,9 +30,20 @@ from datetime import UTC, datetime
 from pydantic import AwareDatetime, Field, JsonValue
 
 from spectracut.spec._base import ContentHash, Slug, StrictModel, content_hash
+from spectracut.studio.facts import (
+    FactFinding,
+    FactsDraft,
+    FactsRecord,
+    FactsStore,
+    PreserveRow,
+    RejectedApproach,
+    check_preserve,
+    touched_ids,
+)
 from spectracut.studio.gates import (
     Critic,
     CriticVerdict,
+    Finding,
     GateDecision,
     GateMode,
     GatePolicy,
@@ -75,6 +86,8 @@ class RunContext(StrictModel):
     """The Critic's verdict on the previous attempt, when revising."""
     notes: tuple[RevisionNote, ...] = ()
     """Reviewer revision notes on this node (frame-pinned comments), oldest first."""
+    preserve: tuple[PreserveRow, ...] = ()
+    """Anchored decisions of other nodes this node must keep (not part of the node key)."""
 
 
 class RunResult(StrictModel):
@@ -82,6 +95,8 @@ class RunResult(StrictModel):
 
     output: JsonValue
     usage: Usage = Usage()
+    facts: FactsDraft | None = None
+    """Decisions and rejected approaches the department reports for the facts record."""
 
 
 Runner = Callable[[RunContext], RunResult]
@@ -162,6 +177,7 @@ class ProductionGraph:
         profile: QualityProfile | None = None,
         gates: GatePolicy | None = None,
         ledger: Ledger | None = None,
+        facts: FactsStore | None = None,
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -171,6 +187,8 @@ class ProductionGraph:
             gates = profile.gate_policy() if profile is not None else GatePolicy()
         self.gates = gates
         self.ledger = ledger if ledger is not None else Ledger()
+        self.facts = facts
+        self._revised: dict[str, list[RejectedApproach]] = {}
         self._clock = clock
         self._now = now
         self._specs: dict[str, NodeSpec] = {}
@@ -599,6 +617,11 @@ class ProductionGraph:
         with self._lock:
             inputs = {i: self._cache[self._states[i].key or ""].output for i in spec.inputs}
             notes = self._notes.get(spec.id, ())
+        preserve = (
+            self.facts.preserve_for(spec.id, touched_ids(spec.id, spec.inputs, spec.params))
+            if self.facts is not None
+            else ()
+        )
         feedback: CriticVerdict | None = None
         polished = False
         attempt = 0
@@ -616,6 +639,7 @@ class ProductionGraph:
                 attempt=attempt,
                 feedback=feedback,
                 notes=notes,
+                preserve=preserve,
             )
             started_at, start = self._now(), self._clock()
             try:
@@ -629,6 +653,8 @@ class ProductionGraph:
                 return NodeStatus.FAILED
             accepted = _Accepted(result.output, content_hash(result.output))
             verdict = reviewed(spec, result.output) if reviewed is not None else None
+            if verdict is not None and preserve:
+                verdict = _with_conformance(verdict, preserve, result.output)
             with self._lock:
                 status = self._settle(
                     spec,
@@ -683,14 +709,22 @@ class ProductionGraph:
             self._note_findings(spec.id, verdict)
         if verdict is not None and not verdict.passed:
             last = attempt == max_attempts
+            self._revised.setdefault(spec.id, []).append(
+                RejectedApproach(
+                    approach=f"attempt {attempt} output {accepted.output_hash[:12]}",
+                    why=verdict.comment[:300] or "failed the Critic",
+                )
+            )
             outcome: Outcome = "rejected" if last else "revise"
             self._record(spec, tier, key, attempt, started_at, start, usage, outcome)
             if not last:
                 return None
             self._decisions[spec.id] = GateDecision(mode=mode, critic=verdict)
+            self._write_facts(spec, result, verdict)
             self._set(spec.id, NodeStatus.REJECTED)
             return NodeStatus.REJECTED
         self._decisions[spec.id] = GateDecision(mode=mode, critic=verdict)
+        self._write_facts(spec, result, verdict)
         if mode is GateMode.HUMAN:
             self._record(spec, tier, key, attempt, started_at, start, usage, "awaiting_approval")
             self._pending[spec.id] = (key, accepted)
@@ -700,6 +734,27 @@ class ProductionGraph:
         self._cache[key] = accepted
         self._set(spec.id, NodeStatus.CLEAN, output_hash=accepted.output_hash)
         return NodeStatus.CLEAN
+
+    def _write_facts(
+        self, spec: NodeSpec, result: RunResult, verdict: CriticVerdict | None
+    ) -> None:
+        """Write the node's bounded facts record once its gate outcome is known."""
+        revised = self._revised.pop(spec.id, [])
+        if self.facts is None:
+            return
+        draft = result.facts or FactsDraft()
+        findings = verdict.findings if verdict is not None else []
+        self.facts.write(
+            FactsRecord(
+                production_id=self.production_id,
+                node_id=spec.id,
+                decisions=draft.decisions,
+                rejected=(*draft.rejected, *revised),
+                findings=tuple(
+                    FactFinding(key=f.key or f.reviewer, example=f.text) for f in findings
+                ),
+            )
+        )
 
     def _note_findings(self, node_id: str, verdict: CriticVerdict) -> None:
         """Record the MEDIUM and LOW findings left on an accepted output as node notes."""
@@ -762,6 +817,32 @@ class ProductionGraph:
                 outcome=outcome,
             )
         )
+
+
+def _with_conformance(
+    verdict: CriticVerdict, preserve: tuple[PreserveRow, ...], output: JsonValue
+) -> CriticVerdict:
+    """Fail ``verdict`` when ``output`` breaks an anchored decision it must preserve."""
+    violations = check_preserve(preserve, output)
+    if not violations:
+        return verdict
+    note = "; ".join(violations)
+    return verdict.model_copy(
+        update={
+            "passed": False,
+            "comment": f"{verdict.comment} [preserve] {note}".strip(),
+            "findings": [
+                *verdict.findings,
+                Finding(
+                    reviewer="preserve",
+                    key="preserve-violation",
+                    severity=Severity.HIGH,
+                    confirmed=True,
+                    text=note[:4000],
+                ),
+            ],
+        }
+    )
 
 
 def _has_medium(verdict: CriticVerdict) -> bool:
