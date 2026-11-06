@@ -166,6 +166,24 @@ class Department:
         return dumped
 
     @classmethod
+    def check_output(
+        cls,
+        node_id: str,
+        output: JsonValue,
+        inputs: Mapping[str, JsonValue],
+        kinds: Mapping[str, str],
+    ) -> None:
+        """Check a validated ``output`` against the node's ``inputs``; the default does nothing.
+
+        ``kinds`` maps each input node id to its kind (an id missing from it is its
+        own kind, as in :meth:`validate_inputs`). An override raises
+        :class:`DepartmentOutputError` when the output contradicts its inputs; the
+        :class:`~spectracut.studio.runner.DepartmentRunner` calls it right after
+        :meth:`validate_output`.
+        """
+        return None
+
+    @classmethod
     def validate_inputs(
         cls, node_id: str, inputs: Mapping[str, JsonValue], kinds: Mapping[str, str]
     ) -> None:

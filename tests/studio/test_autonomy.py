@@ -322,10 +322,13 @@ def test_cli_delegate_escalates_without_panel_and_status_shows_the_owner(
     assert first.exit_code == 0 and "awaiting approval: brief" in first.output
     status = cli.invoke(app, ["studio", "status", "spellwise"])
     line = _line(status.output, "brief")
-    assert "gate=auto_delegated" in line and "escalated=no panel review" in line
+    # `studio run` reviews with shot_critic, which passes non-shot nodes without an
+    # overall score (#250), so the delegated brief gate still escalates to the owner.
+    assert "gate=auto_delegated" in line and "escalated=no overall score" in line
     assert cli.invoke(app, ["studio", "approve", "spellwise", "brief"]).exit_code == 0
     status = cli.invoke(app, ["studio", "status", "spellwise"])
-    assert "human=approved by=owner" in _line(status.output, "brief")
+    approved = _line(status.output, "brief")
+    assert "human=approved" in approved and "by=owner" in approved
 
 
 def test_cli_status_shows_delegate_evidence(home: Path, brief_file: Path) -> None:

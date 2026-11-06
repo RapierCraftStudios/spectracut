@@ -214,6 +214,8 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
 
     def run(ctx: RunContext) -> RunResult:
         nonlocal shots
+        if ctx.spec.kind == art_depts.BRAND_KIT:
+            return art_depts.build_brand_kit(ctx)
         if ctx.spec.kind in FINISHING_KINDS:
             return finish(ctx)
         if ctx.spec.kind in (art_depts.STYLE_FRAMES, art_depts.ANIMATIC):
@@ -399,7 +401,15 @@ def new(
             specs = breakdown(brief, quality)
             specs = [_with_params(s, shot_params) if s.kind == ds.SHOT_STAGE else s for s in specs]
         else:
-            specs = list(Producer(DEPARTMENTS).breakdown(brief, quality, duration_s=duration).nodes)
+            kit = (
+                BrandKit.model_validate(template_params[ds.BRAND_KIT_PARAM])
+                if template_params
+                else None
+            )
+            plan = Producer(DEPARTMENTS).breakdown(
+                brief, quality, duration_s=duration, brand_kit=kit
+            )
+            specs = list(plan.nodes)
             if template_params:
                 specs = [
                     s.model_copy(update={"params": {**s.params, **template_params}})
@@ -416,6 +426,8 @@ def new(
     except (ProductionError, ValueError, OSError) as exc:
         raise _fail(str(exc)) from exc
     typer.echo(f"production {pid} created at {path}")
+    if shot_params is None and brand_kit is None and art_depts.ART_DIRECTION in quality.stages:
+        typer.echo("no --brand-kit: art direction has no brand kit to draw from")
     est = estimate(graph, DEPARTMENTS)
     for line in est.lines():
         typer.echo(line)
