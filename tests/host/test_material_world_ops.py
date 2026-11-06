@@ -462,11 +462,12 @@ def test_world_gradient_builds_a_vertical_ramp(blender: Path, tmp_path: Path) ->
 
 
 def test_haze_composes_with_the_gradient_in_either_order(blender: Path, tmp_path: Path) -> None:
-    haze = {"density": 0.02, "anisotropy": 0.3}
-    for order in (
+    haze: dict[str, Any] = {"density": 0.02, "anisotropy": 0.3}
+    orders: list[list[tuple[str, dict[str, Any]]]] = [
         [("world.set_gradient", GRADIENT), ("world.set_haze", haze)],
         [("world.set_haze", haze), ("world.set_gradient", GRADIENT)],
-    ):
+    ]
+    for order in orders:
         case = tmp_path / str(len(list(tmp_path.iterdir())))
         case.mkdir()
         world = ok(run_steps(blender, case, order)).state["world"]

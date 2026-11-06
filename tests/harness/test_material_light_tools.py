@@ -125,7 +125,7 @@ def test_rim_area_rig_aims_area_lights_at_the_target(session: Session) -> None:
     assert len(out.data["recorded"]) == len(RIGS["rim_area"]) == len(steps) == 3
     assert [s.args["name"] for s in steps] == ["HeroKey", "HeroRimLeft", "HeroRimRight"]
     assert {s.args["kind"] for s in steps} == {"area"}
-    rims = [s.args["location"] for s in steps[1:]]
+    rims: list[Any] = [s.args["location"] for s in steps[1:]]
     assert all(loc[1] > 0 for loc in rims)  # behind the subject (camera looks along +Y)
 
 
