@@ -13,6 +13,7 @@ forward slashes (Flamenco eats backslashes). Passwords travel on stdin only.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shlex
 from collections.abc import Mapping, Sequence
@@ -298,6 +299,39 @@ def windows_storage_source() -> str:
     return Path(__file__).with_name(ADMIN_SCRIPT).read_text(encoding="utf-8")
 
 
+def _ps_literal(text: str) -> str:
+    """``text`` as a PowerShell single-quoted string literal."""
+    return "'" + text.replace("'", "''") + "'"
+
+
+def verified_admin_command(path: str, sha256: str, args: str = "") -> str:
+    """One elevated PowerShell line that runs the script at ``path`` only if it is unchanged.
+
+    The script sits in the SSH account's profile, which that (standard) account can write,
+    so the command reads its bytes once, refuses them unless their SHA-256 is ``sha256``
+    (what setup wrote), and runs those same bytes from a new file in the elevated user's
+    own %TEMP%, which the standard account cannot touch. ``args`` follow ``-File``.
+    """
+    tail = f" {args}" if args else ""
+    return (
+        f"$b = [IO.File]::ReadAllBytes({_ps_literal(path)}); "
+        "$h = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($b) "
+        "| ForEach-Object { $_.ToString('x2') }); "
+        f"if ($h -ne '{sha256}') {{ throw ('refusing to run the script: its SHA-256 is ' + $h + "
+        f"', setup wrote {sha256}; re-run spectracut setup') }}; "
+        "$c = Join-Path $env:TEMP ('spectracut-' + [guid]::NewGuid() + '.ps1'); "
+        "[IO.File]::WriteAllBytes($c, $b); "
+        f"try {{ powershell -NoProfile -ExecutionPolicy Bypass -File $c{tail} }} "
+        "finally { Remove-Item -Force $c }; "
+        "if ($LASTEXITCODE -ne 0) { throw ('the script failed with exit code ' + $LASTEXITCODE) }"
+    )
+
+
+def windows_storage_sha256() -> str:
+    """SHA-256 of ``windows_storage.ps1`` as setup writes it (UTF-8, no BOM)."""
+    return hashlib.sha256(windows_storage_source().encode("utf-8")).hexdigest()
+
+
 _PROFILE_DIR = (
     "$d = Join-Path $env:USERPROFILE 'spectracut'; "
     "New-Item -ItemType Directory -Force $d | Out-Null; "
@@ -335,12 +369,20 @@ def _windows_admin_steps(
         )
         summary = "create the share (admin script, run as the Administrator SSH account)"
     else:
+        # The printed command names this host's profile paths, known only on the host.
+        run = verified_admin_command(
+            "__SCRIPT__",
+            windows_storage_sha256(),
+            f"-PasswordFile '__PW__' -User {_ps_literal(cred.user)} -Share {_ps_literal(share)} "
+            f"-Path {_ps_literal(path)}",
+        )
         serve = (
             _PROFILE_DIR + f"if (-not (Test-Path '{marker}')) {{ "
             f"$s = Join-Path $d '{ADMIN_SCRIPT}'; $f = Join-Path $d 'storage.pw'; "
-            "[Console]::Error.WriteLine('run once as Administrator: powershell -ExecutionPolicy "
-            f"Bypass -File ' + $s + ' -PasswordFile ' + $f + ' -User {cred.user} -Share {share} "
-            f'-Path "{path}"; then re-run spectracut setup\'); exit 1 }}'
+            "[Console]::Error.WriteLine('run once in an elevated PowerShell (Run as "
+            f"Administrator): ' + {_ps_literal(run)}.Replace('__SCRIPT__', "
+            "$s.Replace(\"'\", \"''\")).Replace('__PW__', $f.Replace(\"'\", \"''\")) + "
+            "'; then re-run spectracut setup'); exit 1 }"
         )
         summary = "wait for the admin script to have created the share"
     return [
@@ -376,7 +418,10 @@ def storage_notes(target: StorageTarget, facts: Mapping[str, HostFacts]) -> list
         return [
             f"{target.host} needs a one-time admin step: setup writes {ADMIN_SCRIPT} and an "
             "ACL'd password file under its profile's spectracut folder and stops until the "
-            "script has been run as Administrator; then re-run setup to mount and map the share"
+            "script has been run as Administrator with the command setup prints, which "
+            f"refuses to run unless the script has the SHA-256 {windows_storage_sha256()} "
+            "and runs a copy outside the account's profile; then re-run setup to mount and "
+            "map the share"
         ]
     return []
 

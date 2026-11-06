@@ -4,7 +4,8 @@
 # `spectracut-worker` to run windows_worker.ps1 at startup as the SSH account (S4U: no
 # password stored or passed) and lets that account start and end the task, so later
 # `spectracut setup` runs manage the worker with schtasks.exe and no admin.
-# Setup writes this file under the account's profile with the placeholders filled in.
+# Setup fills in the placeholders before it writes this file under the account's profile, and
+# prints a command that runs it only if its SHA-256 matches, from a copy outside the profile.
 $ErrorActionPreference = 'Stop'
 $account = '__ACCOUNT__'
 $sid = '__SID__'

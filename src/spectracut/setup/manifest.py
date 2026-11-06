@@ -97,6 +97,10 @@ class HostFacts:
     # tasks (read from its token, not CIM); its %USERPROFILE%; whether the worker task exists.
     admin: bool = True
     home: str = ""
+    # Windows: the SSH account's ``DOMAIN\\name`` and SID, so setup fills the one-time task
+    # script itself and can print the SHA-256 the elevated command checks (#190).
+    account: str = ""
+    sid: str = ""
     task: bool = True
     # Windows: drive letters in use as ``letter=root`` (UNC of a network drive, folder of
     # a subst drive, empty for a local volume), read via Get-PSDrive and subst, not CIM.
