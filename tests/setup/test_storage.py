@@ -498,3 +498,93 @@ def test_verified_admin_command_quotes_the_path_and_passes_args() -> None:
     assert "ReadAllBytes('C:\\Users\\o''neil\\x.ps1')" in cmd
     assert "-File $c -User 'u' }" in cmd and "finally { Remove-Item -Force $c }" in cmd
     assert "$LASTEXITCODE -ne 0" in cmd
+
+
+def test_storage_move_with_old_host_offline_skips_copy_names_old_data_and_mounts_new() -> None:
+    from spectracut.setup.storage import StorageLayout
+
+    old = StorageTarget(kind="host", host="mrdubey-1")  # registered, but asleep: no facts
+    state = SetupState(storage=old, storage_layout=StorageLayout(path="/data/flamenco"))
+    rig = StorageTarget(kind="host", host="rig")
+    plan = build_plan(
+        load_manifest(), "2026.11", FACTS, ["legion", "rig"], state, CRED, rig, wheels=WHEELS
+    )
+    ids = [s.id for s in plan.steps]
+    assert "storage:migrate" not in ids
+    assert {"storage:serve", "storage:cred:control", "storage:attach:control"} <= set(ids)
+    assert {"storage:variables", "storage:restart-manager"} <= set(ids)
+    assert any(
+        "mrdubey-1 is unreachable" in n and "remain on mrdubey-1 at /data/flamenco" in n
+        for n in plan.notes
+    ), plan.notes
+    # an old storage host that is reachable is still copied from, with no such note
+    online = {
+        **FACTS,
+        "mrdubey-1": HostFacts("mrdubey-1", "linux", "100.64.0.9", wired=True, free_gb=100),
+    }
+    plan = build_plan(
+        load_manifest(), "2026.11", online, ["legion", "rig"], state, CRED, rig, wheels=WHEELS
+    )
+    migrate = _step(plan, "storage:migrate")
+    assert "mrdubey-1 at /data/flamenco" in migrate.command
+    assert not any("unreachable" in n for n in plan.notes)
+
+
+def _migrate_sandbox(tmp_path: Path, source: Path) -> tuple[str, dict[str, str], Path]:
+    """The migrate command reading ``source``, with sudo/mountpoint/rsync stubbed to log calls."""
+    from spectracut.setup.storage import LINUX_PATH, _migrate_steps
+
+    bin_dir, log = tmp_path / "bin", tmp_path / "calls.log"
+    bin_dir.mkdir()
+    for tool, rc in (("sudo", 0), ("rsync", 0), ("mountpoint", 1)):
+        stub = bin_dir / tool
+        stub.write_text(f'#!/bin/sh\necho "{tool} $*" >> {log}\nexit {rc}\n', encoding="utf-8")
+        stub.chmod(0o755)
+    cmd = _migrate_steps("100.64.0.3", "flamenco", CRED, old_location="mrdubey-1 at /srv/x")[
+        0
+    ].command.replace(LINUX_PATH, str(source))
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path)}
+    return cmd, env, log
+
+
+def test_migrate_skips_a_stale_or_root_owned_mount_point_without_failing(tmp_path: Path) -> None:
+    import os
+    import subprocess
+
+    if os.geteuid() == 0:
+        pytest.skip("root reads a 0700 directory it does not own")
+    source = tmp_path / "srv-flamenco"
+    source.mkdir()
+    source.chmod(0o000)  # like the root-owned 0700 dir left behind by a lazy unmount
+    try:
+        cmd, env, log = _migrate_sandbox(tmp_path, source)
+        done = subprocess.run(["sh", "-c", cmd], env=env, capture_output=True, text=True)
+    finally:
+        source.chmod(0o700)
+    assert done.returncode == 0, done.stderr
+    assert "files were not copied and remain on mrdubey-1 at /srv/x" in done.stderr
+    assert not log.exists()  # nothing mounted, nothing copied
+
+
+def test_migrate_copies_a_readable_old_share(tmp_path: Path) -> None:
+    import subprocess
+
+    source = tmp_path / "srv-flamenco"
+    source.mkdir()
+    cmd, env, log = _migrate_sandbox(tmp_path, source)
+    done = subprocess.run(["sh", "-c", cmd], env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    calls = log.read_text(encoding="utf-8")
+    assert "sudo mount -t cifs //100.64.0.3/flamenco" in calls
+    assert f"rsync -a {source}/ /mnt/spectracut-migrate/" in calls
+
+
+def test_attach_and_bind_detach_a_stale_mount_lazily() -> None:
+    from spectracut.setup.storage import _attach_steps
+
+    attach = _attach_steps("rig", "100.64.0.3", "flamenco", CRED)[1].command
+    state = SetupState(storage_path="/data/flamenco")
+    bind = _step(_plan(state, target=StorageTarget(kind="host", host="rig")), "storage:bind")
+    for cmd in (attach, bind.command):
+        assert "timeout 20 mountpoint -q /srv/flamenco" in cmd
+        assert "sudo umount -l /srv/flamenco" in cmd

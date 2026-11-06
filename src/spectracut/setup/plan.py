@@ -18,7 +18,7 @@ import shlex
 import signal
 import subprocess
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from os import killpg
@@ -51,6 +51,7 @@ from spectracut.setup.storage import (
     StorageTarget,
     choose_default_host,
     manager_config_steps,
+    migration_notes,
     normalize_drive,
     plan_storage,
     storage_folder,
@@ -782,11 +783,33 @@ def build_plan(
         target,
         tuple(
             storage_notes(target, facts)
+            + migration_notes(target, state.storage, facts, state.storage_layout)
             + wifi_warnings(facts, target)
             + worker_task_notes(facts, need_task)
         ),
         layout,
     )
+
+
+def probe_hosts(
+    runner: StepRunner, names: Sequence[str], *, required: Collection[str]
+) -> tuple[dict[str, HostFacts], dict[str, str]]:
+    """Probe each host; an unreachable one is skipped unless it is ``required``.
+
+    Returns the facts of every reachable host and ``name -> reason`` for each skipped
+    one. A probe failure (:class:`SetupError`, a timeout included) of a required host
+    is raised unchanged: the control plane and the storage host must be reachable.
+    """
+    facts: dict[str, HostFacts] = {}
+    skipped: dict[str, str] = {}
+    for name in names:
+        try:
+            facts[name] = runner.probe(name)
+        except SetupError as exc:
+            if name in required:
+                raise
+            skipped[name] = str(exc)
+    return facts, skipped
 
 
 def _run_steps(
