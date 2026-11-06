@@ -50,7 +50,9 @@ def test_new_lists_the_stages_with_no_department(home: Path, brief_file: Path) -
     assert result.exit_code == 0, result.output
     assert "  brief: department=strategist" in result.output
     assert "no department registered yet for:" in result.output
-    assert "voiceover" in result.output.split("no department registered yet for:")[1]
+    unregistered = result.output.split("no department registered yet for:")[1]
+    assert "render" in unregistered
+    assert "voiceover" not in unregistered
 
 
 def test_run_builds_brief_and_stops_at_the_brief_human_gate(home: Path, brief_file: Path) -> None:

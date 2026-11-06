@@ -2,11 +2,12 @@
 """Concrete studio departments and the one registry of them.
 
 Discovery (intake, product understanding, brief) lives in ``.discovery``,
-Development (concepts, script) in ``.writer`` and Art in ``.art``; import from
-those modules. :func:`all_departments` lists every department ``studio run``
-can use, and :data:`STAGE_DEPARTMENTS` says which one builds each profile stage
-(node kind). A stage with no entry keeps its own name as the department name, so
-it shows up as unregistered in the estimate until a department is written.
+Development (concepts, script) in ``.writer``, Art in ``.art`` and Sound
+(voiceover, sound design, music, mix) in ``.sound``; import from those modules.
+:func:`all_departments` lists every department ``studio run`` can use, and
+:data:`STAGE_DEPARTMENTS` says which one builds each profile stage (node kind).
+A stage with no entry keeps its own name as the department name, so it shows up
+as unregistered in the estimate until a department is written.
 """
 
 from __future__ import annotations
@@ -20,6 +21,10 @@ STAGE_DEPARTMENTS: dict[str, str] = {
     "style_frames": "style-frame-artist",
     "storyboard": "storyboard",
     "animatic": "animatic-editor",
+    "voiceover": "voiceover",
+    "sound_design": "sound-designer",
+    "music": "composer",
+    "mix": "mixer",
 }
 """Profile stage (node kind) -> name of the department that builds it."""
 
@@ -33,6 +38,15 @@ def all_departments() -> dict[str, type[Department]]:
     """Every implemented department by name (imported lazily to avoid import cycles)."""
     from spectracut.studio.departments.art import ART_DEPARTMENTS
     from spectracut.studio.departments.discovery import DISCOVERY_DEPARTMENTS
+    from spectracut.studio.departments.sound import SOUND_DEPARTMENTS
     from spectracut.studio.departments.writer import DEVELOPMENT_DEPARTMENTS
 
-    return {d.name: d for d in (*DISCOVERY_DEPARTMENTS, *DEVELOPMENT_DEPARTMENTS, *ART_DEPARTMENTS)}
+    return {
+        d.name: d
+        for d in (
+            *DISCOVERY_DEPARTMENTS,
+            *DEVELOPMENT_DEPARTMENTS,
+            *ART_DEPARTMENTS,
+            *SOUND_DEPARTMENTS,
+        )
+    }

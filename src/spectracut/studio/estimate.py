@@ -267,7 +267,15 @@ def estimate(
         rate = STAGE_RATES.get(spec.kind, DEFAULT_RATE)
         one, wall = _default_cost(rate, tier, duration, shots, vo_characters)
         if dept is not None:
-            one = dept.cost
+            # Keep the plan-scaled ElevenLabs projection: a department's static cost
+            # cannot know how many VO characters this film's script has.
+            one = dept.cost.model_copy(
+                update={
+                    "elevenlabs_characters": max(
+                        dept.cost.elevenlabs_characters, one.elevenlabs_characters
+                    )
+                }
+            )
         elif spec.department not in unknown:
             unknown.append(spec.department)
         cost = _times(one, runs)
