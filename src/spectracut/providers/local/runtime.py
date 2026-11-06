@@ -33,6 +33,8 @@ class ModelSpec:
     mem_gb: float = 0.0
     source: str = ""
     """Weights source (a Hugging Face repo id or a path)."""
+    version: str = ""
+    """Model release or variant, recorded as provenance of what it generates."""
 
     @property
     def resources(self) -> Resources:

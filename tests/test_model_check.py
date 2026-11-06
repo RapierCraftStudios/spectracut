@@ -204,3 +204,9 @@ def test_run_cli_split_args() -> None:
 def test_dl_queue_select() -> None:
     assert dl_queue.select(dl_queue.QUEUE, ["Qwen3-TTS"]) == ["Qwen/Qwen3-TTS-12Hz-0.6B-Base"]
     assert len(dl_queue.select(dl_queue.QUEUE, [])) == len(dl_queue.QUEUE)
+
+
+def test_still_to_measure_links_tracking_issues(doc: str) -> None:
+    section = _section(doc, "Still to measure on legion")
+    assert "#216" in section
+    assert "#125" in section

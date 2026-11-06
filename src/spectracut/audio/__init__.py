@@ -38,6 +38,10 @@ _EXPORTS: dict[str, str] = {
     "recipe_events": "events",
     "cue_recipe": "cues",
     "cues_for_events": "cues",
+    "CueRequest": "generate",
+    "GenerativeSoundGenerator": "generate",
+    "Selection": "generate",
+    "generate_scene": "generate",
     "ProceduralGenerator": "procedural.synth",
     "SuperColliderGenerator": "procedural.supercollider",
 }

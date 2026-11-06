@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Procedural sound design: a pure-Python reference renderer and SuperCollider NRT.
+"""Procedural sound design: a reference renderer, SuperCollider NRT and Surge XT via Ardour.
 
 Names are resolved lazily from their defining modules.
 """
@@ -17,6 +17,8 @@ _EXPORTS: dict[str, str] = {
     "spectral_centroid": "synth",
     "SuperColliderGenerator": "supercollider",
     "build_score": "supercollider",
+    "SurgeXTGenerator": "surge",
+    "build_surge_lua": "surge",
 }
 
 __all__ = sorted(_EXPORTS)

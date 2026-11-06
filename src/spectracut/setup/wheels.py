@@ -4,8 +4,8 @@
 :func:`build_wheels` runs ``uv build`` on the source tree the control plane runs
 from and stages the ``spectracut`` and ``spectracut-host`` wheels under a directory
 named after their content digest. :func:`wheel_copy_steps` sends each wheel to a
-render host over the same SSH stdin channel setup already uses (base64 text, no
-sudo or admin), and the manifest installs spectracut-host from those files.
+render host over the same SSH stdin channel setup already uses (base64 text in
+chunks, no sudo or admin), and the manifest installs spectracut-host from those files.
 
 The setup state records ``<version>+<digest>``, so a code change (a new digest)
 makes the next ``spectracut setup`` reinstall spectracut-host on every host.
@@ -32,6 +32,7 @@ REPO_ENV = "SPECTRACUT_REPO"
 LINUX_WHEELS = "$HOME/.cache/spectracut/wheels"
 WINDOWS_WHEELS = "spectracut/wheels"  # under $env:USERPROFILE
 BUILD_TIMEOUT = 900.0
+CHUNK_BYTES = 256 * 1024  # raw bytes per copy step; one stalled step costs one chunk
 
 
 @dataclass(frozen=True)
@@ -148,49 +149,77 @@ def install_fields(os_name: Os, wheels: LocalWheels) -> dict[str, str]:
     }
 
 
-def wheel_copy_steps(facts: HostFacts, wheels: LocalWheels) -> list[Step]:
-    """Copy each wheel to the host; its bytes travel base64-encoded on stdin only.
+def wheel_chunks(raw: bytes) -> list[bytes]:
+    """``raw`` split into :data:`CHUNK_BYTES` pieces (one empty piece for an empty file)."""
+    return [raw[i : i + CHUNK_BYTES] for i in range(0, len(raw), CHUNK_BYTES)] or [b""]
 
-    On Windows the runner frames stdin (``$StepInput``, no EOF needed); the wheel is
-    written to ``.part``, its sha256 checked against the local wheel, then renamed.
-    The copies only stage files under a digest-named directory, so setup runs them
-    before it stops the worker.
+
+def wheel_copy_steps(facts: HostFacts, wheels: LocalWheels) -> list[Step]:
+    """Copy each wheel to the host in chunks; its bytes travel base64-encoded on stdin only.
+
+    Each wheel is ``wheel:<file>:<host>:<n>`` chunk steps, then one ``wheel:<file>:<host>``
+    step that checks the whole file's sha256 against the local wheel and renames the
+    ``.part`` file into place. A chunk is written at its own offset, so a retry after a
+    stall is idempotent, and a stall costs one chunk instead of the whole wheel. On
+    Windows the runner frames stdin (``$StepInput``, no EOF needed). The copies only
+    stage files under a digest-named directory, so setup runs them before it stops the
+    worker.
     """
     steps: list[Step] = []
+    windows = facts.os == "windows"
+    shell: Shell = "powershell" if windows else "sh"
     for wheel in wheels.files:
-        shell: Shell
         raw = wheel.read_bytes()
-        data = base64.b64encode(raw).decode("ascii")
-        if facts.os == "windows":
-            sha = hashlib.sha256(raw).hexdigest().upper()
+        sha = hashlib.sha256(raw).hexdigest()
+        base = f"wheel:{wheel.name}:{facts.name}"
+        for n, chunk in enumerate(wheel_chunks(raw)):
+            if windows:
+                mode = "Create" if n == 0 else "OpenOrCreate"
+                cmd = (
+                    f"$d = Join-Path $env:USERPROFILE '{WINDOWS_WHEELS}/{wheels.digest}'; "
+                    "New-Item -ItemType Directory -Force $d | Out-Null; "
+                    f"$t = Join-Path $d '{wheel.name}.part'; "
+                    f"$b = [Convert]::FromBase64String({STEP_INPUT}.Trim()); "
+                    f"$s = [IO.File]::Open($t, '{mode}', 'Write', 'None'); "
+                    f"try {{ $s.Seek({n * CHUNK_BYTES}, 'Begin') | Out-Null; "
+                    "$s.Write($b, 0, $b.Length) } finally { $s.Dispose() }"
+                )
+            else:
+                keep = "" if n == 0 else " conv=notrunc"
+                cmd = (
+                    f'd="{remote_wheel_dir("linux", wheels.digest)}"; mkdir -p "$d" '
+                    f'&& base64 -d | dd of="$d/{wheel.name}.part" bs={CHUNK_BYTES} '
+                    f"seek={n}{keep} iflag=fullblock status=none"
+                )
+            steps.append(
+                Step(
+                    facts.name,
+                    f"{base}:{n}",
+                    f"copy {wheel.name} part {n + 1}",
+                    cmd,
+                    shell,
+                    stdin=base64.b64encode(chunk).decode("ascii"),
+                    kind="copy",
+                )
+            )
+        if windows:
             cmd = (
                 f"$d = Join-Path $env:USERPROFILE '{WINDOWS_WHEELS}/{wheels.digest}'; "
-                "New-Item -ItemType Directory -Force $d | Out-Null; "
                 f"$f = Join-Path $d '{wheel.name}'; $t = $f + '.part'; "
-                f"[IO.File]::WriteAllBytes($t, [Convert]::FromBase64String({STEP_INPUT}.Trim())); "
                 "$h = (Get-FileHash -Algorithm SHA256 -LiteralPath $t).Hash; "
-                f"if ($h -ne '{sha}') {{ Remove-Item -Force -LiteralPath $t; "
+                f"if ($h -ne '{sha.upper()}') {{ Remove-Item -Force -LiteralPath $t; "
                 f"[Console]::Error.WriteLine('{wheel.name}: sha256 mismatch (' + $h + ')'); "
                 "exit 1 }; "
                 "Move-Item -Force -LiteralPath $t -Destination $f"
             )
-            shell = "powershell"
         else:
+            part = f'"$d/{wheel.name}.part"'
             cmd = (
-                f'd="{remote_wheel_dir("linux", wheels.digest)}"; mkdir -p "$d" '
-                f'&& base64 -d > "$d/{wheel.name}.part" && mv "$d/{wheel.name}.part" '
-                f'"$d/{wheel.name}"'
+                f'd="{remote_wheel_dir("linux", wheels.digest)}"; '
+                f'h=$(sha256sum < {part} | cut -d" " -f1); '
+                f'if [ "$h" != "{sha}" ]; then rm -f {part}; '
+                f'echo "{wheel.name}: sha256 mismatch ($h)" >&2; exit 1; fi; '
+                f'mv {part} "$d/{wheel.name}"'
             )
-            shell = "sh"
-        steps.append(
-            Step(
-                facts.name,
-                f"wheel:{wheel.name}:{facts.name}",
-                f"copy {wheel.name}",
-                cmd,
-                shell,
-                stdin=data,
-                kind="copy",
-            )
-        )
+        steps.append(Step(facts.name, base, f"verify {wheel.name}", cmd, shell, kind="copy"))
     return steps
