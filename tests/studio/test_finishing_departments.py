@@ -31,7 +31,7 @@ from spectracut.spec.brief import AudienceProfile, Brief, ClaimSource, Persona, 
 from spectracut.studio import device_shot as ds
 from spectracut.studio.departments import STAGE_DEPARTMENTS, all_departments
 from spectracut.studio.departments import finishing as fd
-from spectracut.studio.departments.shots import RenderedShots
+from spectracut.studio.departments.shots import RenderedShots, SceneBuilderShot
 from spectracut.studio.departments.sound import (
     Mix,
     MusicBed,
@@ -435,3 +435,23 @@ def test_cutdown_shots_hook_first_end_card_last() -> None:
     assert fd.cutdown_shots(edit, "s5", 15) == ["s0", "s1", "s5"]
     with pytest.raises(ValueError, match="longer master"):
         fd.cutdown_shots(edit, "s5", 60)
+
+
+def test_edit_names_the_scene_builder_for_a_board_it_has_not_rendered(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    nodes = rig.nodes()
+    shots = _shots()
+    held = shots.model_copy(
+        update={
+            "shots": shots.shots[1:],
+            "scene_builder": [SceneBuilderShot(shot_id=SHOT_IDS[0], description="slow orbit")],
+        }
+    )
+    inputs: dict[str, JsonValue] = {
+        "animatic": _dump(_animatic()),
+        "shots": _dump(held),
+        "voiceover": _dump(_vo()),
+    }
+    with pytest.raises(ValueError, match="planned for the scene builder"):
+        rig.call(nodes["edit"], inputs)
+    assert rig.fake.submitted == []

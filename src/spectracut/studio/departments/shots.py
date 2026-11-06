@@ -3,9 +3,12 @@
 
 - ``template-shots`` (node kind ``template_shots``): a :class:`ShotPlan` picks a
   template (devices, hero object, end card, typography), camera variant, aspect and
-  slots for every storyboard board. The :class:`ShotRunner` builds each board's
-  recipe with ``TEMPLATES[t].preview(...)`` from the node's brand kit, stages the
-  kit's assets, signs the job to shared storage and renders it as one Blender job
+  slots for every storyboard board. The plan's schema enumerates the registered
+  template ids; a board that fits no template sets ``scene_builder`` (a shot
+  description) instead and is recorded, not rendered, for the scene builder. The
+  :class:`ShotRunner` builds each template board's recipe with
+  ``TEMPLATES[t].preview(...)`` from the node's brand kit, stages the kit's assets,
+  signs the job to shared storage and renders it as one Blender job
   through ``JobQueue`` + :class:`~spectracut.queue.executors.flamenco.FlamencoExecutor`,
   pinned to a registered GPU host by the config's worker tag.
 - ``shots`` (kind ``shots``): re-renders every template shot's recipe at the node's
@@ -23,9 +26,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Annotated, ClassVar, Self
 
-from pydantic import BaseModel, Field, JsonValue, ValidationError, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    JsonValue,
+    ValidationError,
+    WithJsonSchema,
+    model_validator,
+)
 
 from spectracut.edit.timeline import Edit
 from spectracut.finishing.color import ColorPipeline
@@ -63,25 +74,46 @@ SHOT_PARAMS = (ds.BRAND_KIT_PARAM, ds.ASSETS_DIR_PARAM)
 _FILE = PurePosixPath
 
 
+def _known_template(v: str) -> str:
+    if v not in TEMPLATES:
+        raise ValueError(f"unknown template {v!r}; known: {', '.join(sorted(TEMPLATES))}")
+    return v
+
+
+TemplateId = Annotated[
+    str,
+    AfterValidator(_known_template),
+    WithJsonSchema({"type": "string", "enum": sorted(TEMPLATES)}),
+]
+"""A registered template id; the JSON schema sent to the planner enumerates them."""
+
+
 class TemplateShot(StrictModel):
-    """One board's template, camera variant, aspect and slot values."""
+    """One board's template, camera variant, aspect and slot values.
+
+    A board that fits no template sets ``scene_builder`` (a concrete description of
+    the shot) instead of ``template``; exactly one of the two is set.
+    """
 
     shot_id: Slug
-    template: str
+    template: TemplateId | None = None
+    scene_builder: str | None = Field(default=None, min_length=1)
     variant: str | None = None
     aspect: TemplateAspect = "16:9"
     slots: dict[str, JsonValue] = Field(default_factory=dict)
 
-    @field_validator("template")
-    @classmethod
-    def _known(cls, v: str) -> str:
-        if v not in TEMPLATES:
-            raise ValueError(f"unknown template {v!r}; known: {', '.join(sorted(TEMPLATES))}")
-        return v
+    @model_validator(mode="after")
+    def _one_route(self) -> Self:
+        if (self.template is None) == (self.scene_builder is None):
+            raise ValueError(
+                f"shot {self.shot_id!r} needs exactly one of template (a registered id) "
+                f"or scene_builder (a shot description for the scene builder)"
+            )
+        return self
 
 
 class ShotPlan(StrictModel):
-    """The template shot for every storyboard board."""
+    """The template shot, or scene-builder description, for every storyboard board."""
 
     shots: list[TemplateShot] = Field(min_length=1)
 
@@ -117,8 +149,24 @@ class RenderedShot(StrictModel):
     aspect: TemplateAspect = "16:9"
 
 
+class SceneBuilderShot(StrictModel):
+    """A board no template fits: planned for the scene builder, not rendered here."""
+
+    shot_id: Slug
+    description: str = Field(min_length=1)
+    aspect: TemplateAspect = "16:9"
+
+
 class RenderedShots(StrictModel):
-    shots: list[RenderedShot] = Field(min_length=1)
+    shots: list[RenderedShot] = Field(default_factory=list)
+    scene_builder: list[SceneBuilderShot] = Field(default_factory=list)
+    """Boards planned for the scene builder; they have no render yet."""
+
+    @model_validator(mode="after")
+    def _not_empty(self) -> Self:
+        if not self.shots and not self.scene_builder:
+            raise ValueError("needs at least one rendered or scene-builder shot")
+        return self
 
 
 def _rate_cost(stage: str) -> CostEstimate:
@@ -310,7 +358,16 @@ class ShotRunner:
         plan, usage = self.plan(ctx)
         kit = _kit(ctx.spec)
         builds: list[tuple[TemplateShot, Recipe, Recipe]] = []
+        pending: list[SceneBuilderShot] = []
         for shot in plan.shots:
+            if shot.template is None:
+                assert shot.scene_builder is not None
+                pending.append(
+                    SceneBuilderShot(
+                        shot_id=shot.shot_id, description=shot.scene_builder, aspect=shot.aspect
+                    )
+                )
+                continue
             template = TEMPLATES[shot.template]
             try:
                 _check_copy(kit, shot.slots)
@@ -322,10 +379,10 @@ class ShotRunner:
                 raise ValueError(f"shot {shot.shot_id!r} ({shot.template}): {exc}") from None
             builds.append((shot, base, rendered))
         done = [
-            self._render(ctx, s, base, rendered, Tier.PREVIEW, TEMPLATES[s.template].frames)
+            self._render(ctx, s, base, rendered, Tier.PREVIEW, TEMPLATES[str(s.template)].frames)
             for s, base, rendered in builds
         ]
-        return self._result(ctx, done, usage)
+        return self._result(ctx, done, usage, pending)
 
     # ---- shots ---------------------------------------------------------------------
 
@@ -340,7 +397,7 @@ class ShotRunner:
             rendered = tier_recipe(base, ctx.tier, prior.aspect)
             frames = TEMPLATES[prior.template].frames if prior.template in TEMPLATES else 1
             done.append(self._render(ctx, prior, base, rendered, ctx.tier, frames))
-        return self._result(ctx, done, Usage())
+        return self._result(ctx, done, Usage(), upstream.scene_builder)
 
     # ---- farm ----------------------------------------------------------------------
 
@@ -356,6 +413,8 @@ class ShotRunner:
         """Render one shot as one signed Blender job pinned to the config's worker tag."""
         config, opts = self.config, self.options
         shot_id = shot.shot_id
+        if shot.template is None:
+            raise ValueError(f"shot {shot_id!r} has no template to render")
         assets_dir, _sha = ds.stage_for(config, _assets(ctx.spec), recipe)
         base_id = f"{self.production_id}-{ctx.spec.id}-{shot_id}"[:96]
         job_id = ds.fresh_job_id(config, f"{base_id}-{recipe.content_hash[7:19]}")
@@ -398,13 +457,19 @@ class ShotRunner:
         return rendered, usage
 
     def _result(
-        self, ctx: RunContext, done: list[tuple[RenderedShot, Usage]], usage: Usage
+        self,
+        ctx: RunContext,
+        done: list[tuple[RenderedShot, Usage]],
+        usage: Usage,
+        scene_builder: list[SceneBuilderShot] | None = None,
     ) -> RunResult:
         total = usage
         for _shot, used in done:
             total = _add(total, used)
         dept = self.departments[ctx.spec.department]
-        output = RenderedShots(shots=[s for s, _u in done]).model_dump(mode="json")
+        output = RenderedShots(
+            shots=[s for s, _u in done], scene_builder=list(scene_builder or [])
+        ).model_dump(mode="json")
         return RunResult(output=dept.validate_output(ctx.spec.id, output), usage=total)
 
 
@@ -436,6 +501,8 @@ def shot_critic(pass_score: float, inner: Critic | None = None) -> Critic:
                 shots = None
         if shots is None:
             return inner(spec, output) if inner is not None else CriticVerdict(passed=True)
+        if not shots:
+            return CriticVerdict(passed=True, comment="no rendered shots (scene builder only)")
         findings: list[Finding] = []
         for shot in shots:
             problems: list[str] = []

@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
+from spectracut.audio.vo import VoiceoverTrack
 from spectracut.edit.conform import replace_shot
 from spectracut.edit.otio_io import write_otio
 from spectracut.edit.timeline import Clip, Edit, Gap, Track
@@ -69,7 +70,6 @@ from spectracut.studio.departments.sound import (
     VOICEOVER,
     Mix,
     MusicBed,
-    VoiceoverTrack,
     _vo_frames,
     is_temp_vo,
 )
@@ -456,12 +456,18 @@ class FinishingRunner:
         if rendered is None:
             raise ValueError(f"node {ctx.spec.id!r} needs a shots or template_shots input")
         by_id = {s.shot_id: s for s in rendered.shots}
+        pending = {s.shot_id for s in rendered.scene_builder}
         edit = animatic.model_copy(update={"id": ctx.spec.id})
         used: list[RenderedShot] = []
         for clip in _picture(animatic):
             assert clip.shot_id is not None
             shot = by_id.get(clip.shot_id)
             if shot is None:
+                if clip.shot_id in pending:
+                    raise ValueError(
+                        f"picture clip {clip.id!r}: shot {clip.shot_id!r} is planned for the "
+                        f"scene builder (#281), which does not render shots yet"
+                    )
                 raise ValueError(f"picture clip {clip.id!r}: shot {clip.shot_id!r} has no render")
             if shot not in used:
                 used.append(shot)
