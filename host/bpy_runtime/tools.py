@@ -11,6 +11,7 @@ module (the control plane and host agent never import the bpy runtime).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -38,7 +39,7 @@ from bpy_runtime.ops.material import material_apply_preset, material_apply_scree
 from bpy_runtime.ops.props import render_set_output, render_set_passes, render_set_property
 from bpy_runtime.ops.scene import object_import_gltf
 from bpy_runtime.ops.text import text_add
-from bpy_runtime.ops.world import world_set_hdri
+from bpy_runtime.ops.world import world_set_gradient, world_set_haze, world_set_hdri
 from bpy_runtime.type3d import type_add_2d, type_add_3d
 
 __all__ = ["TOOL_NAMES", "TOOLS", "run_step"]
@@ -74,6 +75,8 @@ TOOL_NAMES = frozenset(
         "object.animate",
         "text.add",
         "world.set_hdri",
+        "world.set_gradient",
+        "world.set_haze",
     }
 )
 
@@ -143,14 +146,41 @@ _LIGHTS = {"point": "POINT", "sun": "SUN", "area": "AREA", "spot": "SPOT"}
 
 
 def light_add(bpy: Any, args: dict[str, Any]) -> None:
-    _only(args, {"kind", "name", "energy", "location", "rotation"}, "light.add")
+    allowed = {"kind", "name", "energy", "location", "rotation", "size", "color", "spot_angle"}
+    _only(args, allowed, "light.add")
     kind = _choice(args.get("kind", "point"), "kind", _LIGHTS)
     name = _name(args.get("name", "Light"), "name")
+    energy = _num(args.get("energy", 1000), "energy", 0, 1e7)
+    location = _vec3(args.get("location", [0, 0, 0]), "location")
+    rotation = _vec3(args.get("rotation", [0, 0, 0]), "rotation")
+    size = None
+    if "size" in args:
+        if kind != "AREA":
+            raise ToolError("light.add: size applies only to area lights")
+        size = _num(args["size"], "size", 0, 100)
+        if size <= 0:
+            raise ToolError("size must be within (0, 100]")
+    color = None
+    if "color" in args:
+        color = _vec3(args["color"], "color")
+        for i, c in enumerate(color):
+            _num(c, f"color[{i}]", 0, 1)
+    spot = None
+    if "spot_angle" in args:
+        if kind != "SPOT":
+            raise ToolError("light.add: spot_angle applies only to spot lights")
+        spot = math.radians(_num(args["spot_angle"], "spot_angle", 1, 180))
     data = bpy.data.lights.new(name, type=kind)
-    data.energy = _num(args.get("energy", 1000), "energy", 0, 1e7)
+    data.energy = energy
+    if size is not None:
+        data.size = size
+    if color is not None:
+        data.color = color
+    if spot is not None:
+        data.spot_size = spot
     obj = bpy.data.objects.new(name, data)
-    obj.location = _vec3(args.get("location", [0, 0, 0]), "location")
-    obj.rotation_euler = _vec3(args.get("rotation", [0, 0, 0]), "rotation")
+    obj.location = location
+    obj.rotation_euler = rotation
     _link(bpy, obj)
 
 
@@ -198,6 +228,8 @@ TOOLS: dict[str, Callable[[Any, dict[str, Any]], Report]] = {
     "object.animate": object_animate,
     "text.add": text_add,
     "world.set_hdri": world_set_hdri,
+    "world.set_gradient": world_set_gradient,
+    "world.set_haze": world_set_haze,
 }
 
 assert frozenset(TOOLS) == TOOL_NAMES, "TOOLS and TOOL_NAMES must list the same tools"
