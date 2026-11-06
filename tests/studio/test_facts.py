@@ -9,18 +9,22 @@ from pydantic import JsonValue
 
 from spectracut.studio import (
     CriticVerdict,
-    Decision,
-    FactsDraft,
-    FactsStore,
     GateMode,
     GatePolicy,
     NodeSpec,
     ProductionGraph,
     RunContext,
     RunResult,
+)
+from spectracut.studio.facts import (
+    MAX_ENTRIES,
+    MAX_TEXT,
+    Decision,
+    FactsDraft,
+    FactsStore,
+    RejectedApproach,
     propose_failures,
 )
-from spectracut.studio.facts import MAX_ENTRIES, MAX_TEXT, RejectedApproach
 
 
 def _graph(
