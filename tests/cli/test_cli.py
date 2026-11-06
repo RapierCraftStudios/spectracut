@@ -386,7 +386,7 @@ def test_status_lists_productions(home: Path, brief_file: Path) -> None:
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output
     assert "productions: 1" in result.output
-    assert "spellwise: profile=standard pending=14" in result.output
+    assert "spellwise: profile=standard pending=15" in result.output
     assert "jobs: 0" in result.output
 
 
