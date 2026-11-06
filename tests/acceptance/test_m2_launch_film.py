@@ -1,43 +1,50 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""M2 (#63): AlterLab's launch film at the ``standard`` profile and its ads.
+"""M2 (#63, #253): AlterLab's launch film at the ``standard`` profile and its ads.
 
-The always-run cases build the real :class:`ProductionGraph` from
-``productions/alterlab-launch/production.json`` with the ``standard`` profile's
-gates; only the departments are counting fakes. They check that the whole stage
-list builds behind the owner's gates, that the ledger shows the total cost with
-external usage limited to Claude, ChatGPT/Codex and ElevenLabs voice-over, that
-the 15 s and 30 s cut-downs are valid for every aspect, and that a late change
-(one VO line, one grade) re-runs only its dependants.
+The CI case (the ``launch_film`` fixture in ``tests/acceptance/recorded``) runs the real pipeline:
+``studio new productions/alterlab-launch/brief.json --profile standard``, then
+``studio run`` and ``studio approve`` of each owner gate until delivery is clean. Every
+node is built by ``default_runner`` and the real departments; only the external
+dependencies are injected: recorded Claude responses (``tests/acceptance/recorded/``),
+a fake Flamenco farm and the audio stack (offline ElevenLabs voice, fake Ardour). It
+checks every node is clean, delivery wrote the master and the 8 cut-downs, the ledger
+shows only Claude, ChatGPT/Codex and ElevenLabs voice-over as external usage, and a
+further ``studio run`` executes nothing.
 
-The ``e2e`` case checks the stored farm production (override the id with
-``SPECTRACUT_LAUNCH_PRODUCTION``) after the real run: every node is clean, the
-QA gate and audio QA passed, and a further ``studio run`` executes nothing
-(post-deploy check ``m2-launch-film-farm-e2e``).
+The ``e2e`` case (``SPECTRACUT_E2E=1`` and ``SPECTRACUT_FLAMENCO_URL``, post-deploy
+check ``m2-launch-film-farm-e2e``) runs the same new/run/approve loop live with no
+injection, under production id ``SPECTRACUT_LAUNCH_PRODUCTION`` (default
+``alterlab-launch``).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
 
 import pytest
-from pydantic import JsonValue
-from typer.testing import CliRunner
+import recorded
+from recorded import BRIEF, Film, external_ai_usage, invoke, run_film
 
-from spectracut.cli.app import app
 from spectracut.formats.cutdowns import CutDownSpec
-from spectracut.spec._base import content_hash
+from spectracut.studio.departments.finishing import DeliveryReport
 from spectracut.studio.gates import GateMode
-from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
-from spectracut.studio.ledger import Usage
+from spectracut.studio.graph import ProductionGraph
+from spectracut.studio.ledger import Ledger
 from spectracut.studio.node import NodeSpec, NodeStatus
 from spectracut.studio.profiles import load_profile
 from spectracut.studio.store import ProductionStore
 
+launch_film = recorded.launch_film
+"""The standard film, run once with recorded providers and a fake farm (session fixture)."""
+
 ROOT = Path(__file__).resolve().parents[2]
 PRODUCTION = json.loads((ROOT / "productions" / "alterlab-launch" / "production.json").read_text())
 ASPECTS = {"16:9", "9:16", "1:1", "4:5"}
+PREFIXES = tuple(PRODUCTION["external_usage"]["ai_metric_prefixes"])
+ELEVENLABS_KIND = PRODUCTION["external_usage"]["elevenlabs"]
 
 
 def _graph() -> ProductionGraph:
@@ -46,38 +53,30 @@ def _graph() -> ProductionGraph:
     return graph
 
 
-class FakeStudio:
-    """Departments: each node's output is a hash of its params and inputs, usage by kind."""
-
-    def __init__(self) -> None:
-        self.built: list[str] = []
-
-    def __call__(self, ctx: RunContext) -> RunResult:
-        self.built.append(ctx.spec.id)
-        kind, p = ctx.spec.kind, ctx.spec.params
-        usage = Usage()
-        if kind in {"brief", "concept", "script"}:
-            usage = Usage(ai_usage={"claude_requests": 1, "claude_input_tokens": 1200})
-        elif kind == "voiceover":
-            usage = Usage(elevenlabs_characters=len(str(p["text"])))
-        elif kind in {"shots", "render"}:
-            usage = Usage(gpu_minutes=2.0)
-        elif kind in {"qa", "audio_qa"}:
-            return RunResult(output={"passed": True, "kind": kind}, usage=usage)
-        out: JsonValue = {"id": ctx.spec.id, "digest": content_hash([p, ctx.inputs])}
-        return RunResult(output=out, usage=usage)
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _finish(graph: ProductionGraph, studio: FakeStudio) -> None:
-    """Run the film, passing each owner gate as it is reached, until nothing is waiting."""
-    for _ in range(len(PRODUCTION["nodes"])):
-        graph.run(studio)
-        waiting = [n for n, s in graph.statuses().items() if s is NodeStatus.AWAITING_APPROVAL]
-        if not waiting:
-            return
-        for nid in waiting:
-            graph.approve(nid, "owner approved")
-    raise AssertionError("film never settled")
+def assert_delivered(report: DeliveryReport) -> None:
+    """The master and all 8 cut-downs are on disk and match their recorded digests."""
+    assert report.master.kind == "master"
+    assert {(c.length_s, c.aspect) for c in report.cutdowns} == {
+        (s, a) for s in (15.0, 30.0) for a in ASPECTS
+    }
+    for item in (report.master, *report.cutdowns):
+        path = Path(item.otio_ref)
+        assert path.is_file(), item.id
+        assert item.otio_sha256.removeprefix("sha256:") == _sha256(path), item.id
+        assert item.qa_passed, (item.id, item.qa_failures)
+
+
+def assert_only_allowed_services(ledger: Ledger) -> None:
+    """External usage is Claude/ChatGPT/Codex (by metric prefix) and ElevenLabs VO only."""
+    for entry in ledger.entries():
+        external = external_ai_usage(entry.ai_usage)
+        assert all(k.startswith(PREFIXES) for k in external), (entry.node_id, external)
+        if entry.elevenlabs_characters:
+            assert entry.kind == ELEVENLABS_KIND, entry.node_id
 
 
 def test_production_file_declares_every_standard_stage_and_the_owner_gates() -> None:
@@ -89,27 +88,6 @@ def test_production_file_declares_every_standard_stage_and_the_owner_gates() -> 
         assert graph.gate_for(graph.spec(nid)) is GateMode.HUMAN, nid
 
 
-def test_film_builds_behind_owner_gates_and_ledger_shows_cost_with_only_allowed_services() -> None:
-    graph, studio = _graph(), FakeStudio()
-    assert graph.run(studio).awaiting_approval == ["brief"]
-    _finish(graph, studio)
-    assert all(s is NodeStatus.CLEAN for s in graph.statuses().values())
-
-    totals = graph.ledger.totals()
-    assert totals.runs == len(PRODUCTION["nodes"])
-    assert totals.gpu_minutes > 0
-    assert totals.elevenlabs_characters == sum(
-        len(n["params"]["text"]) for n in PRODUCTION["nodes"] if n["kind"] == "voiceover"
-    )
-    prefixes = tuple(PRODUCTION["external_usage"]["ai_metric_prefixes"])
-    assert totals.ai_usage and all(k.startswith(prefixes) for k in totals.ai_usage)
-    for entry in graph.ledger.entries():
-        if entry.elevenlabs_characters:
-            assert entry.kind == PRODUCTION["external_usage"]["elevenlabs"]
-        assert all(k.startswith(prefixes) for k in entry.ai_usage)
-    assert not graph.run(studio).did_work
-
-
 def test_cutdowns_are_15s_and_30s_in_every_aspect_from_the_films_shots() -> None:
     shots = {n["id"] for n in PRODUCTION["nodes"] if n["kind"] == "shots"}
     cuts = [CutDownSpec.model_validate(c) for c in PRODUCTION["cutdowns"]]
@@ -117,33 +95,54 @@ def test_cutdowns_are_15s_and_30s_in_every_aspect_from_the_films_shots() -> None
     assert all(set(c.shots) <= shots for c in cuts)
 
 
-@pytest.mark.parametrize(
-    ("node", "params", "expected"),
-    [
-        (
-            "vo-02",
-            {"text": "Every page, one clean API."},
-            {"vo-02", "edit", "mix", "render", "qa", "audio-qa", "delivery"},
-        ),
-        (
-            "grade",
-            {"look": "warm-ui"},
-            {"grade", "edit", "mix", "render", "qa", "audio-qa", "delivery"},
-        ),
-    ],
-)
-def test_late_change_reruns_only_its_dependants(
-    node: str, params: dict[str, JsonValue], expected: set[str]
-) -> None:
-    graph, studio = _graph(), FakeStudio()
-    _finish(graph, studio)
-    runs = graph.ledger.totals().runs
-    studio.built.clear()
+def test_standard_film_runs_every_node_with_the_real_departments(launch_film: Film) -> None:
+    graph = launch_film.graph
+    standard = load_profile("standard")
+    assert {graph.spec(n).kind for n in graph.order()} == set(standard.stages)
+    assert {n: graph.status(n) for n in graph.order()} == {
+        n: NodeStatus.CLEAN for n in graph.order()
+    }
+    # Every text department answered through the provider, from its recorded response.
+    assert set(launch_film.provider.calls) >= {
+        "CreativeBrief",
+        "Concept",
+        "Script",
+        "ArtDirection",
+        "StyleFrames",
+        "Storyboard",
+        "ShotPlan",
+    }
+    # Shots, the graded master and every aspect of the delivery rendered on the farm.
+    assert launch_film.farm.submitted
+    gated = {
+        nid.strip()
+        for out in launch_film.outputs
+        for line in out.splitlines()
+        if line.startswith("awaiting approval:")
+        for nid in line.partition(":")[2].split(",")
+    }
+    assert gated == {"brief", "concept", "style_frames", "animatic", "delivery"}
 
-    assert set(graph.set_params(node, params)) == expected
-    _finish(graph, studio)
-    assert set(studio.built) == expected
-    assert graph.ledger.totals().runs == runs + len(expected)
+
+def test_delivery_writes_the_master_and_all_cutdowns(launch_film: Film) -> None:
+    report = DeliveryReport.model_validate(launch_film.graph.output("delivery"))
+    assert_delivered(report)
+    assert report.passed and not report.temp_items
+
+
+def test_ledger_shows_only_claude_chatgpt_and_elevenlabs(launch_film: Film) -> None:
+    ledger = launch_film.graph.ledger
+    assert_only_allowed_services(ledger)
+    totals = ledger.totals()
+    assert any(k.startswith("claude_") for k in totals.ai_usage)
+    spoken = launch_film.voice.calls
+    assert spoken and totals.elevenlabs_characters == sum(len(t) for t in spoken)
+    assert totals.gpu_minutes > 0
+
+
+def test_a_further_run_executes_nothing(launch_film: Film) -> None:
+    assert "executed" not in launch_film.rerun, launch_film.rerun
+    assert len(launch_film.graph.ledger) == launch_film.ledger_entries
 
 
 E2E = os.environ.get("SPECTRACUT_E2E") == "1" and bool(os.environ.get("SPECTRACUT_FLAMENCO_URL"))
@@ -151,25 +150,18 @@ E2E = os.environ.get("SPECTRACUT_E2E") == "1" and bool(os.environ.get("SPECTRACU
 
 @pytest.mark.e2e
 @pytest.mark.skipif(not E2E, reason="set SPECTRACUT_E2E=1 and SPECTRACUT_FLAMENCO_URL")
-def test_e2e_stored_launch_film_passes_qa_and_audio_qa_and_reruns_nothing() -> None:
-    home = os.environ.get("SPECTRACUT_HOME") or str(Path.home() / ".local/share/spectracut")
+def test_e2e_launch_film_reaches_delivery_with_only_allowed_services() -> None:
+    """Live: ``studio new`` + run/approve through delivery on the farm, nothing injected."""
+    home = Path(os.environ.get("SPECTRACUT_HOME") or Path.home() / ".local/share/spectracut")
     pid = os.environ.get("SPECTRACUT_LAUNCH_PRODUCTION", PRODUCTION["id"])
-    store = ProductionStore(Path(home))
-    assert store.exists(pid), f"run the film on the farm host first ({pid})"
+    store = ProductionStore(home)
+    run_film(home, pid, brief=BRIEF)
     graph, _ = store.load(pid)
     assert all(graph.status(n) is NodeStatus.CLEAN for n in graph.order())
-    for kind in ("qa", "audio_qa"):
-        nodes = [n for n in graph.order() if graph.spec(n).kind == kind]
-        assert nodes, f"no {kind} node in {pid}"
-        for nid in nodes:
-            out = graph.output(nid)
-            assert isinstance(out, dict) and out.get("passed") is True, nid
-    prefixes = tuple(PRODUCTION["external_usage"]["ai_metric_prefixes"])
-    assert all(k.startswith(prefixes) for k in graph.ledger.totals().ai_usage)
+    assert_delivered(DeliveryReport.model_validate(graph.output("delivery")))
+    assert_only_allowed_services(graph.ledger)
     before = len(graph.ledger)
-
-    run = CliRunner().invoke(app, ["studio", "run", pid, "--home", home])
-    assert run.exit_code == 0, run.output
-    assert "executed" not in run.output, run.output
-    reloaded, _ = ProductionStore(Path(home)).load(pid)
+    again = invoke(["studio", "run", pid, "--home", str(home)])
+    assert "executed" not in again, again
+    reloaded, _ = store.load(pid)
     assert len(reloaded.ledger) == before

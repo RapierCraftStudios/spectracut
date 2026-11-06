@@ -27,6 +27,7 @@ from spectracut.studio.departments import all_departments
 from spectracut.studio.departments import art as art_depts
 from spectracut.studio.departments import finishing as finishing_depts
 from spectracut.studio.departments import shots as shot_depts
+from spectracut.studio.departments import sound as sound_depts
 from spectracut.studio.gates import GateMode, GatePolicy
 from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
 from spectracut.studio.node import NodeSpec, Tier
@@ -244,7 +245,11 @@ def test_text_only_runs_never_build_farm_deps(
     def no_farm(_production: studio_mod.Production) -> studio_mod.DeviceShotDeps:
         raise AssertionError("text-only run built the farm deps")
 
+    def no_sound(_production: studio_mod.Production) -> studio_mod.SoundDeps:
+        raise AssertionError("text-only run built the sound deps")
+
     monkeypatch.setattr(studio_mod, "device_shot_factory", no_farm)
+    monkeypatch.setattr(studio_mod, "sound_factory", no_sound)
     created = runner.invoke(app, ["studio", "new", str(brief_file), "--id", "text"])
     assert created.exit_code == 0, created.output
     result = runner.invoke(app, ["studio", "run", "text"])
@@ -395,3 +400,58 @@ def test_default_runner_routes_finishing_nodes_to_the_finishing_runner(
     other = RunContext(spec=graph.spec("script"), tier=Tier.FINAL, key="k", inputs={}, attempt=1)
     run(other)
     assert text_kinds == ["script"] and built == ["fin"]
+
+
+def test_default_runner_routes_sound_nodes_to_the_sound_runner(
+    home: Path, brief_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """voiceover/sound_design/music/mix are built in code on sound_factory's deps (#253)."""
+    created = runner.invoke(app, ["studio", "new", str(brief_file), "--id", "snd"])
+    assert created.exit_code == 0, created.output
+    store = ProductionStore(home)
+    text_kinds: list[str] = []
+
+    class Text:
+        def __init__(self, *_a: object, **_kw: object) -> None:
+            pass
+
+        def __call__(self, ctx: RunContext) -> RunResult:
+            text_kinds.append(ctx.spec.kind)
+            return RunResult(output={"node": ctx.spec.id})
+
+    ardour = object()
+    built: list[str] = []
+
+    def factory(production: studio_mod.Production) -> studio_mod.SoundDeps:
+        built.append(production.id)
+        return studio_mod.SoundDeps(ardour=ardour, elevenlabs_configured=lambda: False)  # type: ignore[arg-type]
+
+    routed: list[str] = []
+
+    def build(self: sound_depts.SoundRunner, ctx: RunContext) -> RunResult:
+        assert self.ardour is ardour and self.elevenlabs_configured() is False
+        assert self.workdir == store.path("snd") / "sound"
+        routed.append(ctx.spec.kind)
+        return RunResult(output={"node": ctx.spec.id})
+
+    monkeypatch.setattr(studio_mod, "DepartmentRunner", Text)
+    monkeypatch.setattr(studio_mod, "sound_factory", factory)
+    for method in ("_voiceover", "_sound_design", "_music", "_mix"):
+        monkeypatch.setattr(sound_depts.SoundRunner, method, build)
+    graph = ProductionGraph("snd", profile=load_profile("standard"), gates=GatePolicy())
+    graph.add_nodes([NodeSpec(id="script", kind="script", department="script-writer")])
+    run = studio_mod.default_runner(studio_mod.Production("snd", store), graph)
+
+    script = RunContext(spec=graph.spec("script"), tier=Tier.FINAL, key="k", inputs={}, attempt=1)
+    run(script)
+    assert text_kinds == ["script"] and built == []
+    for spec in sound_depts.sound_nodes():
+        ctx = RunContext(spec=spec, tier=Tier.PREVIEW, key="k", inputs={}, attempt=1)
+        assert run(ctx).output == {"node": spec.id}
+    assert routed == [
+        sound_depts.VOICEOVER,
+        sound_depts.SOUND_DESIGN,
+        sound_depts.MUSIC,
+        sound_depts.MIX,
+    ]
+    assert text_kinds == ["script"] and built == ["snd"]

@@ -1,0 +1,47 @@
+{
+  "concept_id": "url-in-data-out",
+  "lines": [
+    {
+      "beat": "problem",
+      "vo": "Scrapers break every time a site changes.",
+      "on_screen": "Scrapers break"
+    },
+    {
+      "beat": "one-call",
+      "vo": "With AlterLab you send one URL.",
+      "on_screen": "Send a URL"
+    },
+    {
+      "beat": "results",
+      "vo": "And get clean, structured data back.",
+      "on_screen": "Structured data back",
+      "claims": [
+        {
+          "text": "Teams send a URL and get structured results back.",
+          "source_id": "alterlab-site"
+        }
+      ]
+    },
+    {
+      "beat": "any-page",
+      "vo": "One API for any web page.",
+      "on_screen": "One API, any page",
+      "claims": [
+        {
+          "text": "One API turns any web page into clean, structured data.",
+          "source_id": "alterlab-site"
+        }
+      ]
+    },
+    {
+      "beat": "no-babysitting",
+      "vo": "No more babysitting scrapers.",
+      "on_screen": "No babysitting"
+    },
+    {
+      "beat": "cta",
+      "vo": "Start free today.",
+      "on_screen": "Start free"
+    }
+  ]
+}
