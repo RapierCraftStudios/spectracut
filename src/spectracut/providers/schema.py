@@ -123,3 +123,56 @@ def _tuple_to_items(out: dict[str, Any], members: list[Any]) -> None:
     elif distinct:
         out["items"] = {"anyOf": distinct}
     out["minItems"] = out["maxItems"] = len(members)
+
+
+#: Property name a non-object root is wrapped under; the provider unwraps it.
+WRAP_KEY = "value"
+
+_DEF_MAPS = ("$defs", "definitions")
+
+
+def claude_output_schema(schema: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """The schema sent to ``claude --json-schema`` and the key its reply is wrapped in.
+
+    A tool input schema needs ``"type": "object"`` at its root. Pydantic writes a
+    self-referencing model (``Edit`` nests ``Edit``) as a root ``$ref``; that
+    definition is inlined into the root and ``$defs`` kept, so nested references
+    still resolve. A root that is still not an object is wrapped as the single
+    property :data:`WRAP_KEY`, which is returned so the caller can unwrap the reply.
+    Otherwise the key is ``None``. The input is never mutated.
+    """
+    root = _inline_root_ref(strict_json_schema(schema))
+    if root.get("type") == "object":
+        return root, None
+    defs = {name: root.pop(name) for name in _DEF_MAPS if name in root}
+    wrapped: dict[str, Any] = {
+        "type": "object",
+        "properties": {WRAP_KEY: root},
+        "required": [WRAP_KEY],
+        "additionalProperties": False,
+        **defs,
+    }
+    return wrapped, WRAP_KEY
+
+
+def _inline_root_ref(root: dict[str, Any]) -> dict[str, Any]:
+    """Replace a local root ``$ref`` (with no ``type``) by the definition it names."""
+    seen: set[str] = set()
+    while "type" not in root and isinstance(ref := root.get("$ref"), str) and ref not in seen:
+        seen.add(ref)
+        target = _local_def(root, ref)
+        if target is None:
+            break
+        rest = {key: value for key, value in root.items() if key != "$ref"}
+        root = {**copy.deepcopy(target), **rest}
+    return root
+
+
+def _local_def(root: dict[str, Any], ref: str) -> dict[str, Any] | None:
+    for name in _DEF_MAPS:
+        prefix = f"#/{name}/"
+        if ref.startswith(prefix):
+            defs = root.get(name)
+            target = defs.get(ref[len(prefix) :]) if isinstance(defs, dict) else None
+            return target if isinstance(target, dict) else None
+    return None
