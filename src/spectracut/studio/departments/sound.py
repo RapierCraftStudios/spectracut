@@ -41,7 +41,7 @@ from spectracut.audio.generate import (
 from spectracut.audio.music_edit import Stretcher, analyze, edited_sound, plan_edit, render_edit
 from spectracut.audio.recipe import AudioRecipe, Cue, Layer, Provenance, SoundSpec, place_cues
 from spectracut.audio.render import ArdourRunner, read_wav, render_mix, write_wav
-from spectracut.audio.vo import VoiceOver, VoLine
+from spectracut.audio.vo import VoiceOver, VoiceoverLine, VoiceoverTrack, VoLine
 from spectracut.edit.timeline import Edit
 from spectracut.providers.elevenlabs import ENV_VAR as ELEVENLABS_ENV_VAR
 from spectracut.providers.local.registry import LocalProvider, mock_mode
@@ -85,23 +85,6 @@ LOCAL_TTS = Provenance(
 
 
 # ------------------------------------------------------------------- outputs
-
-
-class VoiceoverLine(StrictModel):
-    id: Slug
-    beat: str
-    text: str = Field(min_length=1)
-    media_ref: str = Field(min_length=1)
-    duration_s: float = Field(gt=0.0)
-
-
-class VoiceoverTrack(StrictModel):
-    """Every voiced line of the script; ``temp_vo`` when made by the local model."""
-
-    lines: list[VoiceoverLine] = Field(default_factory=list)
-    provider: Literal["elevenlabs", "local"]
-    temp_vo: bool
-    mark: Literal["temp-vo"] | None = None
 
 
 class SoundDesignCue(StrictModel):

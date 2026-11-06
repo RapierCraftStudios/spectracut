@@ -14,7 +14,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import Field
 
 from spectracut.providers.elevenlabs import VoiceProvider
 from spectracut.providers.local.tts import LocalTts
@@ -29,6 +31,23 @@ class ScriptNotLockedError(RuntimeError):
 class VoLine(StrictModel):
     id: Slug
     text: str
+
+
+class VoiceoverLine(StrictModel):
+    id: Slug
+    beat: str
+    text: str = Field(min_length=1)
+    media_ref: str = Field(min_length=1)
+    duration_s: float = Field(gt=0.0)
+
+
+class VoiceoverTrack(StrictModel):
+    """Every voiced line of the script; ``temp_vo`` when made by the local model."""
+
+    lines: list[VoiceoverLine] = Field(default_factory=list)
+    provider: Literal["elevenlabs", "local"]
+    temp_vo: bool
+    mark: Literal["temp-vo"] | None = None
 
 
 def line_key(text: str, voice: str, settings: Mapping[str, Any]) -> str:

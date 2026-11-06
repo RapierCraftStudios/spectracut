@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Annotated
 import typer
 from pydantic import JsonValue, ValidationError
 
+from spectracut.edit.preview import AnimaticPreview, FfmpegPreview
 from spectracut.providers.base import TextProvider, select_text_provider
 from spectracut.providers.local.runtime import ModelRuntime
 from spectracut.queue.executors.flamenco import FlamencoApi
@@ -30,7 +31,7 @@ from spectracut.studio.departments import shots as shot_depts
 from spectracut.studio.departments.style_frame_farm import FarmStyleFrameRenderer
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
-from spectracut.studio.node import NodeSpec
+from spectracut.studio.node import NodeSpec, Tier
 from spectracut.studio.producer import BudgetCaps, Producer, edge_problems, scheduled
 from spectracut.studio.profiles import available_profiles, load_profile
 from spectracut.studio.runner import CapacityLimits, DepartmentRunner
@@ -90,6 +91,9 @@ def default_device_shot(production: Production) -> DeviceShotDeps:
 device_shot_factory: Callable[[Production], DeviceShotDeps] = default_device_shot
 """Builds the device-shot dependencies; tests inject a fake Flamenco and a mock judge."""
 
+animatic_preview_factory: Callable[[], AnimaticPreview] = FfmpegPreview
+"""Builds the animatic's mp4 preview encoder (ffmpeg); tests inject a fake."""
+
 SCREEN_ASSET = Path("ui") / "dashboard.png"
 """The UI screen image, relative to the brand kit's ``assets`` dir."""
 
@@ -123,7 +127,9 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
     ``style_frames`` and ``animatic`` through
     :class:`~spectracut.studio.departments.art.PreproductionRunner`: style frames get
     a local concept image (when a local image model is reachable) and a final-tier
-    Blender render on the farm, and the animatic is cut in code. Farm dependencies
+    Blender render on the farm, and the animatic is cut in code to the voiceover's
+    audio: its boards render at the preview tier on the farm and its review mp4 is
+    encoded by ffmpeg (:data:`animatic_preview_factory`). Farm dependencies
     (:data:`device_shot_factory`) are built on the first shot or style-frame render,
     so text-only runs never need the Flamenco env or the signing key. ``edit``,
     ``render`` and ``delivery`` nodes are built in code by
@@ -187,6 +193,14 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                     renderer=FarmStyleFrameRenderer(farm_deps, graph.production_id, workdir),
                     voice=art_depts.default_voice(runtime=runtime),
                     workdir=workdir,
+                    board_renderer=FarmStyleFrameRenderer(
+                        farm_deps,
+                        graph.production_id,
+                        workdir / "boards",
+                        tier=Tier.PREVIEW,
+                        node_id=art_depts.ANIMATIC,
+                    ),
+                    preview=animatic_preview_factory(),
                 )
             runner = preproduction
         return runner(ctx)

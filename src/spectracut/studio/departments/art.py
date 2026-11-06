@@ -15,10 +15,15 @@
   is Blender on a render host; the control plane never runs Blender. The node waits at
   its human gate. Each frame names the concept beat or signature visual it shows
   (``concept_ref``, :meth:`StyleFrameArtist.check_output`).
-- ``storyboard`` (kind ``storyboard``): a board per shot with camera and action.
+- ``storyboard`` (kind ``storyboard``): a board per shot with camera and action. Each
+  board's ``beat`` resolves to a script beat (:func:`~spectracut.storyboard.animatic.resolve_beats`)
+  and every voiced script beat has a board (:meth:`StoryboardArtist.check_output`).
 - ``animatic-editor`` (kind ``animatic``): cuts the boards into an
   :class:`~spectracut.edit.timeline.Edit` with temp VO (and music) and checks the
-  timing is locked. Built in code, not by the text provider.
+  timing is locked. Built in code, not by the text provider. The VO is the
+  ``voiceover`` node's audio (else the local voice) with its real durations; each
+  board is rendered to a PNG at the **preview** tier through an injected renderer
+  and referenced by path; an injected preview writes a playable mp4 for review.
 
 :func:`preproduction_nodes` declares the four nodes; :func:`brand_kit_node` the brand kit.
 """
@@ -32,13 +37,20 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, JsonValue
 
+from spectracut.audio.vo import VoiceoverTrack
+from spectracut.edit.preview import AnimaticPreview
 from spectracut.edit.timeline import Edit
 from spectracut.providers.local.registry import get_provider, mock_mode
 from spectracut.providers.local.runtime import ModelRuntime
 from spectracut.providers.local.tts import LocalTts
 from spectracut.spec.brand import BrandKit
 from spectracut.spec.brief import CreativeBrief
-from spectracut.storyboard.animatic import TempAudio, build_animatic, check_locked_timing
+from spectracut.storyboard.animatic import (
+    TempAudio,
+    build_animatic,
+    check_locked_timing,
+    resolve_beats,
+)
 from spectracut.storyboard.explore import ExploreProvider, choose_exploration_provider, explore
 from spectracut.storyboard.models import (
     ArtDirection,
@@ -66,6 +78,8 @@ STYLE_FRAMES = "style_frames"
 STORYBOARD = "storyboard"
 ANIMATIC = "animatic"
 BRAND_KIT = "brand_kit"
+VOICEOVER = "voiceover"
+"""Kind of the sound department's voiceover node; the animatic reads its audio."""
 BRAND_KIT_PARAM = ds.BRAND_KIT_PARAM
 """Param of the ``brand_kit`` node holding the kit's JSON (the shot nodes use the same)."""
 
@@ -204,13 +218,48 @@ class StoryboardArtist(Department):
     output = Storyboard
     cost = CostEstimate(ai_requests=1, ai_input_tokens=5_000)
 
+    @classmethod
+    def check_output(
+        cls,
+        node_id: str,
+        output: JsonValue,
+        inputs: Mapping[str, JsonValue],
+        kinds: Mapping[str, str],
+    ) -> None:
+        """With a script input: every board covers a script beat; every VO beat has a board."""
+        raw = _input_of(inputs, kinds, SCRIPT)
+        if raw is None:
+            return
+        script = Script.model_validate(raw)
+        storyboard = Storyboard.model_validate(output)
+        beats = [line.beat for line in script.lines]
+        resolved = resolve_beats(storyboard, beats)
+        problems = []
+        loose = [
+            f"{b.shot_id}={b.beat!r}"
+            for b, r in zip(storyboard.boards, resolved.boards, strict=True)
+            if not r.beat
+        ]
+        if loose:
+            problems.append(f"boards cover no script beat: {', '.join(loose)}")
+        missing = _unboarded(script, resolved)
+        if missing:
+            problems.append(f"script beats with VO have no board: {missing}")
+        if problems:
+            raise DepartmentOutputError(cls.name, node_id, "; ".join(problems))
+
 
 class AnimaticEditor(Department):
-    """Cuts the boards to temp VO on the edit timeline."""
+    """Cuts the rendered boards to temp VO on the edit timeline."""
 
     name = "animatic-editor"
     produces = frozenset({ANIMATIC})
-    inputs: ClassVar[dict[str, type[BaseModel]]] = {SCRIPT: Script, STORYBOARD: Storyboard}
+    inputs: ClassVar[dict[str, type[BaseModel]]] = {
+        SCRIPT: Script,
+        STORYBOARD: Storyboard,
+        VOICEOVER: VoiceoverTrack,
+        ART_DIRECTION: ArtDirection,
+    }
     output = Edit
     skill_pack = SKILLS_ROOT / "editor"
     cost = CostEstimate()
@@ -233,6 +282,12 @@ It may also return the :class:`Usage` the render consumed (GPU minutes) for the 
 """
 VoiceFn = Callable[[str, Path], TempAudio]
 """Local temp VO: ``voice(text, path) -> TempAudio``."""
+
+
+def _unboarded(script: Script, resolved: Storyboard) -> list[str]:
+    """Script beats with VO that no board (beats already resolved) covers."""
+    covered = {b.beat for b in resolved.boards}
+    return [line.beat for line in script.lines if line.vo and line.beat not in covered]
 
 
 def brand_kit_node(kit: BrandKit) -> NodeSpec:
@@ -299,12 +354,14 @@ def preproduction_nodes(
     tier: Tier = Tier.FINAL,
     concept_id: str | None = None,
     brand_kit_id: str | None = None,
+    voiceover_id: str | None = None,
 ) -> list[NodeSpec]:
     """The four pre-production nodes; style frames build at ``tier`` (final).
 
     ``concept_id`` (the approved concept) and ``brand_kit_id`` are wired into art
     direction, style frames and storyboard when given, in the order each
-    department declares its inputs.
+    department declares its inputs. ``voiceover_id`` (the voiceover node) is wired
+    into the animatic when given, so it cuts to that audio.
     """
 
     def wired(*ids: str | None) -> tuple[str, ...]:
@@ -334,7 +391,7 @@ def preproduction_nodes(
             id=ANIMATIC,
             kind=ANIMATIC,
             department=AnimaticEditor.name,
-            inputs=(script_id, STORYBOARD),
+            inputs=wired(script_id, STORYBOARD, voiceover_id, ART_DIRECTION),
         ),
     ]
 
@@ -343,11 +400,14 @@ class PreproductionRunner:
     """Wraps a :class:`~spectracut.studio.runner.DepartmentRunner` for the art nodes.
 
     ``style_frames`` outputs gain a concept image (``explorer``) and a final-tier
-    render (``renderer``), whose GPU minutes go to the node's usage; ``animatic`` is
-    built in code from the script and boards, and ``brand_kit`` from its param
-    (:func:`build_brand_kit`). With no ``explorer`` frames render without a concept;
-    with no ``voice`` the animatic has no temp VO. Other kinds pass
-    through to ``inner``.
+    render (``renderer``), whose GPU minutes go to the node's usage; ``brand_kit`` is
+    built from its param (:func:`build_brand_kit`). ``animatic`` is built in code: its
+    VO is the ``voiceover`` input's audio (else ``voice``, the local TTS), each board
+    is rendered to ``workdir/boards/<shot>.png`` by ``board_renderer`` (the farm at
+    the preview tier) and referenced by path, and ``preview`` writes
+    ``workdir/animatic/<node>.mp4``. A voiced script with no VO source, or a voiced
+    beat with no board, is an error, never a silent gap. With no ``explorer`` frames
+    and boards render without a concept. Other kinds pass through to ``inner``.
     """
 
     def __init__(
@@ -359,6 +419,8 @@ class PreproductionRunner:
         renderer: StyleFrameRenderer,
         voice: VoiceFn | None,
         workdir: Path,
+        board_renderer: StyleFrameRenderer,
+        preview: AnimaticPreview,
         music: TempAudio | None = None,
     ) -> None:
         self.inner = inner
@@ -368,6 +430,8 @@ class PreproductionRunner:
         self.voice = voice
         self.workdir = Path(workdir)
         self.music = music
+        self.board_renderer = board_renderer
+        self.preview = preview
 
     def __call__(self, ctx: RunContext) -> RunResult:
         if ctx.spec.kind == STYLE_FRAMES:
@@ -414,24 +478,77 @@ class PreproductionRunner:
         )
         return RunResult(output=output, usage=usage)
 
+    def _temp_vo(self, ctx: RunContext, script: Script) -> dict[str, TempAudio]:
+        """Temp VO keyed by script beat: the voiceover input, else the local voice."""
+        raw = _input_of(ctx.inputs, {}, VOICEOVER)
+        if raw is not None:
+            track = VoiceoverTrack.model_validate(raw)
+            return {
+                line.beat: TempAudio(media_ref=line.media_ref, duration_s=line.duration_s)
+                for line in track.lines
+            }
+        voiced = [line for line in script.lines if line.vo]
+        if not voiced:
+            return {}
+        if self.voice is None:
+            raise ValueError("animatic needs temp VO: no voiceover input and no local voice")
+        return {
+            line.beat: self.voice(line.vo, self.workdir / f"vo-{n}.wav")
+            for n, line in enumerate(script.lines)
+            if line.vo
+        }
+
+    def _boards(self, storyboard: Storyboard, art: ArtDirection) -> tuple[Storyboard, float, int]:
+        """Each board rendered to ``workdir/boards/<shot>.png``; GPU minutes, explorations."""
+        out = self.workdir / "boards"
+        done = []
+        gpu = 0.0
+        explored = 0
+        for board in storyboard.boards:
+            prompt = " ".join(p for p in (board.action, board.screen_content, board.text) if p)
+            concept = None
+            if self.explorer is not None:
+                concept = explore(self.explorer, prompt, out / f"{board.shot_id}-concept.png")
+                explored += 1
+            frame = StyleFrame(
+                id=board.shot_id, description=board.action, prompt=prompt, concept=concept
+            )
+            path = (out / f"{board.shot_id}.png").absolute()
+            rendered = self.board_renderer(frame, art, path)
+            if isinstance(rendered, tuple):
+                gpu += rendered[1].gpu_minutes
+            if not path.is_file():
+                raise ValueError(f"board {board.shot_id!r} was not rendered to {path}")
+            done.append(board.model_copy(update={"image": str(path)}))
+        return storyboard.model_copy(update={"boards": done}), gpu, explored
+
     def _animatic(self, ctx: RunContext) -> RunResult:
         dept = self.departments[ctx.spec.department]
-        script = Script.model_validate(ctx.inputs[SCRIPT])
-        storyboard = Storyboard.model_validate(ctx.inputs[STORYBOARD])
-        voice = self.voice
-        vo = (
-            {
-                line.beat: voice(line.vo, self.workdir / f"vo-{n}.wav")
-                for n, line in enumerate(script.lines)
-                if line.vo
-            }
-            if voice is not None
-            else {}
-        )
+        script = Script.model_validate(_input_of(ctx.inputs, {}, SCRIPT))
+        storyboard = Storyboard.model_validate(_input_of(ctx.inputs, {}, STORYBOARD))
+        raw_art = _input_of(ctx.inputs, {}, ART_DIRECTION)
+        if raw_art is None:
+            raise ValueError(
+                f"animatic {ctx.spec.id!r} needs an {ART_DIRECTION!r} input to render its boards"
+            )
+        art = ArtDirection.model_validate(raw_art)
+        vo = self._temp_vo(ctx, script)
+        storyboard = resolve_beats(storyboard, [line.beat for line in script.lines])
+        missing = _unboarded(script, storyboard)
+        if missing:
+            raise ValueError(f"animatic: script beats with VO have no board: {missing}")
+        storyboard, gpu, explored = self._boards(storyboard, art)
         edit = build_animatic(ctx.spec.id, storyboard, vo, self.music)
         problems = check_locked_timing(edit, storyboard)
         if problems:
             raise ValueError("animatic timing is not locked: " + "; ".join(problems))
+        movie = self.workdir / "animatic" / f"{ctx.spec.id}.mp4"
+        movie.parent.mkdir(parents=True, exist_ok=True)
+        self.preview(edit, movie)
+        if not movie.is_file() or movie.stat().st_size == 0:
+            raise ValueError(f"animatic preview was not written to {movie}")
+        ai: dict[str, int] = {"image_exploration_requests": explored} if explored else {}
+        usage = Usage(gpu_minutes=gpu, ai_usage=ai)
         return RunResult(
-            output=dept.validate_output(ctx.spec.id, edit.model_dump(mode="json")), usage=Usage()
+            output=dept.validate_output(ctx.spec.id, edit.model_dump(mode="json")), usage=usage
         )
