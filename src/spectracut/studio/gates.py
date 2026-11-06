@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from enum import StrEnum
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field, JsonValue
 
@@ -39,6 +39,8 @@ class CriticVerdict(StrictModel):
     passed: bool
     scores: dict[Slug, float] = Field(default_factory=dict)
     comment: str = ""
+    usage: dict[Slug, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
+    """Judge tokens this review used, by metric; the graph adds them to the node's ledger entry."""
 
 
 Critic = Callable[["NodeSpec", JsonValue], CriticVerdict]

@@ -114,6 +114,32 @@ def _critic(
 SHOT = NodeSpec(id="shot-01", kind="shots", department="lighter")
 
 
+class UsageVision(ScriptedVision):
+    """Vision judge that reports tokens for its last call, like the Claude CLI judge."""
+
+    def score(self, frame_path: Path, rubric: str) -> VisionScore:
+        self.last_usage = {"input_tokens": 10, "cache_read_input_tokens": 90, "output_tokens": 5}
+        return super().score(frame_path, rubric)
+
+
+def test_critic_verdict_carries_judge_usage_once_per_review(tmp_path: Path) -> None:
+    frame = _png(tmp_path / "frame.png", _bar(4))
+    out: JsonValue = {"frames": [str(frame)]}
+    critic = _critic(UsageVision(), samples_profile())
+    first = critic.review(SHOT, out)
+    assert first.usage == {
+        "critic_requests": 1,
+        "critic_input_tokens": 100,
+        "critic_output_tokens": 5,
+    }
+    assert critic.review(SHOT, out).usage == {}  # cached: tokens were already charged
+    assert _critic(ScriptedVision()).review(SHOT, out).usage == {}  # no last_usage
+
+
+def samples_profile() -> QualityProfile:
+    return load_profile("standard")
+
+
 # ---- R1: every gate in a standard production gets a score and notes -----------
 
 

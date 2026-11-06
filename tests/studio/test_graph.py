@@ -291,6 +291,38 @@ def test_critic_gate_revises_within_budget_then_rejects() -> None:
     assert outcomes == ["revise", "revise", "rejected"]
 
 
+def test_critic_judge_usage_is_added_to_each_attempts_ledger_entry() -> None:
+    profile = QualityProfile(
+        name="t",
+        description="test",
+        stages=("brief", "script"),
+        revision_budget={"brief": 0, "script": 1},
+        tier={"brief": Tier.PREVIEW, "script": Tier.PREVIEW},
+        gates={"script": GateMode.CRITIC},
+    )
+    calls: list[int] = []
+
+    def critic(spec: NodeSpec, _out: JsonValue) -> CriticVerdict:
+        calls.append(1)
+        return CriticVerdict(
+            passed=len(calls) > 1,
+            comment="ok",
+            usage={"critic_input_tokens": 100, "critic_requests": 1},
+        )
+
+    class Runner(FakeRunner):
+        def __call__(self, ctx: RunContext) -> RunResult:
+            res = super().__call__(ctx)
+            return RunResult(output=res.output, usage=Usage(ai_usage={"critic_requests": 5}))
+
+    g = ProductionGraph("p", profile=profile)
+    g.add_nodes([node("brief"), node("script", "brief")])
+    g.run(Runner(), critic=critic)
+    entries = g.ledger.entries_for("script")
+    assert [e.outcome for e in entries] == ["revise", "accepted"]
+    assert [e.ai_usage for e in entries] == [{"critic_requests": 6, "critic_input_tokens": 100}] * 2
+
+
 def test_department_failure_is_recorded_and_blocks_dependants() -> None:
     g = ProductionGraph("p")
     g.add_nodes([node("brief"), node("script", "brief")])
