@@ -130,6 +130,7 @@ class JobQueue:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.RLock()
         self._in_flight: set[int] = set()
+        self._claims = 0
         """``id()`` of jobs a thread is advancing right now; no one else may claim them."""
 
     # ---- placement ---------------------------------------------------------
@@ -167,6 +168,11 @@ class JobQueue:
 
     def tick(self, now: datetime | None = None) -> list[Job]:
         """Advance every runnable job once; return the jobs that changed state."""
+        return self._tick(now)[0]
+
+    def _tick(self, now: datetime | None = None) -> tuple[list[Job], int]:
+        """``tick`` plus how many jobs this call claimed (for foreign-activity detection)."""
+        own = 0
         now = now or self._now()
         progressed: list[Job] = []
         with self._lock:
@@ -174,13 +180,14 @@ class JobQueue:
         for job in candidates:
             if not self._claim(job, now):
                 continue
+            own += 1
             try:
                 if self._advance(job):
                     progressed.append(job)
             finally:
                 with self._lock:
                     self._in_flight.discard(id(job))
-        return progressed
+        return progressed, own
 
     def _claim(self, job: Job, now: datetime) -> bool:
         """Atomically take a runnable QUEUED job; False if not runnable or another thread has it."""
@@ -199,6 +206,7 @@ class JobQueue:
                     return False
                 job.resume_at = None
             self._in_flight.add(id(job))
+            self._claims += 1
             return True
 
     def _advance(self, job: Job) -> bool:
@@ -251,14 +259,19 @@ class JobQueue:
         """
         scope = None if jobs is None else set(jobs)
         for _ in range(max_ticks):
-            progressed = self.tick()
             with self._lock:
+                claims_before = self._claims
+            progressed, own = self._tick()
+            with self._lock:
+                # Any other thread's job in flight, or claimed during this tick (it may hold
+                # the lease that made ours busy, then finish), means retry rather than stall.
+                busy_elsewhere = bool(self._in_flight) or self._claims - claims_before > own
+
                 open_jobs = [
                     j
                     for j in self._jobs.values()
                     if not j.done and (scope is None or j.id in scope)
                 ]
-                busy_elsewhere = any(id(j) in self._in_flight for j in open_jobs)
             if not open_jobs:
                 return
             if progressed:

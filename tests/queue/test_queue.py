@@ -527,3 +527,31 @@ def test_lease_pool_never_double_leases_a_card_under_contention() -> None:
     assert len(leases) == 1 and len(busy) == n - 1
     pool.release(leases[0])  # type: ignore[arg-type]
     assert pool.free_cpus == 64 and pool.can_run_now(Resources(gpus=1))
+
+
+def test_scoped_waiter_does_not_stall_when_foreign_job_holds_the_only_gpu() -> None:
+    a_running, release = threading.Event(), threading.Event()
+
+    def body(job: Job) -> JobResult:
+        if job.id == "a":
+            a_running.set()
+            assert release.wait(10)
+        return _ok(job)
+
+    q = JobQueue([_make_hostpool(body, cards=(CARD_8,))], now=lambda: T0)
+    a = q.submit(Job(id="a", kind="model", resources=Resources(gpus=1)))
+    ta = threading.Thread(target=q.run_until_idle, kwargs={"jobs": ["a"]})
+    ta.start()
+    try:
+        assert a_running.wait(10)
+        b = q.submit(Job(id="b", kind="model", resources=Resources(gpus=1)))
+        tb = threading.Thread(target=q.run_until_idle, kwargs={"jobs": ["b"]})
+        tb.start()
+        time.sleep(0.1)  # b is requeued on ExecutorBusy while a holds the card
+        release.set()
+        tb.join(10)
+        assert not tb.is_alive()
+    finally:
+        release.set()
+        ta.join(10)
+    assert a.status is JobStatus.SUCCEEDED and b.status is JobStatus.SUCCEEDED
