@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import socket
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ import typer
 from pydantic import JsonValue, ValidationError
 
 from spectracut.providers.base import TextProvider, select_text_provider
+from spectracut.providers.local.runtime import ModelRuntime
 from spectracut.queue.executors.flamenco import FlamencoApi
 from spectracut.spec.brand import BrandKit, load_brand_kit
 from spectracut.spec.brief import Brief, CreativeBrief
@@ -22,8 +24,10 @@ from spectracut.studio import intake
 from spectracut.studio.autonomy import AutonomyPolicy, BudgetApproval, load_autonomy
 from spectracut.studio.department import Department
 from spectracut.studio.departments import all_departments
+from spectracut.studio.departments import art as art_depts
 from spectracut.studio.departments import finishing as finishing_depts
 from spectracut.studio.departments import shots as shot_depts
+from spectracut.studio.departments.style_frame_farm import FarmStyleFrameRenderer
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
 from spectracut.studio.node import NodeSpec
@@ -90,17 +94,41 @@ SCREEN_ASSET = Path("ui") / "dashboard.png"
 """The UI screen image, relative to the brand kit's ``assets`` dir."""
 
 
+def _local_runtime(home: Path) -> ModelRuntime | None:
+    """A local model runtime when this machine is a registered render host with the
+    host model loaders installed (``spectracut_host``), else ``None``."""
+    try:
+        from spectracut_host.models import load_model  # type: ignore[import-not-found,unused-ignore]
+    except ImportError:
+        return None
+    from spectracut.cli.render import load_hosts
+    from spectracut.queue.executors.base import LeasePool
+
+    name = socket.gethostname()
+    try:
+        slot = next((h for h in load_hosts(home) if h.name == name), None)
+    except (OSError, ValueError):
+        return None
+    if slot is None:
+        return None
+    return ModelRuntime(load_model, LeasePool(slot.cpus, slot.mem_gb, slot.gpus), host=slot.name)
+
+
 def default_runner(production: Production, graph: ProductionGraph) -> Runner:
     """Run nodes through :data:`DEPARTMENTS`; a node with no department fails clearly.
 
     Productions on the ``device-shot`` profile run through the device-shot runner.
     Other profiles render ``template_shots`` and ``shots`` nodes on the farm through
-    :class:`~spectracut.studio.departments.shots.ShotRunner`; its farm dependencies
-    (:data:`device_shot_factory`) are built on the first shot node, so text-only runs
-    never need the Flamenco env or the signing key. ``edit``, ``render`` and
-    ``delivery`` nodes are built in code by
-    :class:`~spectracut.studio.departments.finishing.FinishingRunner` (its farm
-    dependencies built the same lazy way), never by the text runner.
+    :class:`~spectracut.studio.departments.shots.ShotRunner`, and build
+    ``style_frames`` and ``animatic`` through
+    :class:`~spectracut.studio.departments.art.PreproductionRunner`: style frames get
+    a local concept image (when a local image model is reachable) and a final-tier
+    Blender render on the farm, and the animatic is cut in code. Farm dependencies
+    (:data:`device_shot_factory`) are built on the first shot or style-frame render,
+    so text-only runs never need the Flamenco env or the signing key. ``edit``,
+    ``render`` and ``delivery`` nodes are built in code by
+    :class:`~spectracut.studio.departments.finishing.FinishingRunner` (on the same lazily
+    built farm dependencies), never by the text runner.
     """
     if graph.profile is not None and graph.profile.name == ds.PROFILE:
         deps = device_shot_factory(production)
@@ -114,8 +142,18 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
         )
     inner: DepartmentRunner | None = None
     shots: shot_depts.ShotRunner | None = None
+    preproduction: art_depts.PreproductionRunner | None = None
+    farm: DeviceShotDeps | None = None
     finishing: finishing_depts.FinishingRunner | None = None
     lock = threading.Lock()
+    farm_lock = threading.Lock()
+
+    def farm_deps() -> DeviceShotDeps:
+        nonlocal farm
+        with farm_lock:
+            if farm is None:
+                farm = device_shot_factory(production)
+            return farm
 
     def text(ctx: RunContext) -> RunResult:
         nonlocal inner
@@ -136,11 +174,28 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
             runner = inner
         return runner(ctx)
 
+    def pre(ctx: RunContext) -> RunResult:
+        nonlocal preproduction
+        with lock:
+            if preproduction is None:
+                workdir = production.store.path(production.id) / "preproduction"
+                runtime = _local_runtime(production.store.home)
+                preproduction = art_depts.PreproductionRunner(
+                    text,
+                    DEPARTMENTS,
+                    explorer=art_depts.default_explorer(runtime=runtime),
+                    renderer=FarmStyleFrameRenderer(farm_deps, graph.production_id, workdir),
+                    voice=art_depts.default_voice(runtime=runtime),
+                    workdir=workdir,
+                )
+            runner = preproduction
+        return runner(ctx)
+
     def finish(ctx: RunContext) -> RunResult:
         nonlocal finishing
         with lock:
             if finishing is None:
-                deps = device_shot_factory(production)
+                deps = farm_deps()
                 brief = production.brief
                 finishing = finishing_depts.FinishingRunner(
                     text,
@@ -161,11 +216,13 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
         nonlocal shots
         if ctx.spec.kind in FINISHING_KINDS:
             return finish(ctx)
+        if ctx.spec.kind in (art_depts.STYLE_FRAMES, art_depts.ANIMATIC):
+            return pre(ctx)
         if ctx.spec.kind not in (shot_depts.TEMPLATE_SHOTS, shot_depts.SHOTS):
             return text(ctx)
         with lock:
             if shots is None:
-                deps = device_shot_factory(production)
+                deps = farm_deps()
                 shots = shot_depts.ShotRunner(
                     text,
                     DEPARTMENTS,

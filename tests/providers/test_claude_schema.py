@@ -166,3 +166,111 @@ def test_reply_still_validated_against_the_tuple_model() -> None:
     for bad in bad_slopes:
         with pytest.raises(DepartmentOutputError):
             ArtDirector.validate_output("art_direction", _art_direction(bad))
+
+
+# --- #269: the sent schema has an object root -----------------------------------
+
+
+@pytest.mark.parametrize("dept", [d for _, d in DEPARTMENTS], ids=[n for n, _ in DEPARTMENTS])
+def test_department_schemas_sent_to_claude_have_object_root(dept: Any) -> None:
+    sent = json.loads(_sent_schema(dept.output_schema()))
+    assert sent.get("type") == "object", f"{dept.name}: root type is {sent.get('type')!r}"
+    assert "$ref" not in sent, f"{dept.name}: root is still a $ref"
+    unknown = _keywords(sent, set()) - STRICT_ALLOWLIST
+    assert not unknown, f"{dept.name}: keywords outside the strict allowlist: {sorted(unknown)}"
+
+
+def test_animatic_root_inlines_the_recursive_edit_and_keeps_defs() -> None:
+    from spectracut.edit.timeline import Edit
+    from spectracut.providers.schema import claude_output_schema
+    from spectracut.studio.departments.art import AnimaticEditor
+
+    raw = AnimaticEditor.output_schema()
+    assert "$ref" in raw and "type" not in raw  # Pydantic's root $ref is unchanged
+    sent, key = claude_output_schema(raw)
+    assert key is None
+    assert set(Edit.model_fields) <= set(sent["properties"])
+    assert "Edit" in sent["$defs"]  # Clip.nested still refers to #/$defs/Edit
+    assert "#/$defs/Edit" in json.dumps(sent["$defs"])
+
+
+def test_object_root_is_sent_unchanged() -> None:
+    from spectracut.providers.schema import claude_output_schema
+
+    schema = ArtDirector.output_schema()
+    assert claude_output_schema(schema) == (strict_json_schema(schema), None)
+
+
+def test_non_object_root_is_wrapped_with_its_defs_moved_up() -> None:
+    from pydantic import RootModel
+
+    from spectracut.providers.schema import WRAP_KEY, claude_output_schema
+
+    class Rgb(RootModel[list[_Homogeneous]]):
+        pass
+
+    raw = Rgb.model_json_schema()
+    before = copy.deepcopy(raw)
+    sent, key = claude_output_schema(raw)
+    assert raw == before
+    assert key == WRAP_KEY
+    assert sent["type"] == "object"
+    assert sent["required"] == [WRAP_KEY] and sent["additionalProperties"] is False
+    inner = sent["properties"][WRAP_KEY]
+    assert inner["type"] == "array" and "$defs" not in inner
+    assert "_Homogeneous" in sent["$defs"]
+    assert not _keywords(sent, set()) - STRICT_ALLOWLIST
+
+
+def _fake_reply(payload: dict[str, JsonValue]) -> str:
+    return json.dumps({"is_error": False, "result": "", "structured_output": payload})
+
+
+def test_wrapped_reply_is_unwrapped_and_validates_against_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic import RootModel
+
+    from spectracut.providers import claude_code
+    from spectracut.providers.schema import WRAP_KEY
+
+    class Counts(RootModel[list[int]]):
+        pass
+
+    sent: list[str] = []
+
+    def fake_run_cli(argv: list[str], **_: Any) -> str:
+        sent.append(argv[argv.index("--json-schema") + 1])
+        return _fake_reply({WRAP_KEY: [1, 2, 3]})
+
+    monkeypatch.setattr(claude_code, "run_cli", fake_run_cli)
+    completion = claude_code.ClaudeCodeTextProvider("claude").complete(
+        "system", "prompt", schema=Counts.model_json_schema()
+    )
+    assert json.loads(sent[0])["type"] == "object"
+    assert completion.output == [1, 2, 3]
+    assert Counts.model_validate(completion.output).root == [1, 2, 3]
+
+
+def test_wrapped_reply_without_the_key_is_a_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from spectracut.providers import claude_code
+    from spectracut.providers.base import ProviderError
+
+    monkeypatch.setattr(claude_code, "run_cli", lambda argv, **_: _fake_reply({"other": [1]}))
+    with pytest.raises(ProviderError):
+        claude_code.ClaudeCodeTextProvider("claude").complete(
+            "system", "prompt", schema={"type": "array", "items": {"type": "integer"}}
+        )
+
+
+def test_object_reply_is_returned_as_is(monkeypatch: pytest.MonkeyPatch) -> None:
+    from spectracut.providers import claude_code
+
+    reply: dict[str, JsonValue] = {"rgb": [1.0, 0.5, 0.25]}
+    monkeypatch.setattr(claude_code, "run_cli", lambda argv, **_: _fake_reply(reply))
+    completion = claude_code.ClaudeCodeTextProvider("claude").complete(
+        "system", "prompt", schema=_Homogeneous.model_json_schema()
+    )
+    assert completion.output == reply

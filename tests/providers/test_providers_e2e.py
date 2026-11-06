@@ -15,15 +15,15 @@ from pathlib import Path
 
 import pytest
 
+from spectracut.providers.base import context_tokens
 from spectracut.providers.claude_code import (
     ClaudeCodeTextProvider,
     ClaudeCodeVisionJudge,
     claude_status,
-    context_tokens,
 )
 from spectracut.providers.codex_cli import CodexCliImageProvider, codex_status
 from spectracut.providers.mock_image import MockImageProvider
-from spectracut.studio.departments.art import ArtDirector
+from spectracut.studio.departments.art import AnimaticEditor, ArtDirector
 
 pytestmark = [
     pytest.mark.e2e,
@@ -81,3 +81,19 @@ def test_claude_sign_in_builds_art_direction() -> None:
     )
     output = ArtDirector.validate_output("art_direction", completion.output)
     assert isinstance(output, dict) and output["mood_board"]
+
+
+def test_claude_sign_in_builds_animatic() -> None:
+    """Live: the animatic's recursive ``Edit`` schema (root ``$ref``) is accepted (#269)."""
+    state = claude_status()
+    assert state.installed and state.signed_in, f"claude not signed in: {state}"
+    prompt = (
+        "Cut the animatic for AlterLab's launch film, a short product film for a web-scraping "
+        "API: one 24 fps video track with three board clips of about two seconds each "
+        "(an empty dark UI, a request firing, clean JSON arriving) and a temp VO audio track."
+    )
+    completion = ClaudeCodeTextProvider().complete(
+        AnimaticEditor.pack().prompt, prompt, schema=AnimaticEditor.output_schema()
+    )
+    output = AnimaticEditor.validate_output("animatic", completion.output)
+    assert isinstance(output, dict)

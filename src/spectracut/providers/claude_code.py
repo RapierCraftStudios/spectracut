@@ -32,7 +32,7 @@ from spectracut.providers.base import (
     subscription_env,
 )
 from spectracut.providers.config import configured_claude_bin, resolve_claude_bin
-from spectracut.providers.schema import strict_json_schema
+from spectracut.providers.schema import claude_output_schema
 
 CLI = "claude"
 
@@ -177,8 +177,8 @@ def claude_text_argv(
 ) -> list[str]:
     """The isolated headless ``claude -p`` command line for one text completion.
 
-    ``schema`` is reduced to the CLI's strict draft-07 subset
-    (:func:`~spectracut.providers.schema.strict_json_schema`); callers validate the
+    ``schema`` is reduced to the CLI's strict draft-07 subset with an object root
+    (:func:`~spectracut.providers.schema.claude_output_schema`); callers validate the
     reply against the original model.
     """
     return [
@@ -187,7 +187,7 @@ def claude_text_argv(
         "--output-format",
         "json",
         "--json-schema",
-        json.dumps(strict_json_schema(schema), separators=(",", ":")),
+        json.dumps(claude_output_schema(schema)[0], separators=(",", ":")),
         *TEXT_ISOLATION_FLAGS,
         "--system-prompt",
         system,
@@ -244,7 +244,14 @@ class ClaudeCodeTextProvider:
                 env=subscription_env(),
                 timeout=self.timeout,
             )
-        output, usage = parse_text_output(stdout)
+        payload, usage = parse_text_output(stdout)
+        output: JsonValue = payload
+        wrap_key = claude_output_schema(schema)[1]
+        if wrap_key is not None:
+            # A non-object root was sent wrapped as one property; hand back the value.
+            if not isinstance(payload, dict) or wrap_key not in payload:
+                raise ProviderError(CLI, f"claude reply is missing the wrapped {wrap_key!r} field")
+            output = payload[wrap_key]
         return Completion(
             output=output,
             usage={
