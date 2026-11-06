@@ -30,7 +30,14 @@ from datetime import UTC, datetime
 from pydantic import AwareDatetime, Field, JsonValue
 
 from spectracut.spec._base import ContentHash, Slug, StrictModel, content_hash
-from spectracut.studio.gates import Critic, CriticVerdict, GateDecision, GateMode, GatePolicy
+from spectracut.studio.gates import (
+    Critic,
+    CriticVerdict,
+    GateDecision,
+    GateMode,
+    GatePolicy,
+    Severity,
+)
 from spectracut.studio.ledger import Ledger, LedgerEntry, Outcome, Usage, usage_of
 from spectracut.studio.node import NEEDS_BUILD, NodeSpec, NodeState, NodeStatus, Tier, node_key
 from spectracut.studio.profiles import QualityProfile
@@ -593,7 +600,10 @@ class ProductionGraph:
             inputs = {i: self._cache[self._states[i].key or ""].output for i in spec.inputs}
             notes = self._notes.get(spec.id, ())
         feedback: CriticVerdict | None = None
-        for attempt in range(1, max_attempts + 1):
+        polished = False
+        attempt = 0
+        while attempt < max_attempts:
+            attempt += 1
             with self._lock:
                 self._states[spec.id] = NodeState(
                     status=NodeStatus.RUNNING, tier=tier, key=key, attempts=attempt
@@ -632,8 +642,12 @@ class ProductionGraph:
                     result,
                     accepted,
                     verdict,
+                    polish=reviewed is not None and not polished,
                 )
             if status is None:
+                if verdict is not None and verdict.passed:
+                    polished = True  # one bounded polish pass, on top of the revision budget
+                    max_attempts += 1
                 feedback = verdict
                 continue
             return status
@@ -652,9 +666,21 @@ class ProductionGraph:
         result: RunResult,
         accepted: _Accepted,
         verdict: CriticVerdict | None,
+        *,
+        polish: bool = False,
     ) -> NodeStatus | None:
-        """Record one attempt's gate outcome; ``None`` means revise and try again."""
+        """Record one attempt's gate outcome; ``None`` means revise and try again.
+
+        Only a failed verdict (a confirmed HIGH finding) rejects. A passing verdict
+        with MEDIUM findings asks for one polish revision when ``polish`` allows it;
+        the findings still on an accepted output are pinned to the node as notes.
+        """
         usage = _with_critic_usage(result.usage, verdict)
+        if verdict is not None and verdict.passed and polish and _has_medium(verdict):
+            self._record(spec, tier, key, attempt, started_at, start, usage, "revise")
+            return None
+        if verdict is not None and verdict.passed:
+            self._note_findings(spec.id, verdict)
         if verdict is not None and not verdict.passed:
             last = attempt == max_attempts
             outcome: Outcome = "rejected" if last else "revise"
@@ -674,6 +700,27 @@ class ProductionGraph:
         self._cache[key] = accepted
         self._set(spec.id, NodeStatus.CLEAN, output_hash=accepted.output_hash)
         return NodeStatus.CLEAN
+
+    def _note_findings(self, node_id: str, verdict: CriticVerdict) -> None:
+        """Record the MEDIUM and LOW findings left on an accepted output as node notes."""
+        seen = {n.text for n in self._notes.get(node_id, ())}
+        for f in verdict.findings:
+            if f.severity is Severity.HIGH:
+                continue
+            text = f"[{f.severity.value}] {', '.join(f.reviewers or [f.reviewer])}: {f.text}"
+            if text[:4000] in seen:
+                continue
+            seen.add(text[:4000])
+            self._notes[node_id] = (
+                *self._notes.get(node_id, ()),
+                RevisionNote(
+                    node_id=node_id,
+                    frame=f.frame,
+                    text=text[:4000],
+                    author="critic",
+                    created_at=self._now(),
+                ),
+            )
 
     def _set(
         self,
@@ -715,6 +762,10 @@ class ProductionGraph:
                 outcome=outcome,
             )
         )
+
+
+def _has_medium(verdict: CriticVerdict) -> bool:
+    return any(f.severity is Severity.MEDIUM for f in verdict.findings)
 
 
 def _with_critic_usage(usage: Usage, verdict: CriticVerdict | None) -> Usage:

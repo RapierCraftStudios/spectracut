@@ -41,7 +41,7 @@ from spectracut.qa.common import Gray, downscale, load_gray, mean
 from spectracut.qa.look import FLICKER_MAX, flicker
 from spectracut.spec._base import StrictModel, canonical_json, content_hash
 from spectracut.spec.brief import Brief, CreativeBrief
-from spectracut.studio.gates import CriticVerdict
+from spectracut.studio.gates import CriticVerdict, Finding, Severity
 from spectracut.studio.node import NodeSpec
 from spectracut.studio.profiles import CritiqueSettings, QualityProfile
 
@@ -381,6 +381,25 @@ class StudioCritic:
         return CriticVerdict(
             passed=passed, scores=scores, comment=f"{head}: " + " | ".join(lines), usage=usage
         )
+
+    # ---- as a panel reviewer ---------------------------------------------------
+
+    def findings(self, spec: NodeSpec, output: JsonValue) -> list[Finding]:
+        """The score verdict as findings: a failing review is one HIGH finding, else none."""
+        verdict = self.review(spec, output)
+        if verdict.passed:
+            return []
+        return [
+            Finding(
+                reviewer="visual-craft",
+                severity=Severity.HIGH,
+                text=verdict.comment or f"{spec.kind} fails its rubric",
+            )
+        ]
+
+    def as_review_call(self) -> Callable[[NodeSpec, str, JsonValue], list[Finding]]:
+        """A panel ``ReviewCall`` backed by this Critic (its own rubric applies)."""
+        return lambda spec, _rubric, output: self.findings(spec, output)
 
     # ---- choosing --------------------------------------------------------------
 
