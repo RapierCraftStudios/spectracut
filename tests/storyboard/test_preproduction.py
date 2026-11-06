@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from math import ceil
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import JsonValue
@@ -28,7 +28,11 @@ from spectracut.storyboard.animatic import (
     check_locked_timing,
     resolve_beats,
 )
-from spectracut.storyboard.explore import choose_exploration_provider, record_image
+from spectracut.storyboard.explore import (
+    ExploreProvider,
+    choose_exploration_provider,
+    record_image,
+)
 from spectracut.storyboard.models import (
     ArtDirection,
     ImageRecord,
@@ -266,7 +270,8 @@ def test_storyboard_has_one_board_per_shot() -> None:
 
 
 def test_image_exploration_is_local_by_default_and_chatgpt_only_when_configured() -> None:
-    local, chatgpt = MockLocalProvider("image"), MockImageProvider()
+    local = MockLocalProvider("image")
+    chatgpt = cast(ExploreProvider, MockImageProvider())
     assert choose_exploration_provider(None, local=local, chatgpt=chatgpt) is local
     assert choose_exploration_provider({}, local=local, chatgpt=chatgpt) is local
     assert choose_exploration_provider({"image_provider": "local"}, local=local) is local

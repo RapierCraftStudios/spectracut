@@ -96,7 +96,7 @@ def test_e2e_cryptomatte_isolates_screen() -> None:
     part of the frame (a grade leaking past the matte would cover it all), and
     the graded screen inside it must stay legible.
     """
-    from test_comp import comped_graph, set_comp  # type: ignore[import-not-found]
+    from test_comp import comped_graph, set_comp
 
     graph = comped_graph("device-clean")
     run = _farm(graph, "alterlab-comp-crypto-e2e")

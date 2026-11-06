@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from __future__ import annotations
 
-from spectracut.critique.panel import Reviewer, ReviewerPanel, dedupe, default_reviewers
+from collections.abc import Sequence
+
+from pydantic import JsonValue
+
+from spectracut.critique.panel import ReviewCall, Reviewer, ReviewerPanel, dedupe, default_reviewers
 from spectracut.studio import NodeSpec
 from spectracut.studio.gates import Finding, Severity
 
@@ -17,8 +21,8 @@ def _f(severity: Severity, text: str, conf: float = 0.9) -> Finding:
 def test_each_reviewer_runs_its_own_call_with_its_own_rubric() -> None:
     seen: list[tuple[str, str]] = []
 
-    def call_for(name: str):
-        def call(_spec, rubric, _out):
+    def call_for(name: str) -> ReviewCall:
+        def call(_spec: NodeSpec, rubric: str, _out: JsonValue) -> Sequence[Finding]:
             seen.append((name, rubric))
             return []
 
@@ -50,7 +54,12 @@ def test_high_blocks_only_when_second_check_confirms() -> None:
 def test_low_confidence_high_is_not_confirmed_and_skips_the_check() -> None:
     calls: list[str] = []
     reviewer = Reviewer("sound", "mix", lambda *_: [_f(Severity.HIGH, "hum", conf=0.1)])
-    verdict = ReviewerPanel([reviewer], lambda *_: calls.append("c") or True)(_spec(), {})
+
+    def confirm(*_: object) -> bool:
+        calls.append("c")
+        return True
+
+    verdict = ReviewerPanel([reviewer], confirm)(_spec(), {})
     assert verdict.passed and not calls
 
 

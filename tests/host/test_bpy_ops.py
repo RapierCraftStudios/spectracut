@@ -362,6 +362,8 @@ NEW_TOOLS = {
     "object.animate",
     "text.add",
     "world.set_hdri",
+    "world.set_gradient",
+    "world.set_haze",
 }
 
 
@@ -373,7 +375,7 @@ def test_registry_literal_matches_tools() -> None:
     names, same = got
     assert same is True
     assert set(names) == runtime_tool_names(RUNTIME / "tools.py")
-    assert NEW_TOOLS <= set(names) and len(names) == 29
+    assert NEW_TOOLS <= set(names) and len(names) == 31
 
 
 def test_error_codes_are_stable() -> None:
@@ -972,7 +974,7 @@ def test_set_passes_refusals(blender: Path, tmp_path: Path, args: dict[str, Any]
 
 
 def test_set_output_accepts_multilayer_exr(blender: Path, tmp_path: Path) -> None:
-    steps = [
+    steps: list[tuple[str, dict[str, Any]]] = [
         ("render.set_passes", {"passes": ["combined", "z", "vector", "cryptomatte_object"]}),
         ("render.set_output", {"format": "OPEN_EXR_MULTILAYER", "color_depth": "32"}),
     ]

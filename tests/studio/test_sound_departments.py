@@ -18,7 +18,7 @@ from pydantic import JsonValue
 from spectracut.audio.ardour import BUILD_OK, EXPORT_OK, SOURCE_LINE
 from spectracut.audio.events import edit_events
 from spectracut.audio.render import Channels, read_wav, write_wav
-from spectracut.audio.vo import VoiceOver
+from spectracut.audio.vo import VoiceOver, VoiceoverTrack
 from spectracut.edit.timeline import Clip, Edit, Marker, Track
 from spectracut.providers.elevenlabs import MockElevenLabs
 from spectracut.qa.audio import integrated_loudness
@@ -34,7 +34,6 @@ from spectracut.studio.departments.sound import (
     MusicBed,
     SoundDesign,
     SoundRunner,
-    VoiceoverTrack,
     is_temp_vo,
     sound_nodes,
 )

@@ -172,7 +172,7 @@ def test_alterlab_brief_cites_a_source_for_every_proof_point() -> None:
     assert graph.status("brief") is NodeStatus.CLEAN
     brief = CreativeBrief.model_validate(graph.output("brief"))
     declared = {s.id for s in brief.sources}
-    product_sources = {s["id"] for s in graph.output("product")["sources"]}  # type: ignore[index, union-attr]
+    product_sources = {s["id"] for s in graph.output("product")["sources"]}  # type: ignore[index, union-attr, call-overload]
     assert brief.proof_points
     for point in brief.proof_points:
         assert point.source_id in declared

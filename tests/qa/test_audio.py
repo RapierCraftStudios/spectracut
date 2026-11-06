@@ -66,7 +66,8 @@ def test_streaming_mix_30s_measures_spec(tmp_path: Path) -> None:
     mix = write(tmp_path / "mix.wav", [lufs_tone(-14.0, 30.0, rate)], rate)
     rows = by_name(check_mix(mix, "streaming"))
     assert rows["audio.loudness"].value == pytest.approx(-14.0, abs=0.5)
-    assert rows["audio.true_peak"].value <= -1.0
+    peak = rows["audio.true_peak"].value
+    assert peak is not None and peak <= -1.0
     assert failed(list(rows.values())) == []
 
 
@@ -76,7 +77,8 @@ def test_broadcast_presets_measure_to_spec(tmp_path: Path, preset: str) -> None:
     mix = write(tmp_path / "mix.wav", [lufs_tone(spec.target_lufs, 4.0, RATE)])
     rows = by_name(check_mix(mix, preset))
     assert rows["audio.loudness"].value == pytest.approx(spec.target_lufs, abs=spec.tolerance_lu)
-    assert rows["audio.true_peak"].value <= spec.max_true_peak_dbtp
+    peak = rows["audio.true_peak"].value
+    assert peak is not None and peak <= spec.max_true_peak_dbtp
     assert failed(list(rows.values())) == []
     other = "atsc_a85" if preset == "ebu_r128" else "ebu_r128"
     assert not by_name(check_mix(mix, other))["audio.loudness"].failed or preset == "atsc_a85"
@@ -144,7 +146,9 @@ def test_cutoff_and_silence(tmp_path: Path) -> None:
 
 
 def test_sync_within_one_frame(tmp_path: Path) -> None:
-    pad = lambda t: [0.0] * round(t * RATE) + tone(800, 0.2, 0.5, fade=0.002) + [0.0] * RATE  # noqa: E731
+    def pad(t: float) -> list[float]:
+        return [0.0] * round(t * RATE) + tone(800, 0.2, 0.5, fade=0.002) + [0.0] * RATE
+
     mix = write(tmp_path / "m.wav", [pad(1.0)])
     on = by_name(check_mix(mix, "streaming", cues=[CueTiming("hit", 1.0)]))
     assert not on["audio.sync"].failed

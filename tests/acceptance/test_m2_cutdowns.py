@@ -30,7 +30,7 @@ from pathlib import Path
 
 import opentimelineio as otio
 import pytest
-import recorded
+import recorded  # type: ignore[import-not-found]
 from pydantic import JsonValue
 from recorded import Film
 from typer.testing import CliRunner
