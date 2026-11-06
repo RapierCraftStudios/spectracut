@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
+from spectracut.audio.vo import VoiceoverTrack
 from spectracut.edit.conform import replace_shot
 from spectracut.edit.otio_io import write_otio
 from spectracut.edit.timeline import Clip, Edit, Gap, Track
@@ -69,7 +70,6 @@ from spectracut.studio.departments.sound import (
     VOICEOVER,
     Mix,
     MusicBed,
-    VoiceoverTrack,
     _vo_frames,
     is_temp_vo,
 )
