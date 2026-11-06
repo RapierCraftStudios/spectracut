@@ -14,6 +14,9 @@ Commands::
         Print this host's render profile (Blender version, GPU model, driver).
     spectracut-host tags [--capability NAME ...]
         Print the Flamenco worker tags for this host (GPU model, VRAM, capabilities).
+    spectracut-host models-serve
+        Serve local model sessions over JSON lines on stdin/stdout; the control
+        plane runs it through ssh (``spectracut.providers.local.remote``).
     spectracut-host --version
         Print the installed spectracut-host version (setup checks it equals the
         control plane's).
@@ -225,6 +228,8 @@ def build_parser() -> argparse.ArgumentParser:
     tags = sub.add_parser("tags", help="print this host's Flamenco worker tags")
     tags.add_argument("--blender")
     tags.add_argument("--capability", action="append", dest="capabilities")
+
+    sub.add_parser("models-serve", help="serve local model sessions over stdin/stdout")
     return parser
 
 
@@ -246,6 +251,10 @@ def main(argv: list[str] | None = None) -> int:
         caps = args.capabilities or list(DEFAULT_CAPABILITIES)
         print("\n".join(worker_tags(profile, caps)))
         return EXIT_OK
+    if args.command == "models-serve":
+        from spectracut_host.models import serve
+
+        return serve(sys.stdin, sys.stdout)
     parser.print_help(sys.stderr)
     return EXIT_USAGE
 

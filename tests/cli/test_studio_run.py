@@ -490,3 +490,270 @@ def test_default_runner_routes_sound_nodes_to_the_sound_runner(
         sound_depts.MIX,
     ]
     assert text_kinds == ["script"] and built == ["snd"]
+
+
+# ---- #289: the model runtime on the model host -------------------------------------
+
+
+def _register(home: Path, *hosts: tuple[str, bool]) -> None:
+    from spectracut.cli.render import HostEntry, HostRegistry, hosts_path
+    from spectracut.queue.executors.base import GpuCard
+    from spectracut.queue.profile import RenderProfile
+
+    card = GpuCard(name="RTX 3070 Laptop", vram_gb=8)
+    registry = HostRegistry(
+        hosts=tuple(
+            HostEntry(
+                name=name,
+                cpus=8,
+                mem_gb=28,
+                gpus=(card,) if gpu else (),
+                profile=RenderProfile(blender_version="4.2.0", os="windows"),
+            )
+            for name, gpu in hosts
+        )
+    )
+    path = hosts_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(registry.model_dump_json(), encoding="utf-8")
+
+
+@pytest.fixture
+def control_plane(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Outside mock mode, on a control plane that is not the model host; never spawns ssh."""
+    import subprocess
+
+    monkeypatch.delenv("SPECTRACUT_PROVIDERS", raising=False)
+    monkeypatch.delenv("SPECTRACUT_MODEL_HOST", raising=False)
+    monkeypatch.setattr(studio_mod.socket, "gethostname", lambda: "control")
+
+    def no_ssh(*_a: object, **_kw: object) -> None:
+        raise AssertionError("resolving the model runtime must not spawn ssh")
+
+    monkeypatch.setattr(subprocess, "Popen", no_ssh)
+    return home
+
+
+def _production(home: Path, pid: str = "snd") -> studio_mod.Production:
+    return studio_mod.Production(pid, ProductionStore(home))
+
+
+def test_default_sound_builds_runtime_on_registered_model_host(control_plane: Path) -> None:
+    from spectracut.providers.local.remote import RemoteLoader
+    from spectracut.providers.local.runtime import ModelRuntime
+
+    _register(control_plane, ("mrdubey-1", False), ("legion", True))
+    deps = studio_mod.default_sound(_production(control_plane))
+    assert isinstance(deps.runtime, ModelRuntime)
+    assert deps.runtime_problem is None
+    loader = deps.runtime._loader
+    assert isinstance(loader, RemoteLoader)
+    assert (loader.host, loader.os) == ("legion", "windows")
+
+
+def test_the_model_host_can_be_named_in_the_env_or_config(
+    control_plane: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spectracut.providers.local.remote import RemoteLoader
+
+    _register(control_plane, ("legion", True), ("mrdubey-1", True))
+    runtime, problem = studio_mod.model_runtime(control_plane)
+    assert runtime is None and problem is not None and "several GPU hosts" in problem
+    (tmp_path / "config.toml").write_text('[models]\nhost = "mrdubey-1"\n', encoding="utf-8")
+    runtime, _ = studio_mod.model_runtime(control_plane)
+    assert runtime is not None and isinstance(runtime._loader, RemoteLoader)
+    assert runtime._loader.host == "mrdubey-1"
+    monkeypatch.setenv("SPECTRACUT_MODEL_HOST", "legion")
+    runtime, _ = studio_mod.model_runtime(control_plane)
+    assert runtime is not None and isinstance(runtime._loader, RemoteLoader)
+    assert runtime._loader.host == "legion"
+
+
+def test_on_the_model_host_models_load_in_process(
+    control_plane: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spectracut_host.models import load_model
+
+    _register(control_plane, ("legion", True))
+    monkeypatch.setattr(studio_mod.socket, "gethostname", lambda: "legion")
+    runtime, problem = studio_mod.model_runtime(control_plane)
+    assert problem is None and runtime is not None and runtime._loader is load_model
+
+
+def _sound_edit() -> dict[str, JsonValue]:
+    from spectracut.edit.timeline import Clip, Track
+
+    picture = [
+        Clip(id="pic-a", shot_id="a", media_ref="board:a", source_out=48),
+        Clip(id="pic-b", shot_id="b", media_ref="board:b", source_out=48),
+    ]
+    edit = Edit(id="animatic", tracks=[Track(id="picture", kind="video", items=picture)])
+    return edit.model_dump(mode="json")
+
+
+def _sound_design_ctx() -> RunContext:
+    spec = next(n for n in sound_depts.sound_nodes() if n.kind == sound_depts.SOUND_DESIGN)
+    inputs: dict[str, JsonValue] = {spec.inputs[0]: _sound_edit()}
+    return RunContext(spec=spec, tier=Tier.PREVIEW, key="k", inputs=inputs, attempt=1)
+
+
+@pytest.mark.parametrize(
+    ("config", "named"),
+    [
+        ('[models]\nhost = "legion"\n', "model host 'legion' is not registered"),
+        ("", "no model host"),
+    ],
+)
+def test_a_missing_model_host_is_an_actionable_error_naming_it(
+    control_plane: Path, tmp_path: Path, config: str, named: str
+) -> None:
+    from spectracut.providers.base import ProviderError
+
+    (tmp_path / "config.toml").write_text(config, encoding="utf-8")
+    _register(control_plane, ("mrdubey-1", False))
+    production = _production(control_plane)
+    deps = studio_mod.default_sound(production)
+    assert deps.runtime is None and deps.runtime_problem is not None
+    sound = sound_depts.SoundRunner(
+        lambda ctx: RunResult(output={}),
+        studio_mod.DEPARTMENTS,
+        workdir=tmp_path / "sound",
+        runtime=deps.runtime,
+        runtime_problem=deps.runtime_problem,
+    )
+    with pytest.raises(ProviderError) as err:
+        sound(_sound_design_ctx())
+    message = str(err.value)
+    assert "sound_design" in message and named in message
+    assert "legion" in message and "spectracut hosts add" in message
+
+
+class _ServeChannel:
+    """``ssh legion spectracut-host models-serve`` in-process: the real host loop on pipes."""
+
+    def __init__(self, loads: list[str]) -> None:
+        import os
+        import threading
+
+        from spectracut.providers.local.registry import MockLocalProvider
+        from spectracut_host.models import serve
+
+        r_in, w_in = os.pipe()
+        r_out, w_out = os.pipe()
+        self.stdin = open(w_in, "w", encoding="utf-8")  # noqa: SIM115
+        self.stdout = open(r_out, encoding="utf-8")  # noqa: SIM115
+        host_in = open(r_in, encoding="utf-8")  # noqa: SIM115
+        host_out = open(w_out, "w", encoding="utf-8")  # noqa: SIM115
+
+        class Model:
+            def __init__(self, kind: str) -> None:
+                self.kind = kind
+
+            def generate(self, prompt: str, **options: Any) -> Path:
+                out = Path(options.pop("out_path"))
+                return MockLocalProvider(self.kind).generate(prompt, out, **options)
+
+            def close(self) -> None:
+                loads.append("close")
+
+        def loader(spec: Any) -> Model:
+            loads.append(spec.id)
+            return Model(spec.kind)
+
+        def run() -> None:
+            with host_in, host_out:
+                serve(host_in, host_out, loader)
+
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.thread.join(timeout)
+        return 0
+
+    def kill(self) -> None:
+        pass
+
+
+def test_sound_design_runs_on_the_model_host_and_records_gpu_minutes(
+    control_plane: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """studio run's sound_design reaches the models on legion; usage lands in the ledger."""
+    from spectracut.providers.local.remote import RemoteLoader
+    from spectracut.providers.local.runtime import ModelRuntime
+    from spectracut.queue.executors.base import GpuCard, LeasePool
+
+    loads: list[str] = []
+    argv: list[list[str]] = []
+
+    def spawn(cmd: Any) -> _ServeChannel:
+        argv.append(list(cmd))
+        return _ServeChannel(loads)
+
+    runtime = ModelRuntime(
+        RemoteLoader("legion", "windows", spawn=spawn),  # type: ignore[arg-type]
+        LeasePool(8, 28, (GpuCard(name="RTX 3070 Laptop", vram_gb=8),)),
+        host="legion",
+    )
+    resolved: list[Path] = []
+
+    def factory(home: Path) -> studio_mod.ModelRuntimeResult:
+        resolved.append(home)
+        return runtime, None
+
+    monkeypatch.setattr(studio_mod, "model_runtime_factory", factory)
+    spec = next(n for n in sound_depts.sound_nodes() if n.kind == sound_depts.SOUND_DESIGN)
+    graph = ProductionGraph(
+        "snd", gates=GatePolicy(defaults={"animatic": GateMode.AUTO, spec.kind: GateMode.AUTO})
+    )
+    graph.add_nodes([NodeSpec(id="animatic", kind="animatic", department="stub"), spec])
+    inner = studio_mod.default_runner(_production(control_plane), graph)
+
+    def run(ctx: RunContext) -> RunResult:
+        if ctx.spec.kind == "animatic":
+            return RunResult(output=_sound_edit())
+        return inner(ctx)
+
+    report = graph.run(run)
+    assert report.failed == [], {n: graph.state(n).error for n in report.failed}
+    entry = next(e for e in graph.ledger.entries() if e.node_id == spec.id)
+    assert entry.gpu_minutes > 0
+    assert len(argv) == 1 and argv[0][3] == "legion"
+    assert loads == ["ezaudio-xl", "close"]
+    assert resolved == [control_plane]
+
+
+def test_sound_and_preproduction_share_one_model_runtime(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = object()
+    calls: list[Path] = []
+
+    def factory(h: Path) -> studio_mod.ModelRuntimeResult:
+        calls.append(h)
+        return runtime, None  # type: ignore[return-value]
+
+    monkeypatch.setattr(studio_mod, "model_runtime_factory", factory)
+    seen: list[object] = []
+
+    def explorer(config: object = None, *, runtime: object = None) -> None:
+        seen.append(runtime)
+
+    class Pre:
+        def __init__(self, *_a: object, **_kw: object) -> None:
+            pass
+
+        def __call__(self, ctx: RunContext) -> RunResult:
+            return RunResult(output={"node": ctx.spec.id})
+
+    monkeypatch.setattr(art_depts, "default_explorer", explorer)
+    monkeypatch.setattr(art_depts, "PreproductionRunner", Pre)
+    monkeypatch.setattr(studio_mod, "animatic_preview_factory", lambda: None)
+    production = _production(home)
+    graph = ProductionGraph("snd", profile=load_profile("standard"), gates=GatePolicy())
+    graph.add_nodes([NodeSpec(id="style", kind=art_depts.STYLE_FRAMES, department="art")])
+    run = studio_mod.default_runner(production, graph)
+    run(RunContext(spec=graph.spec("style"), tier=Tier.FINAL, key="k", inputs={}, attempt=1))
+    deps = studio_mod.default_sound(production)
+    assert seen == [runtime] and deps.runtime is runtime
+    assert calls == [home]
