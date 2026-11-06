@@ -22,6 +22,7 @@ from spectracut.providers.base import (
     ProviderAuthError,
     ProviderError,
     VisionJudge,
+    judge_usage,
     redact,
     select_image_provider,
     select_vision_judge,
@@ -171,6 +172,14 @@ def test_claude_scores_frame(fake_bins: dict[str, Path]) -> None:
     assert verdict.score == pytest.approx(0.8)
     assert verdict.notes == "clear and legible"
     assert judge.last_usage["cache_read_input_tokens"] == 3000
+    assert judge_usage(judge) == {"input_tokens": 3010, "output_tokens": 0}
+
+
+def test_judge_usage_is_empty_without_reported_usage(isolated_env: Path) -> None:
+    mock = MockVisionJudge()
+    mock.score(_frame(isolated_env), "legible")
+    assert judge_usage(mock) == {}
+    assert judge_usage(object()) == {}
 
 
 def test_parse_judge_output_falls_back_to_result_text() -> None:
@@ -319,10 +328,21 @@ def test_openai_key_fallback(isolated_env: Path, api_keys: dict[str, str]) -> No
 def test_anthropic_key_fallback(isolated_env: Path, api_keys: dict[str, str]) -> None:
     def opener(request: urllib.request.Request, timeout: float) -> _Resp:
         assert request.get_header("X-api-key") == api_keys["ANTHROPIC_API_KEY"]
-        return _Resp({"content": [{"type": "text", "text": '{"score": 0.5, "notes": "ok"}'}]})
+        return _Resp(
+            {
+                "content": [{"type": "text", "text": '{"score": 0.5, "notes": "ok"}'}],
+                "usage": {
+                    "input_tokens": 1200,
+                    "cache_read_input_tokens": 300,
+                    "output_tokens": 25,
+                },
+            }
+        )
 
-    verdict = AnthropicKeyVisionJudge(opener=opener).score(_frame(isolated_env), "legible")
+    judge = AnthropicKeyVisionJudge(opener=opener)
+    verdict = judge.score(_frame(isolated_env), "legible")
     assert verdict.score == 0.5
+    assert judge_usage(judge) == {"input_tokens": 1500, "output_tokens": 25}
 
 
 def test_rejected_key_is_auth_error_without_the_key(

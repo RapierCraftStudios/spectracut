@@ -20,7 +20,9 @@ Stages (``profiles/device-shot.json``):
     storage (:func:`sign_to_shared`) and runs through
     ``JobQueue.as_runner`` + :class:`FlamencoExecutor`. The output records the
     scene-graph hash and every frame's sha256. The preview frame is scored once
-    by the vision judge and counted as ``vision_qa_requests`` AI usage.
+    by the vision judge and counted as ``vision_qa_requests`` AI usage, plus
+    ``vision_qa_input_tokens`` and ``vision_qa_output_tokens`` when the judge
+    reports its token usage.
 
 The ``device-shot-graded`` profile (``profiles/device-shot-graded.json``) adds:
 
@@ -57,6 +59,7 @@ declarative steps.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -64,7 +67,7 @@ import re
 import shutil
 import tempfile
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from importlib import resources
@@ -77,6 +80,7 @@ from spectracut.finishing import comp
 from spectracut.finishing.color import ColorPipeline
 from spectracut.finishing.looks import finish_runner, render_rules, resolve_look
 from spectracut.harness.imagecmp import ImageError, decode_png
+from spectracut.providers.base import judge_usage
 from spectracut.queue.executors.flamenco import FlamencoApi, FlamencoExecutor
 from spectracut.queue.queue import Job, JobQueue
 from spectracut.queue.signing import JobEnvelope, sign_job
@@ -87,6 +91,7 @@ from spectracut.studio.estimate import BRIEF_PARAM
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunResult
 from spectracut.studio.node import Tier
 from spectracut.studio.profiles import QualityProfile
+from spectracut.studio.store import write_atomic
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -133,6 +138,8 @@ FINAL_SEED = 1153
 FINAL_SAMPLES = 256
 
 VISION_QA_METRIC = "vision_qa_requests"
+VISION_QA_INPUT_TOKENS = "vision_qa_input_tokens"
+VISION_QA_OUTPUT_TOKENS = "vision_qa_output_tokens"
 VISION_RUBRIC = (
     "Product device shot. The device screen must be legible and unobstructed, the "
     "framing centred on the device, and no third-party logos or marks visible."
@@ -279,8 +286,7 @@ def with_tier(recipe: Recipe, tier: Tier) -> Recipe:
 def sign_to_shared(envelope: JobEnvelope, key: Ed25519PrivateKey, shared: Path) -> Path:
     """Sign ``envelope`` and write it to ``<shared>/jobs/<job_id>.json``."""
     path = Path(shared) / "jobs" / f"{envelope.job_id}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(sign_job(envelope, key).model_dump_json(), encoding="utf-8")
+    write_atomic(path, sign_job(envelope, key).model_dump_json().encode("utf-8"))
     return path
 
 
@@ -474,13 +480,26 @@ def read_scene_graph_hash(out: Path) -> str | None:
     return None
 
 
+def _claim_id(config: DeviceShotConfig, candidates: Iterable[str]) -> str:
+    """Claim the first candidate id atomically by creating its output dir exclusively.
+
+    ``mkdir(exist_ok=False)`` is atomic, so concurrent runs never share an id.
+    """
+    config.out_dir("x").parent.mkdir(parents=True, exist_ok=True)
+    for candidate in candidates:
+        if config.job_file(candidate).exists():
+            continue
+        try:
+            config.out_dir(candidate).mkdir(exist_ok=False)
+        except FileExistsError:
+            continue
+        return candidate
+    raise RuntimeError("no job id available")  # pragma: no cover - candidates are unbounded
+
+
 def _fresh_job_id(config: DeviceShotConfig, base: str) -> str:
-    """``base``, or ``base-<n>`` for the first n whose job file and output dir are unused."""
-    candidate, n = base, 1
-    while config.job_file(candidate).exists() or config.out_dir(candidate).exists():
-        n += 1
-        candidate = f"{base}-{n}"
-    return candidate
+    """``base``, or ``base-<n>`` for the first n unused; the id is claimed on return."""
+    return _claim_id(config, (base if n == 1 else f"{base}-{n}" for n in itertools.count(1)))
 
 
 def _envelope(
@@ -791,6 +810,13 @@ def device_shot_runner(
             verdict = active.score(out / sorted(frames)[0], VISION_RUBRIC)
             output["vision_qa"] = {"score": float(verdict.score), "notes": verdict.notes}
             ai = {**usage.ai_usage, VISION_QA_METRIC: usage.ai_usage.get(VISION_QA_METRIC, 0) + 1}
+            tokens = judge_usage(active)
+            if tokens:
+                for metric, amount in (
+                    (VISION_QA_INPUT_TOKENS, tokens["input_tokens"]),
+                    (VISION_QA_OUTPUT_TOKENS, tokens["output_tokens"]),
+                ):
+                    ai[metric] = ai.get(metric, 0) + amount
             usage = usage.model_copy(update={"ai_usage": ai})
         return RunResult(output=output, usage=usage)
 
@@ -878,12 +904,7 @@ class ReplayResult:
 
 
 def _fresh_replay_id(config: DeviceShotConfig, job_id: str) -> str:
-    n = 1
-    while True:
-        candidate = f"{job_id}-replay-{n}"
-        if not config.job_file(candidate).exists() and not config.out_dir(candidate).exists():
-            return candidate
-        n += 1
+    return _claim_id(config, (f"{job_id}-replay-{n}" for n in itertools.count(1)))
 
 
 def replay(

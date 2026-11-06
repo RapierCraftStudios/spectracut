@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 from dataclasses import replace
@@ -24,6 +25,8 @@ from spectracut.setup.storage import (
     normalize_drive,
     normalize_storage_path,
     storage_notes,
+    verified_admin_command,
+    windows_storage_sha256,
     windows_storage_source,
     write_file_step,
 )
@@ -33,7 +36,17 @@ CRED = Credential("spectracut-share", "pw-secret-value")
 FACTS = {
     CONTROL: HostFacts(CONTROL, "linux", "100.64.0.1", wired=True, free_gb=200),
     # a standard (non-admin) SSH account: the storage share needs the one-time admin handoff
-    "legion": HostFacts("legion", "windows", "100.64.0.2", wired=True, free_gb=500, admin=False),
+    "legion": HostFacts(
+        "legion",
+        "windows",
+        "100.64.0.2",
+        wired=True,
+        free_gb=500,
+        admin=False,
+        account="LEGION\\artac-remote",
+        sid="S-1-5-21-1-2-3-1001",
+        home="C:\\Users\\artac-remote",
+    ),
     "rig": HostFacts("rig", "linux", "100.64.0.3", wired=True, free_gb=900),
 }
 TARGET = StorageTarget(kind="host", host="legion")
@@ -195,7 +208,8 @@ def test_windows_storage_path_reaches_admin_script_gate_and_worker_subst() -> No
     plan = _plan(CUSTOM)
     gate = _step(plan, "storage:serve")
     assert f"Test-Path '{D_PATH}/.spectracut-share'" in gate.command
-    assert f'-Path "{D_PATH}"' in gate.command and "C:/spectracut" not in gate.command
+    # the printed command sits in a '...' literal, so its own quotes are doubled
+    assert f"-Path ''{D_PATH}''" in gate.command and "C:/spectracut" not in gate.command
     # storage host: subst of the local folder in the worker task's session, no SMB loopback
     own = json.loads(_step(plan, "worker-args:legion").stdin or "")
     assert own["LocalPath"] == D_PATH and own["Drive"] == "S:" and "Server" not in own
@@ -210,7 +224,19 @@ def test_windows_storage_path_reaches_admin_script_gate_and_worker_subst() -> No
 
 
 def test_other_windows_hosts_map_the_unc_share_in_the_task_session() -> None:
-    facts = dict(FACTS, mrdubey=HostFacts("mrdubey", "windows", "100.64.0.9", True, 200))
+    facts = dict(
+        FACTS,
+        mrdubey=HostFacts(
+            "mrdubey",
+            "windows",
+            "100.64.0.9",
+            True,
+            200,
+            account="MRDUBEY\\artac",
+            sid="S-1-5-21-4-5-6-1001",
+            home="C:\\Users\\artac",
+        ),
+    )
     plan = build_plan(
         load_manifest(), "2026.11", facts, ["legion", "mrdubey", "rig"], CUSTOM, CRED, TARGET,
         wheels=WHEELS,
@@ -232,7 +258,19 @@ def test_drive_letter_in_use_on_any_windows_host_fails_the_plan() -> None:
     taken = dict(FACTS, legion=replace(FACTS["legion"], drives=("C=", "S=")))
     with pytest.raises(StorageError, match="S: is already used on legion"):
         _plan(CUSTOM, taken)
-    other = dict(FACTS, mrdubey=HostFacts("mrdubey", "windows", "100.64.0.9", True, 1))
+    other = dict(
+        FACTS,
+        mrdubey=HostFacts(
+            "mrdubey",
+            "windows",
+            "100.64.0.9",
+            True,
+            1,
+            account="MRDUBEY\\artac",
+            sid="S-1-5-21-4-5-6-1001",
+            home="C:\\Users\\artac",
+        ),
+    )
     other["mrdubey"] = replace(other["mrdubey"], drives=("S=\\\\nas\\other",))
     with pytest.raises(StorageError, match="mrdubey"):
         build_plan(
@@ -436,3 +474,27 @@ def test_no_single_quoted_dollar_path_in_linux_write_steps() -> None:
         # the sudo writer's sh -c script legitimately single-quotes its "$1"/"$2" arguments
         quoted = [q for q in quoted if not q.startswith("umask 077;")]
         assert not any("$" in q for q in quoted), s.id
+
+
+def test_non_admin_storage_gate_runs_only_a_hash_checked_copy() -> None:
+    """#190: the printed elevated command verifies windows_storage.ps1 and runs a TEMP copy."""
+    plan = _plan(CUSTOM)
+    script = _step(plan, "storage:admin-script")
+    digest = hashlib.sha256((script.stdin or "").encode("utf-8")).hexdigest()
+    assert windows_storage_sha256() == digest
+    gate = _step(plan, "storage:serve").command
+    assert f"if ($h -ne ''{digest}'')" in gate  # doubled: inside the printed '...' literal
+    assert "Join-Path $env:TEMP" in gate and "-File $c" in gate
+    assert "-File ' + $s" not in gate and "-File $s" not in gate
+    assert ".Replace('__SCRIPT__', $s" in gate and ".Replace('__PW__', $f" in gate
+    note = next(n for n in storage_notes(TARGET, FACTS) if "one-time admin step" in n)
+    assert f"SHA-256 {digest}" in note
+    for step in plan.steps:
+        assert CRED.password not in step.command
+
+
+def test_verified_admin_command_quotes_the_path_and_passes_args() -> None:
+    cmd = verified_admin_command("C:\\Users\\o'neil\\x.ps1", "ab" * 32, "-User 'u'")
+    assert "ReadAllBytes('C:\\Users\\o''neil\\x.ps1')" in cmd
+    assert "-File $c -User 'u' }" in cmd and "finally { Remove-Item -Force $c }" in cmd
+    assert "$LASTEXITCODE -ne 0" in cmd

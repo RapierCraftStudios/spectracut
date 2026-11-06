@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,8 +26,9 @@ from spectracut.queue.executors.base import (
 )
 from spectracut.queue.executors.hostpool import HostPoolExecutor, HostSlot
 from spectracut.queue.profile import RenderProfile, frame_cache_key
-from spectracut.queue.queue import Job, JobQueue, QueueStalled
-from spectracut.studio.ledger import Usage
+from spectracut.queue.queue import Job, JobFailed, JobQueue, QueueStalled
+from spectracut.studio import NodeSpec, NodeStatus, ProductionGraph, RunContext
+from spectracut.studio.ledger import Usage, usage_of
 
 RECIPE = "sha256:" + "a" * 64
 OTHER_RECIPE = "sha256:" + "b" * 64
@@ -208,6 +211,62 @@ def test_executor_accounts_gpu_minutes(make: MakeExecutor) -> None:
     result = ex.run(Job(id="g2", kind="model", resources=Resources(gpus=2)))
     assert result.usage.gpu_minutes == pytest.approx(4.0)
     assert result.usage.ai_usage == {"claude": 1}
+
+
+@EXECUTORS
+def test_executor_bills_gpu_minutes_on_failure(make: MakeExecutor) -> None:
+    clock = Clock()
+
+    def body(job: Job) -> JobResult:
+        clock.sleep(40 * 60)
+        raise RuntimeError("boom")
+
+    ex = make(body, cards=(CARD_12, CARD_8), clock=clock.mono)
+    req = Resources(gpus=2)
+    with pytest.raises(RuntimeError, match="boom") as info:
+        ex.run(Job(id="g3", kind="model", resources=req))
+    assert usage_of(info.value).gpu_minutes == pytest.approx(80.0)
+    assert ex.can_run_now(req)
+
+
+@EXECUTORS
+def test_executor_adds_lease_minutes_to_usage_the_failure_carries(make: MakeExecutor) -> None:
+    clock = Clock()
+
+    def body(job: Job) -> JobResult:
+        clock.sleep(60)
+        raise JobFailed("inner", usage=Usage(gpu_minutes=2.0, ai_usage={"claude": 3}))
+
+    ex = make(body, cards=(CARD_8,), clock=clock.mono)
+    with pytest.raises(JobFailed) as info:
+        ex.run(Job(id="g4", kind="model", resources=Resources(gpus=1)))
+    usage = usage_of(info.value)
+    assert usage.gpu_minutes == pytest.approx(3.0) and usage.ai_usage == {"claude": 3}
+
+
+@EXECUTORS
+def test_failed_gpu_job_minutes_reach_ledger(make: MakeExecutor) -> None:
+    clock = Clock()
+
+    def body(job: Job) -> JobResult:
+        clock.sleep(40 * 60)
+        raise RuntimeError("render host lost")
+
+    ex = make(body, cards=(CARD_12, CARD_8), clock=clock.mono)
+    q = JobQueue([ex], now=clock.now)
+    graph = ProductionGraph("prod-1", now=clock.now, clock=clock.mono)
+    graph.add_node(NodeSpec(id="shot-1", kind="render", department="lighting"))
+
+    def make_job(ctx: RunContext) -> Job:
+        return Job(id=f"{ctx.spec.id}-a{ctx.attempt}", kind="model", resources=Resources(gpus=2))
+
+    report = graph.run(q.as_runner(make_job, sleep=clock.sleep))
+    assert report.failed == ["shot-1"] and graph.status("shot-1") is NodeStatus.FAILED
+    assert "RuntimeError: render host lost" in (graph.state("shot-1").error or "")
+    (entry,) = graph.ledger.entries()
+    assert entry.outcome == "failed" and entry.gpu_minutes == pytest.approx(80.0)
+    assert graph.ledger.totals().gpu_minutes == pytest.approx(80.0)
+    assert q.job("shot-1-a1").failed_usage == Usage(gpu_minutes=80.0)
 
 
 @EXECUTORS
@@ -443,3 +502,112 @@ def test_gpu_only_host_gets_no_build_lanes_and_capped_allowance() -> None:
     assert ex.run(Job(id="r1", kind="blender", resources=Resources(gpus=1))).output == "r1"
     assert computeshare_allowance(gpu_only)["build_lanes"] is False
     assert computeshare_allowance(gpu_only)["mem_gb"] == 4
+
+
+# ---- thread safety (#191) ----------------------------------------------------
+
+
+def _two_node_graph() -> ProductionGraph:
+    graph = ProductionGraph("prod-1", now=lambda: T0)
+    graph.add_node(NodeSpec(id="a", kind="render", department="lighting"))
+    graph.add_node(NodeSpec(id="b", kind="render", department="lighting"))
+    return graph
+
+
+def test_shared_queue_runs_each_parallel_job_exactly_once() -> None:
+    both_running = threading.Barrier(2, timeout=10)
+
+    def body(job: Job) -> JobResult:
+        both_running.wait()  # only passes if the two jobs really overlap
+        return JobResult(output={"job": job.id})
+
+    ex = FakeExecutor(body)
+    q = JobQueue([ex], now=lambda: T0)
+    runner = q.as_runner(lambda ctx: Job(id=f"{ctx.spec.id}-job", kind="model"), sleep=time.sleep)
+    graph = _two_node_graph()
+    report = graph.run(runner, max_workers=2)
+    assert sorted(report.executed) == ["a", "b"] and not report.failed
+    assert sorted(ex.calls) == ["a-job", "b-job"]
+    assert [j.attempts for j in q.jobs] == [1, 1]
+
+
+def test_run_until_idle_scoped_to_own_job_ignores_job_running_elsewhere() -> None:
+    started, release = threading.Event(), threading.Event()
+
+    def body(job: Job) -> JobResult:
+        if job.id == "slow":
+            started.set()
+            assert release.wait(10)
+        return _ok(job)
+
+    q = JobQueue([FakeExecutor(body)], now=lambda: T0)
+    slow = q.submit(Job(id="slow", kind="model"))
+    t = threading.Thread(target=q.run_until_idle)
+    t.start()
+    try:
+        assert started.wait(10)
+        fast = q.submit(Job(id="fast", kind="model"))
+        q.run_until_idle(jobs=["fast"], sleep=lambda _s: None)  # no QueueStalled
+        assert fast.status is JobStatus.SUCCEEDED
+        # unscoped waiters also wait for the foreign running job instead of stalling
+        waiter = threading.Thread(target=q.run_until_idle)
+        waiter.start()
+        release.set()
+        waiter.join(10)
+        assert not waiter.is_alive()
+    finally:
+        release.set()
+        t.join(10)
+    assert slow.status is JobStatus.SUCCEEDED and slow.attempts == 1
+
+
+def test_lease_pool_never_double_leases_a_card_under_contention() -> None:
+    pool = LeasePool(64, 256, (CARD_8,))
+    n = 16
+    start = threading.Barrier(n, timeout=10)
+    leases: list[object] = []
+    busy: list[int] = []
+
+    def grab() -> None:
+        start.wait()
+        try:
+            leases.append(pool.acquire(Resources(gpus=1), executor="x", host="h", now=0))
+        except ExecutorBusy:
+            busy.append(1)
+
+    threads = [threading.Thread(target=grab) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert len(leases) == 1 and len(busy) == n - 1
+    pool.release(leases[0])  # type: ignore[arg-type]
+    assert pool.free_cpus == 64 and pool.can_run_now(Resources(gpus=1))
+
+
+def test_scoped_waiter_does_not_stall_when_foreign_job_holds_the_only_gpu() -> None:
+    a_running, release = threading.Event(), threading.Event()
+
+    def body(job: Job) -> JobResult:
+        if job.id == "a":
+            a_running.set()
+            assert release.wait(10)
+        return _ok(job)
+
+    q = JobQueue([_make_hostpool(body, cards=(CARD_8,))], now=lambda: T0)
+    a = q.submit(Job(id="a", kind="model", resources=Resources(gpus=1)))
+    ta = threading.Thread(target=q.run_until_idle, kwargs={"jobs": ["a"]})
+    ta.start()
+    try:
+        assert a_running.wait(10)
+        b = q.submit(Job(id="b", kind="model", resources=Resources(gpus=1)))
+        tb = threading.Thread(target=q.run_until_idle, kwargs={"jobs": ["b"]})
+        tb.start()
+        time.sleep(0.1)  # b is requeued on ExecutorBusy while a holds the card
+        release.set()
+        tb.join(10)
+        assert not tb.is_alive()
+    finally:
+        release.set()
+        ta.join(10)
+    assert a.status is JobStatus.SUCCEEDED and b.status is JobStatus.SUCCEEDED

@@ -31,6 +31,17 @@ class Usage(StrictModel):
     elevenlabs_characters: NonNegInt = 0
 
 
+def usage_of(exc: BaseException) -> Usage:
+    """The usage a failed run consumed, carried on its exception as ``exc.usage``.
+
+    Failure paths (metered executors, Flamenco failures and timeouts, the job
+    queue) attach what the run used before raising, so a failed ledger entry
+    still counts its GPU minutes. Any other exception reports ``Usage()``.
+    """
+    usage = getattr(exc, "usage", None)
+    return usage if isinstance(usage, Usage) else Usage()
+
+
 class LedgerEntry(StrictModel):
     """One department run of one node."""
 

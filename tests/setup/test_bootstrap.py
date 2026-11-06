@@ -61,6 +61,9 @@ class FakeHost:
             wired=True,
             free_gb=500,
             admin=self.admin,
+            home="C:\\Users\\artac" if self.os == "windows" else "",
+            account="RIG\\artac" if self.os == "windows" else "",
+            sid="S-1-5-21-9-9-9-1001" if self.os == "windows" else "",
         )
 
     def run(self, step: Step) -> str | None:

@@ -55,6 +55,7 @@ from spectracut.setup.storage import (
     plan_storage,
     storage_folder,
     storage_notes,
+    verified_admin_command,
     wifi_warnings,
     windows_task_restart,
     windows_task_start,
@@ -107,6 +108,8 @@ WINDOWS_PROBE = (
     "'admin=' + ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]"
     "::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); "
     "'home=' + $env:USERPROFILE; "
+    "$id = [Security.Principal.WindowsIdentity]::GetCurrent(); "
+    "'account=' + $id.Name; 'sid=' + $id.User.Value; "
     f"schtasks.exe /query /tn {WORKER_TASK} *> $null; "
     "'task=' + ($LASTEXITCODE -eq 0); "
     # Drive letters in use: letter=UNC (network), letter=folder (subst), letter=.
@@ -223,10 +226,37 @@ def task_script_source() -> str:
     return Path(__file__).with_name(TASK_SCRIPT).read_text(encoding="utf-8")
 
 
-def task_script_command(home: str) -> str:
-    """The one command the owner runs in an elevated PowerShell (no secrets in it)."""
-    path = f"{home or '<the SSH account profile>'}\\spectracut\\{TASK_SCRIPT}"
-    return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{path}"'
+def task_script_content(facts: HostFacts) -> str:
+    """The task script with this host's account, SID and profile filled in (on the controller).
+
+    Filled here rather than on the host so setup knows the exact bytes it writes and can
+    print the SHA-256 that :func:`task_script_command` checks before running it elevated.
+    """
+    if not (facts.account and facts.sid and facts.home):
+        raise SetupError(
+            f"{facts.name}: the probe did not report the SSH account's name, SID and profile; "
+            "re-run spectracut setup"
+        )
+    fill = {"__ACCOUNT__": facts.account, "__SID__": facts.sid, "__HOME__": facts.home}
+    text = task_script_source()
+    for key, value in fill.items():
+        text = text.replace(key, value.replace("'", "''"))  # values sit in '...' literals
+    return text
+
+
+def task_script_command(facts: HostFacts) -> str:
+    """The one command the owner runs in an elevated PowerShell (no secrets in it).
+
+    It refuses a script whose SHA-256 differs from what setup wrote, and runs a copy
+    outside the SSH account's profile (see :func:`verified_admin_command`).
+    """
+    path = f"{facts.home}\\spectracut\\{TASK_SCRIPT}"
+    return verified_admin_command(path, task_script_sha256(facts))
+
+
+def task_script_sha256(facts: HostFacts) -> str:
+    """SHA-256 of the task script exactly as setup writes it to ``facts``' host."""
+    return hashlib.sha256(task_script_content(facts).encode("utf-8")).hexdigest()
 
 
 def worker_task_notes(facts: Mapping[str, HostFacts], hosts: Sequence[str]) -> list[str]:
@@ -234,7 +264,9 @@ def worker_task_notes(facts: Mapping[str, HostFacts], hosts: Sequence[str]) -> l
     return [
         f"{h} needs a one-time admin step: its SSH account is not an Administrator, so after "
         f"this setup run open an elevated PowerShell on {h} and run "
-        f"`{task_script_command(facts[h].home)}`; it registers the {WORKER_TASK} task to run "
+        f"`{task_script_command(facts[h])}`; it refuses to run unless {TASK_SCRIPT} has the "
+        f"SHA-256 {task_script_sha256(facts[h])} that setup wrote, runs a copy outside the "
+        f"account's profile, and registers the {WORKER_TASK} task to run "
         "at startup as that account and lets the account start and stop it, so later setups "
         "need no admin"
         for h in hosts
@@ -374,14 +406,7 @@ def _windows_service_steps(
     elevated (see :func:`worker_task_notes`), and setup restarts it with schtasks.exe.
     """
     name = facts.name
-    write_task = (
-        f"$p = Join-Path $env:USERPROFILE 'spectracut/{TASK_SCRIPT}'; "
-        "New-Item -ItemType Directory -Force (Split-Path $p) | Out-Null; "
-        "$id = [Security.Principal.WindowsIdentity]::GetCurrent(); "
-        f"$t = {STEP_INPUT}.Replace('__ACCOUNT__', $id.Name)"
-        ".Replace('__SID__', $id.User.Value).Replace('__HOME__', $env:USERPROFILE); "
-        "[IO.File]::WriteAllText($p, $t)"
-    )
+    task_script = task_script_content(facts)
     if facts.admin:
         cmd = (
             f"powershell.exe -NoProfile -ExecutionPolicy Bypass -File "
@@ -399,14 +424,12 @@ def _windows_service_steps(
             f"spectracut/{WORKER_ARGS}",
             worker_args,
         ),
-        Step(
+        profile_write_step(
             name,
             f"worker-task-script:{name}",
             "install the one-time Worker task script",
-            write_task,
-            "powershell",
-            stdin=task_script_source(),
-            kind="write",
+            f"spectracut/{TASK_SCRIPT}",
+            task_script,
         ),
         Step(
             name,
@@ -1103,7 +1126,7 @@ class CommandRunner:
         return cpus, mem
 
 
-_PROBE_LINE = re.compile(r"^(address|link|free|admin|home|task|drives|missing)=(.*)$")
+_PROBE_LINE = re.compile(r"^(address|link|free|admin|home|account|sid|task|drives|missing)=(.*)$")
 _MISSING = (MISSING_UNIT, MISSING_CONFIG, MISSING_JOB_TYPES)
 
 
@@ -1120,7 +1143,8 @@ def parse_probe(name: str, os: Os, out: str) -> HostFacts:
 
     Keys: ``address`` (Tailscale, may be empty), ``link`` (network device or media types),
     ``free`` (bytes). Windows adds ``admin`` (whether the SSH account is an Administrator),
-    ``home`` (its profile path), ``task`` (whether the worker task exists; ``True``/``False``)
+    ``home`` (its profile path), ``account`` and ``sid`` (its name and SID), ``task``
+    (whether the worker task exists; ``True``/``False``)
     and ``drives`` (drive letters in use as ``letter=root`` joined by ``|``; paths may hold
     ``=`` and commas). The control plane adds ``missing`` (comma-separated Manager files
     absent on disk; unknown tokens ignored). Other lines are ignored; a missing key keeps
@@ -1143,6 +1167,8 @@ def parse_probe(name: str, os: Os, out: str) -> HostFacts:
         free_gb=gb,
         admin=f.get("admin", "").lower() != "false" if win else True,
         home=f.get("home", "") if win else "",
+        account=f.get("account", "") if win else "",
+        sid=f.get("sid", "") if win else "",
         task=f.get("task", "").lower() != "false" if win else True,
         drives=tuple(d for d in f.get("drives", "").split("|") if d.strip()) if win else (),
         missing=tuple(

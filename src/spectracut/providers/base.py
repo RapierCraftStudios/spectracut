@@ -134,6 +134,27 @@ class VisionJudge(Protocol):
         ...
 
 
+def context_tokens(usage: Mapping[str, Any]) -> int:
+    """Input-side tokens of one call (fresh + cache read + cache creation)."""
+    keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+    return sum(int(usage.get(k) or 0) for k in keys)
+
+
+def judge_usage(judge: object) -> dict[str, int]:
+    """Tokens a vision judge's last ``score`` call used, from its optional ``last_usage``.
+
+    Returns ``{"input_tokens": ..., "output_tokens": ...}``, or ``{}`` when the
+    judge reports no usage (the mock judge, or test doubles without ``last_usage``).
+    """
+    usage = getattr(judge, "last_usage", None)
+    if not isinstance(usage, Mapping) or not usage:
+        return {}
+    return {
+        "input_tokens": context_tokens(usage),
+        "output_tokens": int(usage.get("output_tokens") or 0),
+    }
+
+
 @dataclass(frozen=True)
 class Completion:
     """One structured text call: the JSON output and what it used, by metric slug."""

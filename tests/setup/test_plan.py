@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import re
 import subprocess
@@ -26,7 +27,9 @@ from spectracut.setup.plan import (
     MISSING_CONFIG,
     MISSING_JOB_TYPES,
     MISSING_UNIT,
+    WINDOWS_PROBE,
     CommandRunner,
+    SetupError,
     SetupState,
     apply_plan,
     build_plan,
@@ -34,6 +37,9 @@ from spectracut.setup.plan import (
     gpu_script_source,
     load_state,
     parse_probe,
+    task_script_command,
+    task_script_content,
+    task_script_sha256,
     task_script_source,
     worker_script_source,
 )
@@ -55,7 +61,16 @@ from spectracut.setup.wheels import LocalWheels
 CRED = Credential("spectracut-share", "pw-secret-value")
 FACTS = {
     CONTROL: HostFacts(CONTROL, "linux", "100.64.0.1", wired=False, free_gb=200),
-    "legion": HostFacts("legion", "windows", "100.64.0.2", wired=True, free_gb=500),
+    "legion": HostFacts(
+        "legion",
+        "windows",
+        "100.64.0.2",
+        wired=True,
+        free_gb=500,
+        account="LEGION\\artac-remote",
+        sid="S-1-5-21-1-2-3-1001",
+        home="C:\\Users\\artac-remote",
+    ),
     "rig": HostFacts("rig", "linux", "100.64.0.3", wired=True, free_gb=900),
 }
 WORKERS = ["legion", "rig"]
@@ -366,6 +381,8 @@ USER_FACTS = {
         free_gb=500,
         admin=False,
         home="C:\\Users\\artac-remote",
+        account="LEGION\\artac-remote",
+        sid="S-1-5-21-1-2-3-1001",
         task=False,
     ),
 }
@@ -400,19 +417,48 @@ def test_non_admin_windows_host_gets_one_elevated_command_and_no_admin_steps() -
     notes = [n for n in plan.notes if n.startswith("legion needs a one-time admin step")]
     assert len(notes) == 1
     cmd = "C:\\Users\\artac-remote\\spectracut\\windows_worker_task.ps1"
-    assert f'`powershell -NoProfile -ExecutionPolicy Bypass -File "{cmd}"`' in notes[0]
+    assert f"[IO.File]::ReadAllBytes('{cmd}')" in notes[0]
+    assert f'-File "{cmd}"' not in notes[0]  # never runs the profile copy directly (#190)
     assert CRED.password not in notes[0] and CRED.user not in notes[0]
     task = next(s for s in plan.steps if s.id == "service:worker:legion")
     assert "windows_worker_task.ps1" not in task.command  # cannot register without admin
     assert "schtasks.exe /end" in task.command and "schtasks.exe /run" in task.command
     script = next(s for s in plan.steps if s.id == "worker-task-script:legion")
-    assert "__SID__" in (script.stdin or "") and "$id.User.Value" in script.command
+    assert "S-1-5-21-1-2-3-1001" in (script.stdin or "") and "__SID__" not in (script.stdin or "")
+    assert "$id.User.Value" not in script.command and ".Replace(" not in script.command
     assert CRED.password not in (script.stdin or "") + json.dumps(_args(plan))
     src = task_script_source()
     assert "GRGX" in src and "SetSecurityDescriptor" in src and "/xml" in src
     assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in src
     assert "-File" in src and "worker-args" not in src  # the action never changes
     assert not [n for n in _plan(SetupState()).notes if "one-time admin step" in n]
+
+
+def test_elevated_task_command_checks_the_sha256_of_what_setup_wrote() -> None:
+    """#190: the admin runs only the bytes setup wrote, from a copy outside the profile."""
+    plan = _user_plan(SetupState())
+    script = next(s for s in plan.steps if s.id == "worker-task-script:legion")
+    digest = hashlib.sha256((script.stdin or "").encode("utf-8")).hexdigest()
+    assert script.stdin == task_script_content(USER_FACTS["legion"])
+    assert task_script_sha256(USER_FACTS["legion"]) == digest
+    note = next(n for n in plan.notes if n.startswith("legion needs a one-time admin step"))
+    assert f"SHA-256 {digest}" in note
+    cmd = task_script_command(USER_FACTS["legion"])
+    assert f"if ($h -ne '{digest}') {{ throw" in cmd and cmd in note
+    read = cmd.index("ReadAllBytes(")
+    assert read < cmd.index("ComputeHash($b)") < cmd.index("WriteAllBytes($c, $b)")
+    assert cmd.index("WriteAllBytes($c, $b)") < cmd.index("-File $c")
+    assert "Join-Path $env:TEMP" in cmd and "USERPROFILE" not in cmd
+    assert cmd.count("-File") == 1  # only the verified copy is ever run
+    # placeholders filled on the controller, quotes escaped for the '...' literals
+    odd = dataclasses.replace(USER_FACTS["legion"], account="LEGION\\o'neil")
+    assert "$account = 'LEGION\\o''neil'" in task_script_content(odd)
+
+
+def test_task_script_needs_the_probed_account_and_sid() -> None:
+    blank = {**USER_FACTS, "legion": dataclasses.replace(USER_FACTS["legion"], sid="")}
+    with pytest.raises(SetupError, match="SID"):
+        build_plan(load_manifest(), "2026.11", blank, WORKERS, SetupState(), CRED, wheels=WHEELS)
 
 
 def test_non_admin_note_repeats_until_the_task_exists(tmp_path: Path) -> None:
@@ -432,9 +478,12 @@ def test_non_admin_note_repeats_until_the_task_exists(tmp_path: Path) -> None:
 def test_parse_probe_reads_admin_profile_and_task_without_cim() -> None:
     out = (
         "address=100.64.0.2\nlink=Ethernet\nfree=5000000000\nadmin=False\n"
-        "home=C:\\Users\\artac-remote\ntask=False\n"
+        "home=C:\\Users\\artac-remote\naccount=MRDUBEY-1\\artac-remote\n"
+        "sid=S-1-5-21-1-2-3-1001\ntask=False\n"
     )
     f = parse_probe("mrdubey-1", "windows", out)
+    assert (f.account, f.sid) == ("MRDUBEY-1\\artac-remote", "S-1-5-21-1-2-3-1001")
+    assert "'account=' + $id.Name" in WINDOWS_PROBE and "'sid=' + $id.User.Value" in WINDOWS_PROBE
     assert (f.admin, f.home, f.task, f.wired) == (False, "C:\\Users\\artac-remote", False, True)
     admin = parse_probe(
         "legion",

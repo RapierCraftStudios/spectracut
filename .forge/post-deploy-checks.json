@@ -73,5 +73,10 @@
     "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && SPECTRACUT_E2E=1 SPECTRACUT_HOME=$HOME/.local/share/spectracut SPECTRACUT_FLAMENCO_URL=http://100.105.62.23:8085 SPECTRACUT_FLAMENCO_SHARED=/srv/flamenco SPECTRACUT_FLAMENCO_TAG=3070laptopgpu uv run pytest -q -m e2e tests/templates/test_templates_e2e.py -k dolly",
     "pass": "/\\b[1-9]\\d* passed in\\b/",
     "timeout": 3600
+  },
+  "local-model-sfx-batch-load-once-e2e": {
+    "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && SPECTRACUT_E2E=1 uv run pytest -q -m e2e tests/providers/test_local_runtime.py",
+    "pass": "/\\b[1-9]\\d* passed in\\b/",
+    "timeout": 3600
   }
 }

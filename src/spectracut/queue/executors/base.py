@@ -11,6 +11,7 @@ can meet them. GPUs are leased as whole cards, never sliced: a job asking for
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,7 +22,7 @@ from pydantic import Field, JsonValue
 
 from spectracut.queue.profile import RenderProfile
 from spectracut.spec._base import NonEmptyStr, StrictModel
-from spectracut.studio.ledger import Usage
+from spectracut.studio.ledger import Usage, usage_of
 
 if TYPE_CHECKING:
     from spectracut.queue.queue import Job
@@ -107,6 +108,7 @@ class LeasePool:
         self._used_cpus = 0.0
         self._used_mem = 0.0
         self._busy_cards: set[int] = set()
+        self._lock = threading.Lock()
 
     @property
     def free_cpus(self) -> float:
@@ -132,30 +134,39 @@ class LeasePool:
             and len(self._eligible(req, free_only=False)) >= req.gpus
         )
 
-    def can_run_now(self, req: Resources) -> bool:
+    def _fits_now(self, req: Resources) -> bool:
+        """Capacity check; callers hold ``_lock``."""
         return (
             req.cpus <= self.free_cpus
             and req.mem_gb <= self.free_mem_gb
             and len(self._eligible(req, free_only=True)) >= req.gpus
         )
 
+    def can_run_now(self, req: Resources) -> bool:
+        with self._lock:
+            return self._fits_now(req)
+
     def best_free_vram(self, req: Resources) -> int:
-        cards = self._eligible(req, free_only=True)
-        return self.cards[cards[0]].vram_gb if cards else 0
+        with self._lock:
+            cards = self._eligible(req, free_only=True)
+            return self.cards[cards[0]].vram_gb if cards else 0
 
     def acquire(self, req: Resources, *, executor: str, host: str, now: float) -> Lease:
-        if not self.can_run_now(req):
-            raise ExecutorBusy(f"{executor}/{host} cannot fit {req.model_dump()} now")
-        cards = tuple(self._eligible(req, free_only=True)[: req.gpus])
-        self._used_cpus += req.cpus
-        self._used_mem += req.mem_gb
-        self._busy_cards.update(cards)
+        # Check and take under one lock hold: two threads cannot lease the same card.
+        with self._lock:
+            if not self._fits_now(req):
+                raise ExecutorBusy(f"{executor}/{host} cannot fit {req.model_dump()} now")
+            cards = tuple(self._eligible(req, free_only=True)[: req.gpus])
+            self._used_cpus += req.cpus
+            self._used_mem += req.mem_gb
+            self._busy_cards.update(cards)
         return Lease(executor, host, req.cpus, req.mem_gb, cards, now)
 
     def release(self, lease: Lease) -> None:
-        self._used_cpus = max(0.0, self._used_cpus - lease.cpus)
-        self._used_mem = max(0.0, self._used_mem - lease.mem_gb)
-        self._busy_cards.difference_update(lease.cards)
+        with self._lock:
+            self._used_cpus = max(0.0, self._used_cpus - lease.cpus)
+            self._used_mem = max(0.0, self._used_mem - lease.mem_gb)
+            self._busy_cards.difference_update(lease.cards)
 
 
 def metered_run(
@@ -167,12 +178,27 @@ def metered_run(
     host: str,
     clock: Callable[[], float],
 ) -> JobResult:
-    """Lease ``job.resources`` on ``pool``, run ``body``, release, and add GPU minutes."""
+    """Lease ``job.resources`` on ``pool``, run ``body``, release, and add GPU minutes.
+
+    The leased cards are billed whether ``body`` returns or raises: on failure
+    the minutes are added to the exception's ``usage`` (see
+    :func:`~spectracut.studio.ledger.usage_of`) and the same exception re-raised.
+    """
     lease = pool.acquire(job.resources, executor=executor, host=host, now=clock())
     try:
         result = body()
-    finally:
+    except Exception as exc:
         pool.release(lease)
+        carried = usage_of(exc)
+        minutes = len(lease.cards) * max(0.0, clock() - lease.started_at) / 60.0
+        exc.usage = carried.model_copy(  # type: ignore[attr-defined]
+            update={"gpu_minutes": carried.gpu_minutes + minutes}
+        )
+        raise
+    except BaseException:
+        pool.release(lease)
+        raise
+    pool.release(lease)
     minutes = len(lease.cards) * max(0.0, clock() - lease.started_at) / 60.0
     usage = result.usage.model_copy(update={"gpu_minutes": result.usage.gpu_minutes + minutes})
     return result.model_copy(update={"usage": usage})

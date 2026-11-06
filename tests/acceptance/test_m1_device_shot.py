@@ -271,9 +271,17 @@ class MockJudge:
 
     def __init__(self) -> None:
         self.frames: list[Path] = []
+        self.last_usage: dict[str, int] = {}
 
     def score(self, frame_path: Path, rubric: str) -> VisionScore:
         self.frames.append(frame_path)
+        # The shape of a Claude envelope's ``usage``: a cached prompt plus a fresh frame.
+        self.last_usage = {
+            "input_tokens": 100,
+            "cache_read_input_tokens": 3000,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 40,
+        }
         return VisionScore(score=0.92, notes="screen legible")
 
 
@@ -393,6 +401,8 @@ def test_studio_run_renders_preview_and_final_and_status_shows_ledger(
     minutes = re.search(r"gpu_minutes=([0-9.]+)", status.output)
     assert minutes is not None and float(minutes.group(1)) > 0
     assert "vision_qa_requests=1" in status.output
+    assert "vision_qa_input_tokens=3100" in status.output
+    assert "vision_qa_output_tokens=40" in status.output
     assert private not in status.output
     for path in (home / "productions").rglob("*"):
         if path.is_file():
@@ -771,3 +781,44 @@ def test_replay_of_a_legacy_file_sha_record_compares_file_bytes(tmp_path: Path) 
         **{**legacy.__dict__, "files": ds.frame_file_hashes(rep), "frames": ds.frame_hashes(rep)}
     )
     assert not changed.matches
+
+
+def _claim_config(tmp_path: Path) -> ds.DeviceShotConfig:
+    return ds.DeviceShotConfig(flamenco_url="http://x", shared=tmp_path, worker_tag="t")
+
+
+def test_fresh_job_id_is_claimed_atomically_under_concurrency(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    config = _claim_config(tmp_path)
+    with ThreadPoolExecutor(16) as pool:
+        ids = list(pool.map(lambda _i: ds._fresh_job_id(config, "p-n-abc"), range(32)))
+    assert len(set(ids)) == 32 and ids[0].startswith("p-n-abc")
+    assert all(config.out_dir(i).is_dir() for i in ids)
+
+
+def test_fresh_ids_skip_existing_job_file_and_out_dir(tmp_path: Path) -> None:
+    config = _claim_config(tmp_path)
+    (tmp_path / "jobs").mkdir()
+    config.job_file("b").write_text("{}")
+    config.out_dir("b-2").mkdir(parents=True)
+    assert ds._fresh_job_id(config, "b") == "b-3"
+    assert ds._fresh_replay_id(config, "b-3") == "b-3-replay-1"
+    assert ds._fresh_replay_id(config, "b-3") == "b-3-replay-2"
+
+
+def test_sign_to_shared_replaces_atomically(tmp_path: Path) -> None:
+    private, _public = generate_keypair()
+    kit, sha = load_brand_kit(KIT), _sha(SCREEN)
+    recipe = ds.build_device_recipe(
+        _brief(), kit, screen_image="ui/dashboard.png", screen_sha256=sha
+    )
+    config = ds.DeviceShotConfig(flamenco_url="http://fake", shared=tmp_path, worker_tag=TAG)
+    envelope = ds._envelope("job-1", recipe, config, datetime(2026, 11, 5, tzinfo=UTC))
+    target = tmp_path / "jobs" / "job-1.json"
+    target.parent.mkdir()
+    target.write_text("old")
+    inode = target.stat().st_ino
+    path = ds.sign_to_shared(envelope, load_private_key(private), tmp_path)
+    assert path == target and path.stat().st_ino != inode  # replaced, not truncated in place
+    assert [p.name for p in target.parent.iterdir()] == ["job-1.json"]  # no temp left behind
