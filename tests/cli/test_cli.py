@@ -159,6 +159,26 @@ def test_studio_run_without_departments_fails_clearly(
     assert "no department registered for 'strategist'" in result.output
 
 
+def test_studio_run_on_an_old_layout_graph_asks_to_recreate_it(
+    home: Path, brief_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(studio_mod, "runner_factory", lambda production, graph: _fake_runner)
+    assert runner.invoke(app, ["studio", "new", str(brief_file)]).exit_code == 0
+    store = ProductionStore(home)
+    graph, _ = store.load("spellwise")
+    stale = graph.spec("style_frames").model_copy(update={"inputs": ("script",)})
+    graph.update_node(stale)  # the positional chain productions were created with
+    store.save("spellwise", graph)
+
+    result = runner.invoke(app, ["studio", "run", "spellwise"])
+    assert result.exit_code == 2, result.output
+    assert "older production graph" in result.output
+    assert "recreate it with" in result.output and "--force" in result.output
+    assert "undeclared kind" not in result.output
+    reloaded, _ = store.load("spellwise")
+    assert all(s is NodeStatus.PENDING for s in reloaded.statuses().values())
+
+
 def test_studio_new_duration_prints_gpu_hours_and_wall_time(home: Path, brief_file: Path) -> None:
     result = runner.invoke(app, ["studio", "new", str(brief_file), "--duration", "60"])
     assert result.exit_code == 0, result.output
