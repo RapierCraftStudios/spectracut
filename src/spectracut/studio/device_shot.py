@@ -20,7 +20,9 @@ Stages (``profiles/device-shot.json``):
     storage (:func:`sign_to_shared`) and runs through
     ``JobQueue.as_runner`` + :class:`FlamencoExecutor`. The output records the
     scene-graph hash and every frame's sha256. The preview frame is scored once
-    by the vision judge and counted as ``vision_qa_requests`` AI usage.
+    by the vision judge and counted as ``vision_qa_requests`` AI usage, plus
+    ``vision_qa_input_tokens`` and ``vision_qa_output_tokens`` when the judge
+    reports its token usage.
 
 The ``device-shot-graded`` profile (``profiles/device-shot-graded.json``) adds:
 
@@ -78,6 +80,7 @@ from spectracut.finishing import comp
 from spectracut.finishing.color import ColorPipeline
 from spectracut.finishing.looks import finish_runner, render_rules, resolve_look
 from spectracut.harness.imagecmp import ImageError, decode_png
+from spectracut.providers.base import judge_usage
 from spectracut.queue.executors.flamenco import FlamencoApi, FlamencoExecutor
 from spectracut.queue.queue import Job, JobQueue
 from spectracut.queue.signing import JobEnvelope, sign_job
@@ -135,6 +138,8 @@ FINAL_SEED = 1153
 FINAL_SAMPLES = 256
 
 VISION_QA_METRIC = "vision_qa_requests"
+VISION_QA_INPUT_TOKENS = "vision_qa_input_tokens"
+VISION_QA_OUTPUT_TOKENS = "vision_qa_output_tokens"
 VISION_RUBRIC = (
     "Product device shot. The device screen must be legible and unobstructed, the "
     "framing centred on the device, and no third-party logos or marks visible."
@@ -782,6 +787,13 @@ def device_shot_runner(
             verdict = active.score(out / sorted(frames)[0], VISION_RUBRIC)
             output["vision_qa"] = {"score": float(verdict.score), "notes": verdict.notes}
             ai = {**usage.ai_usage, VISION_QA_METRIC: usage.ai_usage.get(VISION_QA_METRIC, 0) + 1}
+            tokens = judge_usage(active)
+            if tokens:
+                for metric, amount in (
+                    (VISION_QA_INPUT_TOKENS, tokens["input_tokens"]),
+                    (VISION_QA_OUTPUT_TOKENS, tokens["output_tokens"]),
+                ):
+                    ai[metric] = ai.get(metric, 0) + amount
             usage = usage.model_copy(update={"ai_usage": ai})
         return RunResult(output=output, usage=usage)
 
