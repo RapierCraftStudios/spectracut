@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,12 +22,13 @@ from spectracut.studio import intake
 from spectracut.studio.autonomy import AutonomyPolicy, BudgetApproval, load_autonomy
 from spectracut.studio.department import Department
 from spectracut.studio.departments import all_departments
+from spectracut.studio.departments import shots as shot_depts
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
 from spectracut.studio.node import NodeSpec
 from spectracut.studio.producer import BudgetCaps, Producer, edge_problems, scheduled
 from spectracut.studio.profiles import available_profiles, load_profile
-from spectracut.studio.runner import DepartmentRunner
+from spectracut.studio.runner import CapacityLimits, DepartmentRunner
 from spectracut.studio.store import ProductionError, ProductionStore, write_atomic
 
 if TYPE_CHECKING:
@@ -91,6 +93,10 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
     """Run nodes through :data:`DEPARTMENTS`; a node with no department fails clearly.
 
     Productions on the ``device-shot`` profile run through the device-shot runner.
+    Other profiles render ``template_shots`` and ``shots`` nodes on the farm through
+    :class:`~spectracut.studio.departments.shots.ShotRunner`; its farm dependencies
+    (:data:`device_shot_factory`) are built on the first shot node, so text-only runs
+    never need the Flamenco env or the signing key.
     """
     if graph.profile is not None and graph.profile.name == ds.PROFILE:
         deps = device_shot_factory(production)
@@ -103,19 +109,47 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
             options=deps.options,
         )
     inner: DepartmentRunner | None = None
+    shots: shot_depts.ShotRunner | None = None
+    lock = threading.Lock()
 
-    def run(ctx: RunContext) -> RunResult:
+    def text(ctx: RunContext) -> RunResult:
         nonlocal inner
         name = ctx.spec.department
         if name not in DEPARTMENTS:
             raise LookupError(f"no department registered for {name!r}")
-        if inner is None:
-            if text_provider_factory is None:
-                raise LookupError("no text provider configured for departments")
-            inner = DepartmentRunner(
-                DEPARTMENTS.values(), text_provider_factory(), brief=production.brief, graph=graph
-            )
-        return inner(ctx)
+        with lock:
+            if inner is None:
+                if text_provider_factory is None:
+                    raise LookupError("no text provider configured for departments")
+                inner = DepartmentRunner(
+                    DEPARTMENTS.values(),
+                    text_provider_factory(),
+                    brief=production.brief,
+                    graph=graph,
+                    limits=CapacityLimits(gpu_leases=1),
+                )
+            runner = inner
+        return runner(ctx)
+
+    def run(ctx: RunContext) -> RunResult:
+        nonlocal shots
+        if ctx.spec.kind not in (shot_depts.TEMPLATE_SHOTS, shot_depts.SHOTS):
+            return text(ctx)
+        with lock:
+            if shots is None:
+                deps = device_shot_factory(production)
+                shots = shot_depts.ShotRunner(
+                    text,
+                    DEPARTMENTS,
+                    config=deps.config,
+                    client=deps.client,
+                    key=deps.key,
+                    judge=deps.judge,
+                    production_id=graph.production_id,
+                    options=deps.options,
+                )
+            runner = shots
+        return runner(ctx)
 
     return run
 
@@ -257,10 +291,13 @@ def new(
     except ValueError as exc:
         raise _fail(str(exc)) from exc
     shot_params: dict[str, JsonValue] | None = None
+    template_params: dict[str, JsonValue] = {}
     if quality.name == ds.PROFILE:
         if brand_kit is None:
             raise _fail(f"profile {ds.PROFILE} needs --brand-kit PATH")
         shot_params = _device_shot_params(brand_kit)
+    elif brand_kit is not None:
+        template_params = _brand_params(brand_kit)
     pid = production_id or brief.id
     policy = _policy(autonomy, delegate, None)
     store = ProductionStore(home)
@@ -272,6 +309,13 @@ def new(
             specs = [_with_params(s, shot_params) if s.kind == ds.SHOT_STAGE else s for s in specs]
         else:
             specs = list(Producer(DEPARTMENTS).breakdown(brief, quality, duration_s=duration).nodes)
+            if template_params:
+                specs = [
+                    s.model_copy(update={"params": {**s.params, **template_params}})
+                    if s.kind in (shot_depts.TEMPLATE_SHOTS, shot_depts.SHOTS)
+                    else s
+                    for s in specs
+                ]
         graph.add_nodes(specs)
         path = store.create(
             pid, brief, graph, force=force, caps=caps if caps.limits() else None, autonomy=policy
@@ -313,20 +357,27 @@ def _autofill(idea: str, refs: list[str], headless: bool, kit_path: Path | None)
         raise _fail(str(exc)) from exc
 
 
-def _device_shot_params(kit_path: Path) -> dict[str, JsonValue]:
-    """The brand kit JSON, its assets root and screen asset (path, sha256) for the shot node."""
+def _brand_params(kit_path: Path) -> dict[str, JsonValue]:
+    """The brand kit JSON and its assets root, for the shot nodes."""
     try:
         kit: BrandKit = load_brand_kit(kit_path)
     except ValueError as exc:
         raise _fail(str(exc)) from exc
     assets = (kit_path.parent / "assets").resolve()
+    return {ds.BRAND_KIT_PARAM: kit.model_dump(mode="json"), ds.ASSETS_DIR_PARAM: str(assets)}
+
+
+def _device_shot_params(kit_path: Path) -> dict[str, JsonValue]:
+    """The brand kit JSON, its assets root and screen asset (path, sha256) for the shot node."""
+    brand = _brand_params(kit_path)
+    assets = Path(str(brand[ds.ASSETS_DIR_PARAM]))
     screen = (assets / SCREEN_ASSET).resolve()
     try:
         digest = hashlib.sha256(screen.read_bytes()).hexdigest()
     except OSError as exc:
         raise _fail(f"cannot read screen asset {screen}: {exc.strerror or exc}") from exc
     return {
-        ds.BRAND_KIT_PARAM: kit.model_dump(mode="json"),
+        ds.BRAND_KIT_PARAM: brand[ds.BRAND_KIT_PARAM],
         ds.SCREEN_IMAGE_PARAM: SCREEN_ASSET.as_posix(),
         ds.SCREEN_PATH_PARAM: str(screen),
         ds.SCREEN_SHA256_PARAM: digest,
@@ -339,6 +390,13 @@ def _with_params(spec: NodeSpec, extra: dict[str, JsonValue]) -> NodeSpec:
     if BRIEF_PARAM not in params:
         raise ValueError(f"node {spec.id!r} carries no brief")
     return spec.model_copy(update={"params": params})
+
+
+def _pass_score(graph: ProductionGraph) -> float:
+    """The profile's Critic pass score (the default profile's when none is set)."""
+    if graph.profile is not None:
+        return graph.profile.critique.pass_score
+    return load_profile("standard").critique.pass_score
 
 
 def _report_lines(report: RunReport) -> list[str]:
@@ -395,6 +453,7 @@ def run_cmd(
             scheduled(runner, departments=DEPARTMENTS),
             caps=meta.caps,
             approved=meta.budget_approvals,
+            critic=shot_depts.shot_critic(_pass_score(graph)),
             max_workers=workers,
             autonomy=policy,
         )

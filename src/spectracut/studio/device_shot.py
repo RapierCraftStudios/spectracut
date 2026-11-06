@@ -89,6 +89,7 @@ from spectracut.spec.brief import Brief, CreativeBrief
 from spectracut.spec.recipe import Recipe, RecipeStep
 from spectracut.studio.estimate import BRIEF_PARAM
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunResult
+from spectracut.studio.ledger import Usage
 from spectracut.studio.node import Tier
 from spectracut.studio.profiles import QualityProfile
 from spectracut.studio.store import write_atomic
@@ -497,12 +498,12 @@ def _claim_id(config: DeviceShotConfig, candidates: Iterable[str]) -> str:
     raise RuntimeError("no job id available")  # pragma: no cover - candidates are unbounded
 
 
-def _fresh_job_id(config: DeviceShotConfig, base: str) -> str:
+def fresh_job_id(config: DeviceShotConfig, base: str) -> str:
     """``base``, or ``base-<n>`` for the first n unused; the id is claimed on return."""
     return _claim_id(config, (base if n == 1 else f"{base}-{n}" for n in itertools.count(1)))
 
 
-def _envelope(
+def envelope(
     job_id: str, recipe: Recipe, config: DeviceShotConfig, now: datetime, frame_end: int = 1
 ) -> JobEnvelope:
     return JobEnvelope(
@@ -518,7 +519,7 @@ def _envelope(
     )
 
 
-def _blender_job(
+def blender_job(
     envelope: JobEnvelope,
     job_file: Path,
     out: Path,
@@ -544,7 +545,7 @@ def _blender_job(
     )
 
 
-def _executor(
+def executor(
     client: FlamencoApi,
     out: Path,
     config: DeviceShotConfig,
@@ -562,7 +563,7 @@ def _executor(
     )
 
 
-def _render_record(out: Path) -> tuple[str, dict[str, str]]:
+def render_record(out: Path) -> tuple[str, dict[str, str]]:
     scene = read_scene_graph_hash(out)
     if scene is None:
         raise RuntimeError(f"render in {out} recorded no scene_graph_hash")
@@ -593,7 +594,7 @@ def _shot_assets_source(ctx: RunContext) -> str | None:
     return None
 
 
-def _stage_for(
+def stage_for(
     config: DeviceShotConfig, source: str | None, recipe: Recipe
 ) -> tuple[str | None, str | None]:
     """``(job assets_dir, staged sha)``: the override verbatim, else stage ``source``.
@@ -687,7 +688,7 @@ def _load_brief(data: Any) -> Brief | CreativeBrief:
         return CreativeBrief.model_validate(data)
 
 
-def _qa_look(ctx: RunContext) -> Look:
+def qa_look(ctx: RunContext) -> Look:
     """The brand kit's default Look for QA, else a neutral Look with default thresholds."""
     kit = ctx.spec.params.get(BRAND_KIT_PARAM)
     if kit is not None:
@@ -698,7 +699,7 @@ def _qa_look(ctx: RunContext) -> Look:
     return Look(id="neutral")
 
 
-def _render_qa(
+def render_qa(
     ctx: RunContext, job_id: str, out: Path, look: Look, store: QAReportStore | None
 ) -> dict[str, JsonValue]:
     """Run QA on the rendered frames and save the report; a QA failure never raises."""
@@ -715,6 +716,19 @@ def _render_qa(
         return {"passed": False, "failures": ["qa.error"], "render_id": job_id, "error": str(exc)}
     failures: list[JsonValue] = [c.name for c in report.failures()]
     return {"passed": report.passed, "failures": failures, "render_id": job_id}
+
+
+def vision_qa_usage(usage: Usage, judge: VisionJudge) -> Usage:
+    """``usage`` plus one ``vision_qa_requests`` and the judge's last token usage, if any."""
+    ai = {**usage.ai_usage, VISION_QA_METRIC: usage.ai_usage.get(VISION_QA_METRIC, 0) + 1}
+    tokens = judge_usage(judge)
+    if tokens:
+        for metric, amount in (
+            (VISION_QA_INPUT_TOKENS, tokens["input_tokens"]),
+            (VISION_QA_OUTPUT_TOKENS, tokens["output_tokens"]),
+        ):
+            ai[metric] = ai.get(metric, 0) + amount
+    return usage.model_copy(update={"ai_usage": ai})
 
 
 def device_shot_runner(
@@ -809,15 +823,7 @@ def device_shot_runner(
                 active = select_vision_judge()
             verdict = active.score(out / sorted(frames)[0], VISION_RUBRIC)
             output["vision_qa"] = {"score": float(verdict.score), "notes": verdict.notes}
-            ai = {**usage.ai_usage, VISION_QA_METRIC: usage.ai_usage.get(VISION_QA_METRIC, 0) + 1}
-            tokens = judge_usage(active)
-            if tokens:
-                for metric, amount in (
-                    (VISION_QA_INPUT_TOKENS, tokens["input_tokens"]),
-                    (VISION_QA_OUTPUT_TOKENS, tokens["output_tokens"]),
-                ):
-                    ai[metric] = ai.get(metric, 0) + amount
-            usage = usage.model_copy(update={"ai_usage": ai})
+            usage = vision_qa_usage(usage, active)
         return RunResult(output=output, usage=usage)
 
     def run(ctx: RunContext) -> RunResult:
@@ -964,3 +970,15 @@ def replay(
         frames=frame_hashes(out),
         files=frame_file_hashes(out),
     )
+
+
+# Private names kept for internal call sites; the public helpers above are reused by
+# ``studio.departments.shots``.
+_fresh_job_id = fresh_job_id
+_envelope = envelope
+_blender_job = blender_job
+_executor = executor
+_render_record = render_record
+_stage_for = stage_for
+_render_qa = render_qa
+_qa_look = qa_look
