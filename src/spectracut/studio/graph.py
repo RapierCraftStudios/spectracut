@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from pydantic import AwareDatetime, Field, JsonValue
 
 from spectracut.spec._base import ContentHash, Slug, StrictModel, content_hash
+from spectracut.studio.autonomy import AutonomyPolicy, ConformanceOutcome
 from spectracut.studio.conformance import CONFORMANCE_KINDS, Conformance, blockers
 from spectracut.studio.contract import FilmContract, freeze_contract
 from spectracut.studio.facts import (
@@ -167,6 +168,8 @@ class GraphSnapshot(StrictModel):
     ledger: tuple[LedgerEntry, ...] = ()
     notes: dict[str, tuple[RevisionNote, ...]] = Field(default_factory=dict)
     """Reviewer revision notes, by node id."""
+    autonomy: AutonomyPolicy | None = None
+    """Which human gates a delegate may pass; ``None`` keeps every gate with the owner."""
 
 
 class ProductionGraph:
@@ -182,8 +185,11 @@ class ProductionGraph:
         facts: FactsStore | None = None,
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        autonomy: AutonomyPolicy | None = None,
     ) -> None:
         self.production_id = production_id
+        self.autonomy = autonomy
+        """Delegated gates (:mod:`spectracut.studio.autonomy`); ``None`` delegates nothing."""
         self.profile = profile
         if gates is None:
             gates = profile.gate_policy() if profile is not None else GatePolicy()
@@ -228,6 +234,7 @@ class ProductionGraph:
                 decisions=dict(self._decisions),
                 ledger=self.ledger.entries(),
                 notes={nid: n for nid, n in self._notes.items() if n},
+                autonomy=self.autonomy,
             )
 
     @classmethod
@@ -247,6 +254,7 @@ class ProductionGraph:
             ledger=Ledger(snap.ledger),
             clock=clock,
             now=now,
+            autonomy=snap.autonomy,
         )
         graph.add_nodes(snap.nodes)
         ids = set(graph._specs)
@@ -389,7 +397,15 @@ class ProductionGraph:
         return DEFAULT_TIER
 
     def gate_for(self, spec: NodeSpec) -> GateMode:
-        return self.gates.resolve(spec.id, spec.kind)
+        """The node's gate; a human gate the autonomy policy delegates is ``auto_delegated``."""
+        mode = self.gates.resolve(spec.id, spec.kind)
+        if (
+            mode is GateMode.HUMAN
+            and self.autonomy is not None
+            and self.autonomy.delegates(spec.id, spec.kind)
+        ):
+            return GateMode.AUTO_DELEGATED
+        return mode
 
     def revision_budget(self, spec: NodeSpec) -> int:
         if self.profile is None:
@@ -459,7 +475,9 @@ class ProductionGraph:
 
     def _decide(self, node_id: str, *, human: str, comment: str) -> None:
         prior = self._decisions.get(node_id) or GateDecision(mode=GateMode.HUMAN)
-        self._decisions[node_id] = prior.model_copy(update={"human": human, "comment": comment})
+        self._decisions[node_id] = prior.model_copy(
+            update={"human": human, "comment": comment, "approver": "owner"}
+        )
 
     # ---- running -----------------------------------------------------------
 
@@ -678,7 +696,7 @@ class ProductionGraph:
             verdict = reviewed(spec, result.output) if reviewed is not None else None
             if verdict is not None and preserve:
                 verdict = _with_conformance(verdict, preserve, result.output)
-            verdict = self._conform(spec, result.output, verdict)
+            verdict, conformed = self._conform(spec, result.output, verdict)
             with self._lock:
                 status = self._settle(
                     spec,
@@ -693,6 +711,7 @@ class ProductionGraph:
                     accepted,
                     verdict,
                     polish=reviewed is not None and not polished,
+                    conformed=conformed,
                 )
             if status is None:
                 if verdict is not None and verdict.passed:
@@ -705,14 +724,14 @@ class ProductionGraph:
 
     def _conform(
         self, spec: NodeSpec, output: JsonValue, verdict: CriticVerdict | None
-    ) -> CriticVerdict | None:
+    ) -> tuple[CriticVerdict | None, ConformanceOutcome]:
         """Fold the conformance review of an edit or delivery output into ``verdict``."""
         contract, review_of = self.contract, self._conformance
         if contract is None or review_of is None or spec.kind not in CONFORMANCE_KINDS:
-            return verdict
+            return verdict, "skipped"
         reasons = blockers(contract, review_of(spec, output, contract))
         if not reasons:
-            return verdict
+            return verdict, "passed"
         finding = Finding(
             reviewer="conformance",
             severity=Severity.HIGH,
@@ -720,9 +739,10 @@ class ProductionGraph:
             confirmed=True,
         )
         prior = verdict.findings if verdict is not None else []
-        return (verdict or CriticVerdict(passed=False)).model_copy(
+        failed = (verdict or CriticVerdict(passed=False)).model_copy(
             update={"passed": False, "findings": [*prior, finding]}
         )
+        return failed, "failed"
 
     def _settle(
         self,
@@ -739,6 +759,7 @@ class ProductionGraph:
         verdict: CriticVerdict | None,
         *,
         polish: bool = False,
+        conformed: ConformanceOutcome = "skipped",
     ) -> NodeStatus | None:
         """Record one attempt's gate outcome; ``None`` means revise and try again.
 
@@ -768,9 +789,10 @@ class ProductionGraph:
             self._write_facts(spec, result, verdict)
             self._set(spec.id, NodeStatus.REJECTED)
             return NodeStatus.REJECTED
-        self._decisions[spec.id] = GateDecision(mode=mode, critic=verdict)
+        decision = self._gate_decision(spec, mode, verdict, conformed)
+        self._decisions[spec.id] = decision
         self._write_facts(spec, result, verdict)
-        if mode is GateMode.HUMAN:
+        if decision.approver is None:
             self._record(spec, tier, key, attempt, started_at, start, usage, "awaiting_approval")
             self._pending[spec.id] = (key, accepted)
             self._set(spec.id, NodeStatus.AWAITING_APPROVAL)
@@ -780,6 +802,32 @@ class ProductionGraph:
         self._cache[key] = accepted
         self._set(spec.id, NodeStatus.CLEAN, output_hash=accepted.output_hash)
         return NodeStatus.CLEAN
+
+    def _gate_decision(
+        self,
+        spec: NodeSpec,
+        mode: GateMode,
+        verdict: CriticVerdict | None,
+        conformed: ConformanceOutcome,
+    ) -> GateDecision:
+        """Decision for an output that cleared review; no approver means it waits for the owner."""
+        if mode is GateMode.HUMAN:
+            return GateDecision(mode=mode, critic=verdict)
+        if mode is GateMode.AUTO_DELEGATED:
+            policy = self.autonomy or AutonomyPolicy()
+            reasons = policy.escalations(spec.kind, verdict, conformed)
+            if reasons or verdict is None:
+                return GateDecision(mode=mode, critic=verdict, escalated=reasons)
+            return GateDecision(
+                mode=mode,
+                critic=verdict,
+                approver="delegate",
+                evidence=policy.evidence(spec.kind, verdict, conformed),
+            )
+        evidence = ["critic passed"] if verdict is not None else [f"{mode.value} gate"]
+        if conformed != "skipped":
+            evidence.append(f"conformance {conformed}")
+        return GateDecision(mode=mode, critic=verdict, approver="auto", evidence=evidence)
 
     def _write_facts(
         self, spec: NodeSpec, result: RunResult, verdict: CriticVerdict | None

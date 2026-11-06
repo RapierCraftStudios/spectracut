@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import JsonValue
 from typer.testing import CliRunner
 
 from spectracut.cli import studio as studio_mod
 from spectracut.cli.app import app
 from spectracut.providers.base import VisionScore
+from spectracut.providers.mock_text import MockTextProvider, instance_of
 from spectracut.queue.flamenco import WorkerTag
 from spectracut.queue.signing import generate_keypair, load_private_key
 from spectracut.spec.brief import AudienceProfile, Brief, ClaimSource, Persona, ProofPoint
@@ -78,7 +80,18 @@ def test_run_builds_brief_and_stops_at_the_brief_human_gate(home: Path, brief_fi
     assert "awaiting approval: brief" in result.output
 
 
-def test_approving_each_gate_builds_concept_then_script(home: Path, brief_file: Path) -> None:
+def _respond(system: str, prompt: str, schema: dict[str, Any]) -> JsonValue:
+    """The mock's schema instance, with the palette swatch the mock cannot infer (minProperties)."""
+    output = instance_of(schema)
+    if isinstance(output, dict) and isinstance(output.get("palette"), dict):
+        output["palette"] = {"swatches": {"primary": "#1a2b3c"}}
+    return output
+
+
+def test_approving_each_gate_builds_concept_then_script(
+    home: Path, brief_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(studio_mod, "text_provider_factory", lambda: MockTextProvider(_respond))
     created = runner.invoke(
         app, ["studio", "new", str(brief_file), "--id", "film", "--profile", "standard"]
     )
@@ -89,8 +102,12 @@ def test_approving_each_gate_builds_concept_then_script(home: Path, brief_file: 
         assert f"awaiting approval: {built}" in result.output
         approved = runner.invoke(app, ["studio", "approve", "film", built])
         assert approved.exit_code == 0, approved.output
-    # style_frames needs an art_direction node the standard profile does not emit yet.
-    assert "executed: script" in runner.invoke(app, ["studio", "run", "film"]).output
+    # Art direction builds beside the concept (it reads only the brief); style frames
+    # read the brief and the art direction, never the script.
+    result = runner.invoke(app, ["studio", "run", "film"])
+    assert result.exit_code == 0, result.output
+    assert "executed: script" in result.output
+    assert "undeclared kind" not in result.output
 
 
 # ---- template_shots / shots through default_runner (#250) -----------------------
@@ -209,7 +226,7 @@ def test_standard_shot_nodes_render_on_the_farm_through_default_runner(
 
     monkeypatch.setattr(studio_mod, "device_shot_factory", factory)
     monkeypatch.setattr(studio_mod, "DepartmentRunner", _FakeDepartments)
-    # Until #262 composes shot_nodes into the breakdown, wire them after storyboard/animatic.
+    # The same storyboard -> animatic -> template_shots -> shots edges the breakdown wires.
     graph = ProductionGraph("film", profile=load_profile("standard"), gates=GatePolicy())
     graph.add_nodes(
         [

@@ -19,13 +19,14 @@ from spectracut.spec.brand import BrandKit, load_brand_kit
 from spectracut.spec.brief import Brief, CreativeBrief
 from spectracut.studio import device_shot as ds
 from spectracut.studio import intake
+from spectracut.studio.autonomy import AutonomyPolicy, BudgetApproval, load_autonomy
 from spectracut.studio.department import Department
 from spectracut.studio.departments import all_departments
 from spectracut.studio.departments import shots as shot_depts
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
 from spectracut.studio.node import NodeSpec
-from spectracut.studio.producer import BudgetCaps, Producer, scheduled
+from spectracut.studio.producer import BudgetCaps, Producer, edge_problems, scheduled
 from spectracut.studio.profiles import available_profiles, load_profile
 from spectracut.studio.runner import CapacityLimits, DepartmentRunner
 from spectracut.studio.store import ProductionError, ProductionStore, write_atomic
@@ -193,6 +194,36 @@ def _load(store: ProductionStore, production_id: str) -> ProductionGraph:
     return graph
 
 
+AutonomyOpt = Annotated[
+    Path | None,
+    typer.Option("--autonomy", help="Autonomy policy JSON: delegated gates, budget ceiling."),
+]
+DelegateOpt = Annotated[
+    list[str] | None,
+    typer.Option("--delegate", help="Hand this human gate (node kind) to the delegate."),
+]
+
+
+def _policy(
+    path: Path | None, delegate: list[str] | None, base: AutonomyPolicy | None
+) -> AutonomyPolicy | None:
+    """The autonomy policy from ``--autonomy`` and ``--delegate``, on top of ``base``."""
+    policy = base
+    if path is not None:
+        try:
+            policy = load_autonomy(path)
+        except ValueError as exc:
+            raise _fail(str(exc)) from exc
+    if delegate:
+        policy = policy or AutonomyPolicy()
+        kinds = (*policy.delegate_kinds, *(k for k in delegate if k not in policy.delegate_kinds))
+        try:
+            policy = AutonomyPolicy.model_validate({**policy.model_dump(), "delegate_kinds": kinds})
+        except ValidationError as exc:
+            raise _fail(f"--delegate: {exc.errors()[0]['msg']}") from exc
+    return policy
+
+
 def _save(store: ProductionStore, production_id: str, graph: ProductionGraph) -> None:
     try:
         store.save(production_id, graph)
@@ -240,10 +271,13 @@ def new(
     cap_ai: Annotated[
         int | None, typer.Option("--cap-ai-requests", min=0, help="AI requests cap.")
     ] = None,
+    autonomy: AutonomyOpt = None,
+    delegate: DelegateOpt = None,
 ) -> None:
     """Create a production from a brief file and print its estimate.
 
-    Over-cap nodes are held by ``studio run`` until ``studio approve-budget``.
+    Over-cap nodes are held by ``studio run`` until ``studio approve-budget``,
+    unless the autonomy policy's ceiling covers them.
     """
     if (brief_file is None) == (idea is None):
         raise _fail("give exactly one of BRIEF or --idea")
@@ -265,10 +299,11 @@ def new(
     elif brand_kit is not None:
         template_params = _brand_params(brand_kit)
     pid = production_id or brief.id
+    policy = _policy(autonomy, delegate, None)
     store = ProductionStore(home)
     caps = BudgetCaps(elevenlabs_characters=cap_elevenlabs, gpu_minutes=cap_gpu, ai_requests=cap_ai)
     try:
-        graph = ProductionGraph(pid, profile=quality)
+        graph = ProductionGraph(pid, profile=quality, autonomy=policy)
         if shot_params is not None:
             specs = breakdown(brief, quality)
             specs = [_with_params(s, shot_params) if s.kind == ds.SHOT_STAGE else s for s in specs]
@@ -282,7 +317,9 @@ def new(
                     for s in specs
                 ]
         graph.add_nodes(specs)
-        path = store.create(pid, brief, graph, force=force, caps=caps if caps.limits() else None)
+        path = store.create(
+            pid, brief, graph, force=force, caps=caps if caps.limits() else None, autonomy=policy
+        )
         if isinstance(brief, CreativeBrief) and idea is not None:
             write_atomic(path / "assumptions.md", intake.assumptions_markdown(brief).encode())
     except (ProductionError, ValueError, OSError) as exc:
@@ -382,10 +419,25 @@ def run_cmd(
     production_id: IdArg,
     home: HomeOpt = None,
     workers: Annotated[int, typer.Option("--workers", min=1, help="Parallel node builds.")] = 1,
+    autonomy: AutonomyOpt = None,
+    delegate: DelegateOpt = None,
 ) -> None:
     """Build every pending or dirty node whose inputs are ready, then save the production."""
     store = ProductionStore(home)
     graph = _load(store, production_id)
+    if graph.profile is None or graph.profile.name != ds.PROFILE:
+        problems = edge_problems(graph, DEPARTMENTS)
+        if problems:
+            raise _fail(
+                f"production {production_id!r} was created with an older production graph "
+                f"({problems[0]}); recreate it with 'spectracut studio new ... --force'"
+            )
+    meta = store.meta(production_id)
+    policy = _policy(autonomy, delegate, meta.autonomy or graph.autonomy)
+    if policy != meta.autonomy:
+        meta = meta.model_copy(update={"autonomy": policy})
+        store.update_meta(production_id, meta)
+    graph.autonomy = policy
     try:
         runner = runner_factory(Production(production_id, store), graph)
     except (LookupError, ValueError) as exc:
@@ -396,7 +448,6 @@ def run_cmd(
     if graph.profile is not None and graph.profile.name == ds.PROFILE:
         report = graph.run(runner, max_workers=workers)
     else:
-        meta = store.meta(production_id)
         result = Producer(DEPARTMENTS).run(
             graph,
             scheduled(runner, departments=DEPARTMENTS),
@@ -404,9 +455,14 @@ def run_cmd(
             approved=meta.budget_approvals,
             critic=shot_depts.shot_critic(_pass_score(graph)),
             max_workers=workers,
+            autonomy=policy,
         )
         report = result.run
         holds = [f"needs approval: {h.text()}" for h in result.needs_approval]
+        if result.auto_approved:
+            meta = meta.model_copy(update={"budget_log": (*meta.budget_log, *result.auto_approved)})
+            store.update_meta(production_id, meta)
+            holds = [f"auto-approved budget: {a.text()}" for a in result.auto_approved] + holds
     _save(store, production_id, graph)
     for line in _report_lines(report):
         typer.echo(line)
@@ -420,8 +476,9 @@ def run_cmd(
 
 @studio_app.command("status")
 def status_cmd(production_id: IdArg, home: HomeOpt = None) -> None:
-    """Show each node's status, tier, gate and decision, plus the cost ledger."""
-    graph = _load(ProductionStore(home), production_id)
+    """Show each node's status, tier, gate and who approved it on what evidence, plus the ledger."""
+    store = ProductionStore(home)
+    graph = _load(store, production_id)
     profile = graph.profile.name if graph.profile is not None else "none"
     typer.echo(f"production {production_id} (profile {profile})")
     for nid in graph.order():
@@ -434,13 +491,30 @@ def status_cmd(production_id: IdArg, home: HomeOpt = None) -> None:
             line += f" human={decision.human}"
         if decision is not None and decision.critic is not None:
             line += f" critic={'passed' if decision.critic.passed else 'failed'}"
+        if decision is not None:
+            line += _approval(decision.approver, decision.evidence, decision.escalated)
         typer.echo(line)
+    budget_log = store.meta(production_id).budget_log
+    if budget_log:
+        typer.echo("budget approvals:")
+        for approval in budget_log:
+            typer.echo(f"  {approval.text()}")
     t = graph.ledger.totals()
     usage = " ".join(f"{k}={v}" for k, v in sorted(t.ai_usage.items()))
     typer.echo(
         f"ledger: runs={t.runs} gpu_minutes={t.gpu_minutes:g} "
         f"elevenlabs_characters={t.elevenlabs_characters}" + (f" {usage}" if usage else "")
     )
+
+
+def _approval(approver: str | None, evidence: list[str], escalated: list[str]) -> str:
+    """Status tokens for who passed a gate and on what evidence."""
+    out = f" by={approver}" if approver is not None else ""
+    if evidence:
+        out += " evidence=" + "; ".join(evidence)
+    if escalated:
+        out += " escalated=" + "; ".join(escalated)
+    return out
 
 
 def _decide(production_id: str, node: str, comment: str, home: Path | None, approve: bool) -> None:
@@ -489,8 +563,13 @@ def approve_budget(production_id: IdArg, node: NodeArg, home: HomeOpt = None) ->
         meta = store.meta(production_id)
         if node not in meta.budget_approvals:
             approvals = (*meta.budget_approvals, node)
+            log = (
+                *meta.budget_log,
+                BudgetApproval(node_id=node, approver="owner", evidence="studio approve-budget"),
+            )
             store.update_meta(
-                production_id, meta.model_copy(update={"budget_approvals": approvals})
+                production_id,
+                meta.model_copy(update={"budget_approvals": approvals, "budget_log": log}),
             )
     except KeyError as exc:
         raise _fail(str(exc.args[0]) if exc.args else str(exc)) from exc
