@@ -18,8 +18,6 @@ from spectracut.studio.departments.art import (
     ArtDirector,
     StoryboardArtist,
     StyleFrameArtist,
-    brand_kit_node,
-    build_brand_kit,
     preproduction_nodes,
 )
 from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
@@ -169,6 +167,8 @@ def test_style_frames_reference_a_beat_or_signature_visual_of_the_concept() -> N
 
 
 def test_department_runner_fails_an_off_kit_art_direction(kit: BrandKit) -> None:
+    from spectracut.studio.departments.art import brand_kit_node, build_brand_kit
+
     graph = ProductionGraph("p")
     graph.add_nodes(
         [
@@ -200,6 +200,8 @@ def test_department_runner_fails_an_off_kit_art_direction(kit: BrandKit) -> None
 
 
 def test_build_brand_kit_returns_the_kit_and_needs_its_param(kit: BrandKit) -> None:
+    from spectracut.studio.departments.art import brand_kit_node, build_brand_kit
+
     spec = brand_kit_node(kit)
     ctx = RunContext(spec=spec, tier=Tier.FINAL, key="k", inputs={}, attempt=1)
     assert BrandKit.model_validate(build_brand_kit(ctx).output) == kit
