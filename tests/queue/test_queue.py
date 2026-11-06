@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,6 +27,7 @@ from spectracut.queue.executors.base import (
 from spectracut.queue.executors.hostpool import HostPoolExecutor, HostSlot
 from spectracut.queue.profile import RenderProfile, frame_cache_key
 from spectracut.queue.queue import Job, JobQueue, QueueStalled
+from spectracut.studio import NodeSpec, ProductionGraph
 from spectracut.studio.ledger import Usage
 
 RECIPE = "sha256:" + "a" * 64
@@ -443,3 +446,84 @@ def test_gpu_only_host_gets_no_build_lanes_and_capped_allowance() -> None:
     assert ex.run(Job(id="r1", kind="blender", resources=Resources(gpus=1))).output == "r1"
     assert computeshare_allowance(gpu_only)["build_lanes"] is False
     assert computeshare_allowance(gpu_only)["mem_gb"] == 4
+
+
+# ---- thread safety (#191) ----------------------------------------------------
+
+
+def _two_node_graph() -> ProductionGraph:
+    graph = ProductionGraph("prod-1", now=lambda: T0)
+    graph.add_node(NodeSpec(id="a", kind="render", department="lighting"))
+    graph.add_node(NodeSpec(id="b", kind="render", department="lighting"))
+    return graph
+
+
+def test_shared_queue_runs_each_parallel_job_exactly_once() -> None:
+    both_running = threading.Barrier(2, timeout=10)
+
+    def body(job: Job) -> JobResult:
+        both_running.wait()  # only passes if the two jobs really overlap
+        return JobResult(output={"job": job.id})
+
+    ex = FakeExecutor(body)
+    q = JobQueue([ex], now=lambda: T0)
+    runner = q.as_runner(lambda ctx: Job(id=f"{ctx.spec.id}-job", kind="model"), sleep=time.sleep)
+    graph = _two_node_graph()
+    report = graph.run(runner, max_workers=2)
+    assert sorted(report.executed) == ["a", "b"] and not report.failed
+    assert sorted(ex.calls) == ["a-job", "b-job"]
+    assert [j.attempts for j in q.jobs] == [1, 1]
+
+
+def test_run_until_idle_scoped_to_own_job_ignores_job_running_elsewhere() -> None:
+    started, release = threading.Event(), threading.Event()
+
+    def body(job: Job) -> JobResult:
+        if job.id == "slow":
+            started.set()
+            assert release.wait(10)
+        return _ok(job)
+
+    q = JobQueue([FakeExecutor(body)], now=lambda: T0)
+    slow = q.submit(Job(id="slow", kind="model"))
+    t = threading.Thread(target=q.run_until_idle)
+    t.start()
+    try:
+        assert started.wait(10)
+        fast = q.submit(Job(id="fast", kind="model"))
+        q.run_until_idle(jobs=["fast"], sleep=lambda _s: None)  # no QueueStalled
+        assert fast.status is JobStatus.SUCCEEDED
+        # unscoped waiters also wait for the foreign running job instead of stalling
+        waiter = threading.Thread(target=q.run_until_idle)
+        waiter.start()
+        release.set()
+        waiter.join(10)
+        assert not waiter.is_alive()
+    finally:
+        release.set()
+        t.join(10)
+    assert slow.status is JobStatus.SUCCEEDED and slow.attempts == 1
+
+
+def test_lease_pool_never_double_leases_a_card_under_contention() -> None:
+    pool = LeasePool(64, 256, (CARD_8,))
+    n = 16
+    start = threading.Barrier(n, timeout=10)
+    leases: list[object] = []
+    busy: list[int] = []
+
+    def grab() -> None:
+        start.wait()
+        try:
+            leases.append(pool.acquire(Resources(gpus=1), executor="x", host="h", now=0))
+        except ExecutorBusy:
+            busy.append(1)
+
+    threads = [threading.Thread(target=grab) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert len(leases) == 1 and len(busy) == n - 1
+    pool.release(leases[0])  # type: ignore[arg-type]
+    assert pool.free_cpus == 64 and pool.can_run_now(Resources(gpus=1))

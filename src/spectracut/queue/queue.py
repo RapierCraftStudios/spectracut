@@ -20,8 +20,9 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -45,6 +46,8 @@ from spectracut.studio.node import Tier
 
 __all__ = ["Job", "JobFailed", "JobQueue", "QueueStalled"]
 
+_POLL_SECONDS: float = 0.01
+"""How long a waiter naps while another thread runs a job it is waiting on."""
 BLENDER: str = "blender"
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -125,6 +128,9 @@ class JobQueue:
         self.route = {k: tuple(v) for k, v in (route or {}).items()}
         self._now = now
         self._jobs: dict[str, Job] = {}
+        self._lock = threading.RLock()
+        self._in_flight: set[int] = set()
+        """``id()`` of jobs a thread is advancing right now; no one else may claim them."""
 
     # ---- placement ---------------------------------------------------------
 
@@ -137,22 +143,25 @@ class JobQueue:
         return [e for e in self.executors if isinstance(e, FlamencoExecutor) is is_blender]
 
     def submit(self, job: Job) -> Job:
-        old = self._jobs.get(job.id)
-        if old is not None and not old.done:
-            raise ValueError(f"job {job.id!r} is already queued")
-        if not any(e.can_ever_run(job.resources) for e in self.executors_for(job)):
-            raise NoCapableExecutor(
-                f"no executor for {job.kind!r} jobs can meet {job.resources.model_dump()}"
-            )
-        self._jobs[job.id] = job
-        return job
+        with self._lock:
+            old = self._jobs.get(job.id)
+            if old is not None and not old.done:
+                raise ValueError(f"job {job.id!r} is already queued")
+            if not any(e.can_ever_run(job.resources) for e in self.executors_for(job)):
+                raise NoCapableExecutor(
+                    f"no executor for {job.kind!r} jobs can meet {job.resources.model_dump()}"
+                )
+            self._jobs[job.id] = job
+            return job
 
     def job(self, job_id: str) -> Job:
-        return self._jobs[job_id]
+        with self._lock:
+            return self._jobs[job_id]
 
     @property
     def jobs(self) -> tuple[Job, ...]:
-        return tuple(self._jobs.values())
+        with self._lock:
+            return tuple(self._jobs.values())
 
     # ---- running -----------------------------------------------------------
 
@@ -160,19 +169,37 @@ class JobQueue:
         """Advance every runnable job once; return the jobs that changed state."""
         now = now or self._now()
         progressed: list[Job] = []
-        for job in list(self._jobs.values()):
+        with self._lock:
+            candidates = list(self._jobs.values())
+        for job in candidates:
+            if not self._claim(job, now):
+                continue
+            try:
+                if self._advance(job):
+                    progressed.append(job)
+            finally:
+                with self._lock:
+                    self._in_flight.discard(id(job))
+        return progressed
+
+    def _claim(self, job: Job, now: datetime) -> bool:
+        """Atomically take a runnable QUEUED job; False if not runnable or another thread has it."""
+        with self._lock:
+            if id(job) in self._in_flight:
+                return False
             if job.status is JobStatus.WAITING_FOR_AI:
                 if job.resume_at is None or job.resume_at > now:
-                    continue
+                    return False
                 job.resume_at = None
                 job.observe(JobStatus.QUEUED)
-            if job.status is JobStatus.QUEUED and job.resume_at is not None:
+            if job.status is not JobStatus.QUEUED:
+                return False
+            if job.resume_at is not None:
                 if job.resume_at > now:
-                    continue
+                    return False
                 job.resume_at = None
-            if job.status is JobStatus.QUEUED and self._advance(job):
-                progressed.append(job)
-        return progressed
+            self._in_flight.add(id(job))
+            return True
 
     def _advance(self, job: Job) -> bool:
         if self.cache is not None and job.recipe_hash and job.render_profile is not None:
@@ -212,17 +239,34 @@ class JobQueue:
         return True
 
     def run_until_idle(
-        self, *, sleep: Callable[[float], None] = time.sleep, max_ticks: int = 100_000
+        self,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        max_ticks: int = 100_000,
+        jobs: Iterable[str] | None = None,
     ) -> None:
-        """Tick until every job is succeeded or failed, sleeping through AI waits."""
+        """Tick until every job (or only those ids in ``jobs``) is succeeded or failed.
+
+        Sleeps through AI waits. A job another thread is running is waited for, not a stall.
+        """
+        scope = None if jobs is None else set(jobs)
         for _ in range(max_ticks):
             progressed = self.tick()
-            open_jobs = [j for j in self._jobs.values() if not j.done]
+            with self._lock:
+                open_jobs = [
+                    j
+                    for j in self._jobs.values()
+                    if not j.done and (scope is None or j.id in scope)
+                ]
+                busy_elsewhere = any(id(j) in self._in_flight for j in open_jobs)
             if not open_jobs:
                 return
             if progressed:
                 continue
             waits = [j.resume_at for j in open_jobs if j.resume_at is not None]
+            if busy_elsewhere:
+                sleep(_POLL_SECONDS)
+                continue
             if not waits:
                 raise QueueStalled(f"jobs stuck queued: {[j.id for j in open_jobs]}")
             sleep(max(0.0, (min(waits) - self._now()).total_seconds()))
@@ -241,7 +285,7 @@ class JobQueue:
             if job.node_id is None:
                 job.node_id = ctx.spec.id
             self.submit(job)
-            self.run_until_idle(sleep=sleep)
+            self.run_until_idle(sleep=sleep, jobs=[job.id])
             if job.status is not JobStatus.SUCCEEDED or job.result is None:
                 raise JobFailed(f"job {job.id} {job.status.value}: {job.error}")
             return RunResult(output=job.result.output, usage=job.result.usage)
