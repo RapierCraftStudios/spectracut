@@ -1,0 +1,219 @@
+{
+ "requirements": [
+  {
+   "id": "R1",
+   "quote": "A policy can delegate any gate (e.g. brief and style frames) while keeping others (animatic, final) for the owner",
+   "disposition": "deliver",
+   "verify": "in_lane"
+  },
+  {
+   "id": "R2",
+   "quote": "A delegated gate passes automatically only when the panel has no confirmed HIGH and conformance passes; otherwise it escalates to the owner with the reasons",
+   "disposition": "deliver",
+   "verify": "in_lane"
+  },
+  {
+   "id": "R3",
+   "quote": "Budget holds under the policy's spend ceiling auto-approve and are recorded; above it the run waits",
+   "disposition": "deliver",
+   "verify": "in_lane"
+  },
+  {
+   "id": "R4",
+   "quote": "`studio status` shows for every gate who approved it and on what evidence",
+   "disposition": "deliver",
+   "verify": "in_lane"
+  },
+  {
+   "id": "R5",
+   "quote": "No regression in the existing studio graph, producer and acceptance tests (`uv run pytest -q`)",
+   "disposition": "deliver",
+   "verify": "in_lane"
+  }
+ ],
+ "deliverables": [
+  {
+   "id": "D1",
+   "path": "src/spectracut/studio/autonomy.py",
+   "change": "New module (SPDX AGPL header). StrictModel AutonomyPolicy: delegate_kinds: tuple[Slug,...] and delegate_nodes: tuple[Slug,...] (gates handed to the delegate; any gate not listed stays with the owner); min_score: UnitFloat = 0.6 (threshold on verdict.scores['overall'], key spectracut.critique.critic.OVERALL, hard-coded as the string 'overall' to avoid a studio->critique import); budget_ceiling: BudgetCaps-shaped per-metric ceilings (elevenlabs_characters, gpu_minutes, ai_requests; None = no auto-approval for that metric). Methods: delegates(node_id, kind) -> bool; escalations(kind, verdict: CriticVerdict|None, conformance: Literal['passed','failed','skipped']) -> list[str] returning human-readable reasons (empty = may auto-pass): 'no panel review' when verdict is None; one reason per confirmed HIGH finding; 'no overall score' / 'overall score X below min_score Y'; for kind in CONFORMANCE_KINDS: 'conformance not run' when skipped or 'conformance not passed' when failed. within_ceiling(metric, projected) -> bool. StrictModel BudgetApproval(node_id, metric, projected, limit, ceiling: float|None, approver: Literal['owner','auto'], evidence: str). load_autonomy(path) -> AutonomyPolicy from JSON.",
+   "requirements": [
+    "R1",
+    "R2",
+    "R3"
+   ]
+  },
+  {
+   "id": "D2",
+   "path": "src/spectracut/studio/gates.py",
+   "change": "Add GateMode.AUTO_DELEGATED = 'auto_delegated' and document it in the module docstring. Extend GateDecision with approver: Literal['owner','delegate','auto'] | None = None, evidence: list[str] = [] (why it passed: 'panel: no confirmed HIGH', 'overall=0.9>=0.6', 'conformance v1 passed'), escalated: list[str] = [] (reasons a delegated gate went to the owner). All new fields are defaulted so old graph.json snapshots still load.",
+   "requirements": [
+    "R1",
+    "R2",
+    "R4"
+   ]
+  },
+  {
+   "id": "D3",
+   "path": "src/spectracut/studio/graph.py",
+   "change": "ProductionGraph.autonomy: AutonomyPolicy | None (constructor kwarg default None), persisted on GraphSnapshot.autonomy (default None) through snapshot/from_snapshot. gate_for: resolve as today; if the result is HUMAN and autonomy delegates (node id or kind), return AUTO_DELEGATED. _build_at: AUTO_DELEGATED is reviewed like HUMAN (critic runs); _conform reports whether conformance ran and passed ('passed'|'failed'|'skipped'), carried to _settle. _settle: on a passing verdict with mode AUTO_DELEGATED, compute reasons = autonomy.escalations(...). If empty, accept as CLEAN with GateDecision(mode=AUTO_DELEGATED, approver='delegate', human=None, evidence=[...]) and freeze the contract (a delegated brief must still freeze it). Otherwise park in AWAITING_APPROVAL exactly like HUMAN, with decision.escalated=reasons. A failing verdict keeps today's revise/reject path. approve(): record approver='owner' and keep the existing mode (AUTO_DELEGATED stays, so an escalated delegated gate shows that the owner took it). AUTO and CRITIC accepts record approver='auto' with evidence ('critic passed' / 'auto gate'). The rest of the run() signature is unchanged.",
+   "requirements": [
+    "R1",
+    "R2",
+    "R4"
+   ]
+  },
+  {
+   "id": "D4",
+   "path": "src/spectracut/studio/producer.py",
+   "change": "Producer.run gains keyword autonomy: AutonomyPolicy | None = None and conformance: Conformance | None = None, passed through to graph.run (conformance) and graph.autonomy when given. In hold(): when a node would exceed a cap and is not owner-approved, auto-approve it if autonomy.within_ceiling(metric, projected) holds for every exceeded metric; record a BudgetApproval(approver='auto', evidence='projected P \u003c= ceiling C (cap L)') in ProducerReport.auto_approved and count its spend. Otherwise hold it as today (BudgetHold, the 'needs budget approval' reason). With autonomy=None, behaviour is byte-identical to today. Update the module docstring bullet.",
+   "requirements": [
+    "R3"
+   ]
+  },
+  {
+   "id": "D5",
+   "path": "src/spectracut/studio/store.py",
+   "change": "ProductionMeta: autonomy: AutonomyPolicy | None = None and budget_log: tuple[BudgetApproval, ...] = () (who approved each over-cap node and on what evidence). Both are defaulted so existing production.json files load. budget_approvals is unchanged.",
+   "requirements": [
+    "R3",
+    "R4"
+   ]
+  },
+  {
+   "id": "D6",
+   "path": "src/spectracut/cli/studio.py",
+   "change": "`studio new` and `studio run` gain --autonomy PATH (JSON AutonomyPolicy, load_autonomy; a bad file exits 2 with 'error:') and repeatable --delegate GATE (adds the kind to delegate_kinds). new stores the policy on meta and graph.autonomy; run overrides it when given. run passes autonomy=meta.autonomy (or graph.autonomy) to Producer.run, appends report.auto_approved to meta.budget_log and prints 'auto-approved budget: \u003cnode> \u003cmetric> projected=.. ceiling=..'. approve-budget also appends BudgetApproval(approver='owner', evidence='studio approve-budget'). status: append ' by=\u003capprover>' after the existing human=/critic= tokens, then ' evidence=\u003c;-joined>' when non-empty and ' escalated=\u003c;-joined>' when the gate waits on the owner after escalation; then print a 'budget approvals:' section with one line per budget_log entry ('  \u003cnode>: by=\u003capprover> \u003cmetric> projected=.. evidence=..'). The device-shot path sets graph.autonomy too.",
+   "requirements": [
+    "R1",
+    "R3",
+    "R4"
+   ]
+  },
+  {
+   "id": "D7",
+   "path": "tests/studio/test_autonomy.py",
+   "change": "New tests: (a) a policy delegating brief+style_frames on the standard profile resolves those to AUTO_DELEGATED while animatic and the final/delivery human gates stay HUMAN; (b) a delegated node with a passing panel (no confirmed HIGH, overall>=min_score) becomes CLEAN with approver='delegate' and evidence, and its dependants build in the same run; (c) a delegated node with no critic, with a below-threshold score, or (kind edit/delivery) with no or failed conformance goes to AWAITING_APPROVAL with decision.escalated holding the reason, and owner approve() records approver='owner'; (d) a confirmed HIGH still revises/rejects (never auto-passes); (e) a delegated brief freezes the contract; (f) Producer.run with a ceiling auto-approves an over-cap node under the ceiling (ProducerReport.auto_approved, node executed) and holds one above it (needs_approval); (g) no policy means today's behaviour (HUMAN waits, over-cap holds); (h) snapshot round-trip keeps autonomy and the decision approver/evidence; (i) CLI: studio new --delegate brief --autonomy file then run then status shows 'by=delegate' and evidence for brief and 'by=owner' after studio approve on another gate, and a budget-approvals line for an auto-approved hold.",
+   "requirements": [
+    "R1",
+    "R2",
+    "R3",
+    "R4"
+   ]
+  }
+ ],
+ "preserve": [
+  {
+   "id": "P1",
+   "what": "With no AutonomyPolicy, gate resolution, HUMAN waiting, CRITIC revise/reject and budget holds behave exactly as before (src/spectracut/studio/graph.py _settle, src/spectracut/studio/producer.py Producer.run hold)."
+  },
+  {
+   "id": "P2",
+   "what": "`studio status` keeps the existing line prefix '  \u003cnode>: \u003cstatus> tier=\u003ctier> gate=\u003cmode> human=\u003ch> critic=\u003cc>'; new tokens are only appended (tests/cli/test_cli.py:136 asserts '  brief: clean tier=preview gate=human human=approved')."
+  },
+  {
+   "id": "P3",
+   "what": "Budget-hold output 'needs approval: \u003cnode> \u003cmetric> projected=' and 'studio approve-budget' output '\u003cnode>: budget approved' are unchanged (tests/cli/test_cli.py:191-212); ProductionMeta.budget_approvals is still honoured."
+  },
+  {
+   "id": "P4",
+   "what": "Old graph.json and production.json files without the new fields still load (GraphSnapshot, GateDecision and ProductionMeta new fields all defaulted)."
+  },
+  {
+   "id": "P5",
+   "what": "Only a confirmed HIGH blocks (src/spectracut/critique/panel.py); a delegated gate never auto-passes a failing verdict or a failed/incomplete conformance (src/spectracut/studio/conformance.py)."
+  },
+  {
+   "id": "P6",
+   "what": "EstimateReport human_gates counts only GateMode.HUMAN (src/spectracut/studio/estimate.py:297); the standard profile without a policy still reports 'human gates=5' (tests/cli/test_cli.py:98)."
+  },
+  {
+   "id": "P7",
+   "what": "The control plane never touches Blender, bpy or the network; autonomy is pure policy over existing verdicts."
+  },
+  {
+   "id": "H1",
+   "what": "fix: GPU minutes not recorded when a job fails or times out (metered_run and failed ledger entry use zero usage) (review finding — PR #168) (#176, PR #219)",
+   "source": "guard"
+  },
+  {
+   "id": "H2",
+   "what": "Device-shot renders: stage brand assets into shared storage and pass a {storage} assets path (#162, PR #166)",
+   "source": "guard"
+  },
+  {
+   "id": "H3",
+   "what": "studio: AlterLab M1 device-shot production — brand kit, render department in `studio run`, `studio replay`, ledger (#153, PR #157)",
+   "source": "guard"
+  },
+  {
+   "id": "H4",
+   "what": "Producer v1: breakdown to production graph, scheduling, estimates and budget caps (#53, PR #195)",
+   "source": "guard"
+  },
+  {
+   "id": "H5",
+   "what": "Department contract and runner: subagents with skill packs, typed inputs and outputs, Critic hook (#44, PR #100)",
+   "source": "guard"
+  }
+ ],
+ "validate": [
+  {
+   "id": "V1",
+   "command": "uv run pytest -q tests/studio/test_autonomy.py"
+  },
+  {
+   "id": "V2",
+   "command": "uv run pytest -q tests/studio/test_graph.py tests/studio/test_producer.py tests/studio/test_contract.py tests/studio/test_facts.py tests/studio/test_supervisor.py tests/studio/test_intake.py tests/studio/test_department.py"
+  },
+  {
+   "id": "V3",
+   "command": "uv run pytest -q tests/cli/test_cli.py tests/cli/test_studio_run.py tests/critique"
+  },
+  {
+   "id": "V4",
+   "command": "uv run pytest -q tests/acceptance/test_m2_launch_film.py tests/acceptance/test_m2_discovery.py tests/acceptance/test_m2_preproduction.py tests/acceptance/test_m2_cutdowns.py tests/acceptance/test_m1_device_shot.py tests/test_layout.py tests/test_spdx.py"
+  },
+  {
+   "id": "V5",
+   "command": "uv run mypy src/spectracut/studio src/spectracut/cli/studio.py && uv run ruff check src/spectracut/studio src/spectracut/cli/studio.py tests/studio/test_autonomy.py"
+  }
+ ],
+ "decisions": [
+  {
+   "id": "K1",
+   "choice": "For kinds outside CONFORMANCE_KINDS (brief, style_frames, ...), 'conformance passes' is satisfied vacuously; for edit and delivery a delegated gate needs a conformance review that actually ran and passed, else it escalates.",
+   "justification": "Conformance only runs at edit and delivery (src/spectracut/studio/conformance.py:28, graph.py:711), and the contract is frozen only after the brief is accepted (graph.py:434-445). Requiring it everywhere would make the issue's own example (delegate brief and style frames) impossible.",
+   "source": "spec"
+  },
+  {
+   "id": "K2",
+   "choice": "The score threshold reads verdict.scores['overall'] with AutonomyPolicy.min_score defaulting to 0.6; a missing overall score escalates.",
+   "justification": "Both critics emit the 'overall' key (src/spectracut/critique/critic.py:54, panel.py:136); 0.6 matches CritiqueSettings.pass_score (src/spectracut/studio/profiles.py:43). Fail-closed when evidence is missing.",
+   "source": "precedent"
+  },
+  {
+   "id": "K3",
+   "choice": "Delegation is expressed as a new GateMode.AUTO_DELEGATED that gate_for derives at resolve time from the persisted AutonomyPolicy, instead of rewriting profile or GatePolicy tables.",
+   "justification": "The issue names GateMode.AUTO_DELEGATED (Affected Files 2). Deriving it keeps profiles as data unchanged (src/spectracut/studio/profiles.py:1-7) and lets `studio run --autonomy` change delegation without editing gate overrides (graph.py:391).",
+   "source": "spec"
+  },
+  {
+   "id": "K4",
+   "choice": "Approver vocabulary: owner = a person via studio approve/approve-budget; delegate = an AUTO_DELEGATED gate passed on panel+conformance evidence; auto = an auto/critic gate, or a budget hold under the policy ceiling.",
+   "justification": "The issue lists '(owner, delegate, auto)' (Affected Files 4) without defining them; this mapping gives every gate and budget decision exactly one approver.",
+   "source": "spec"
+  },
+  {
+   "id": "K5",
+   "choice": "The budget ceiling is an absolute per-metric limit on projected production spend (same shape and units as BudgetCaps), checked only when a cap is exceeded.",
+   "justification": "Hold logic compares projected = spent + need against per-metric limits (src/spectracut/studio/producer.py:331-341); reusing the same units keeps one comparison and makes 'under the policy ceiling' unambiguous.",
+   "source": "precedent"
+  },
+  {
+   "id": "K6",
+   "choice": "No delegated gate auto-passes without a critic verdict; `studio run` does not wire a critic today (src/spectracut/cli/studio.py:340-348), so under the CLI delegated gates escalate with 'no panel review' until #247 wires the panel.",
+   "justification": "R2 requires panel evidence; fail-closed preserves the owner's control (P5).",
+   "source": "spec"
+  }
+ ]
+}
