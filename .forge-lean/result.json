@@ -1,0 +1,85 @@
+{
+ "status": "fixed",
+ "summary": "Frozen versioned FilmContract with row-by-row, code-computed conformance that blocks edit and delivery",
+ "requirements": [
+  {
+   "id": "R1",
+   "status": "implemented",
+   "evidence": "src/spectracut/studio/contract.py:50"
+  },
+  {
+   "id": "R2",
+   "status": "implemented",
+   "evidence": "src/spectracut/studio/graph.py (_conform)"
+  },
+  {
+   "id": "R3",
+   "status": "implemented",
+   "evidence": "src/spectracut/studio/conformance.py (conformance_verdict)"
+  },
+  {
+   "id": "R4",
+   "status": "implemented",
+   "evidence": "src/spectracut/studio/conformance.py (conformance_verdict)"
+  },
+  {
+   "id": "R5",
+   "status": "implemented",
+   "evidence": "tests/studio existing suites pass (V2)"
+  }
+ ],
+ "validation": [
+  {
+   "id": "V1",
+   "command": "uv run pytest -q tests/studio/test_contract.py",
+   "exit": 0
+  },
+  {
+   "id": "V2",
+   "command": "uv run pytest -q tests/studio/test_graph.py tests/studio/test_producer.py tests/studio/test_supervisor.py tests/studio/test_intake.py tests/studio/test_department.py",
+   "exit": 0
+  }
+ ],
+ "tests": [
+  {
+   "command": "uv run pytest -q tests/studio/test_contract.py",
+   "result": "pass",
+   "fails_without_fix": true
+  }
+ ],
+ "self_review": [
+  {
+   "question": "1",
+   "answer": "yes",
+   "evidence": "R1-R5 delivered; test_contract.py covers each"
+  },
+  {
+   "question": "2",
+   "answer": "yes",
+   "evidence": "V2 and m2 acceptance tests pass; run() gains only an optional keyword"
+  },
+  {
+   "question": "3",
+   "answer": "yes",
+   "evidence": "D1-D5 changed; P1-P3 intact; V1 and V2 exit 0"
+  },
+  {
+   "question": "4",
+   "answer": "yes",
+   "evidence": "git diff --stat shows only the 4 deliverable src files and tests/studio/test_contract.py"
+  }
+ ],
+ "not_members": [
+  {
+   "symbol": "conformance",
+   "test": "tests/studio/test_producer.py",
+   "why": "line 46 is the Recorder test helper; the file only imports the studio symbols it uses and holds no list of the studio modules"
+  },
+  {
+   "symbol": "contract",
+   "test": "tests/studio/test_producer.py",
+   "why": "line 46 is the Recorder test helper; the file only imports the studio symbols it uses and holds no list of the studio modules"
+  }
+ ],
+ "amendments": []
+}
