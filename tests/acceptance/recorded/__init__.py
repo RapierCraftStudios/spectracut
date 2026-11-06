@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import math
 import re
+import struct
+import zlib
 from array import array
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -74,6 +76,26 @@ class RecordedProvider:
         return Completion(output=output, usage=usage)
 
 
+def _png(text: str, size: int = 16) -> bytes:
+    """A real ``size``-square black/white PNG carrying ``text`` (ffmpeg and QA need real
+    pixels; a flat grey frame fails the haze check)."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    header = struct.pack(">IIBBBBB", size, size, 8, 0, 0, 0, 0)
+    half = size // 2
+    rows = b"".join(b"\x00" + b"\x10" * half + b"\xeb" * (size - half) for _ in range(size))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"tEXt", b"recipe\x00" + text.encode())
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
 class FakeFlamenco:
     """A Manager whose jobs complete at once, writing one frame and report.json."""
 
@@ -89,7 +111,7 @@ class FakeFlamenco:
         signed = json.loads(Path(settings["job_file"]).read_text(encoding="utf-8"))
         out = Path(settings["output_dir"])
         out.mkdir(parents=True, exist_ok=True)
-        (out / "frame_0001.png").write_bytes(signed["envelope"]["recipe_hash"].encode())
+        (out / "frame_0001.png").write_bytes(_png(signed["envelope"]["recipe_hash"]))
         report = {"reports": [], "scene_graph_hash": "sha256:" + "a" * 64}
         (out / "report.json").write_text(json.dumps(report), encoding="utf-8")
         return {"id": f"fl-{len(self.submitted)}"}
