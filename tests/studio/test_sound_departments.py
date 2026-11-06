@@ -314,6 +314,16 @@ def test_mix_renders_master_and_stems_and_passes_streaming_loudness(tmp_path: Pa
     assert rows == {"audio.loudness": "pass", "audio.true_peak": "pass", "audio.clipping": "pass"}
 
 
+def test_mix_without_a_music_stage_has_no_mx_bed(tmp_path: Path) -> None:
+    """The standard profile has no music node: the mix is dialogue and effects (#253)."""
+    inputs = _mix_inputs(tmp_path)
+    del inputs[MUSIC]
+    runner, _ = _runner(tmp_path, configured=True)
+    mix = Mix.model_validate(runner(_ctx(MIX, inputs)).output)
+    assert Path(mix.master).is_file()
+    assert mix.loudness_lufs == pytest.approx(-14.0, abs=0.5)
+
+
 @pytest.mark.parametrize("lufs", [-30.0, -4.0])
 def test_a_mix_outside_streaming_loudness_fails(tmp_path: Path, lufs: float) -> None:
     runner, _ = _runner(tmp_path, configured=True, lufs=lufs)
