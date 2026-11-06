@@ -635,8 +635,9 @@ class _ServeChannel:
         import os
         import threading
 
-        from spectracut.providers.local.registry import MockLocalProvider
         from spectracut_host.models import serve
+
+        from spectracut.providers.local.registry import MockLocalProvider
 
         r_in, w_in = os.pipe()
         r_out, w_out = os.pipe()

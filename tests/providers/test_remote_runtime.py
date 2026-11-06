@@ -17,13 +17,13 @@ from pathlib import Path
 from typing import IO, Any
 
 import pytest
+from spectracut_host.models import serve
 
 from spectracut.providers.base import ProviderError
 from spectracut.providers.local.registry import MODELS, MockLocalProvider, RuntimeProvider
 from spectracut.providers.local.remote import RemoteLoader, RemoteSession, serve_argv
 from spectracut.providers.local.runtime import ModelRuntime, ModelSpec
 from spectracut.queue.executors.base import GpuCard, LeasePool
-from spectracut_host.models import serve
 
 SFX = MODELS["ezaudio-xl"]
 
