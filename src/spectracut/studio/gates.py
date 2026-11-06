@@ -8,6 +8,11 @@ Modes:
   until the stage's revision budget is spent, then the node is rejected.
 - ``human``: the Critic (when one is configured) reviews first, then the node
   waits for a person to approve it; its dependants do not run until then.
+- ``auto_delegated``: a ``human`` gate the autonomy policy
+  (:mod:`spectracut.studio.autonomy`) hands to a delegate. It passes on its own
+  when the panel has no confirmed HIGH, the score clears the threshold and, for
+  edit and delivery, conformance passed; otherwise it waits for the owner with
+  the reasons, like ``human``.
 
 A node's mode resolves as: per-node override, then per-production override for
 its kind, then the kind default (from the quality profile), then ``auto``.
@@ -31,6 +36,7 @@ class GateMode(StrEnum):
     AUTO = "auto"
     CRITIC = "critic"
     HUMAN = "human"
+    AUTO_DELEGATED = "auto_delegated"
 
 
 class Severity(StrEnum):
@@ -78,6 +84,12 @@ class GateDecision(StrictModel):
     critic: CriticVerdict | None = None
     human: Literal["approved", "rejected"] | None = None
     comment: str = ""
+    approver: Literal["owner", "delegate", "auto"] | None = None
+    """Who passed the gate: the owner (a person), the delegate (on evidence) or auto."""
+    evidence: list[str] = Field(default_factory=list)
+    """What the gate passed on."""
+    escalated: list[str] = Field(default_factory=list)
+    """Why a delegated gate was handed to the owner."""
 
 
 class GatePolicy(StrictModel):

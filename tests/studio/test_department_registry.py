@@ -71,4 +71,5 @@ def test_standard_estimate_lists_the_missing_departments_before_any_spend() -> N
     graph.add_nodes(breakdown(_brief(), profile))
     est = estimate(graph, all_departments())
     assert set(est.unknown_departments) == UNIMPLEMENTED & set(profile.stages)
-    assert graph.spec("script").inputs == ("concept", "brief")
+    assert graph.spec("script").inputs == ("brief", "concept")
+    assert graph.spec("style_frames").inputs == ("brief", "art_direction")

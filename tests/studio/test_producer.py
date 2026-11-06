@@ -92,12 +92,14 @@ def test_60s_brief_standard_profile_yields_every_stage_and_an_estimate() -> None
     assert plan.gates["brief"].value == "human" and plan.gates["script"].value == "critic"
 
     graph = producer.new_graph("spellwise", plan, profile)
-    assert list(graph.order()) == list(profile.stages)
+    order = graph.order()
+    assert sorted(order) == sorted(profile.stages)
+    assert all(order.index(i) < order.index(n) for n in order for i in graph.spec(n).inputs)
     first = graph.spec("brief")
     assert BRIEF_PARAM in first.params and PLAN_PARAM in first.params
 
     est = producer.estimate(graph)
-    assert [s.node_id for s in est.stages] == list(profile.stages)
+    assert [s.node_id for s in est.stages] == list(order)
     assert est.duration_s == 60 and est.shots == 15
     assert est.gpu_hours > 0
     assert est.total.elevenlabs_characters > 0
@@ -107,6 +109,72 @@ def test_60s_brief_standard_profile_yields_every_stage_and_an_estimate() -> None
     text = "\n".join(est.lines())
     assert "  voiceover: department=voiceover " in text
     assert "human gates=5" in text and "gpu_hours=" in text and "wall_minutes=" in text
+
+
+DEVICE_SHOT_PROFILES = ("device-shot", "device-shot-comped", "device-shot-graded")
+"""Profiles with their own runner, not department-driven."""
+
+
+def test_every_profile_graph_satisfies_department_input_kinds() -> None:
+    from spectracut.studio.departments import all_departments
+    from spectracut.studio.profiles import available_profiles
+
+    registry = all_departments()
+    checked = 0
+    for name in available_profiles():
+        if name in DEVICE_SHOT_PROFILES:
+            continue
+        profile = load_profile(name)
+        plan = Producer().breakdown(_brief(), profile, duration_s=60)
+        graph = Producer().new_graph("p", plan, profile)
+        for nid in graph.order():
+            spec = graph.spec(nid)
+            dept = registry.get(spec.department)
+            if dept is None:
+                continue
+            for input_id in spec.inputs:
+                kind = graph.spec(input_id).kind
+                assert kind in dept.inputs, (
+                    f"{name}/{nid}: input {input_id!r} has kind {kind!r}, "
+                    f"undeclared by {dept.name!r}"
+                )
+                checked += 1
+    assert checked > 0
+
+
+def test_preproduction_edges_match_the_art_node_builder() -> None:
+    from spectracut.studio.departments.art import preproduction_nodes
+
+    for name in ("standard", "premium", "cinema"):
+        profile = load_profile(name)
+        graph = Producer().new_graph(
+            "p", Producer().breakdown(_brief(), profile, duration_s=60), profile
+        )
+        for built in preproduction_nodes("brief", "script"):
+            spec = graph.spec(built.id)
+            assert (spec.kind, spec.department, spec.inputs) == (
+                built.kind,
+                built.department,
+                built.inputs,
+            ), f"{name}/{built.id}"
+        assert graph.spec("concept").inputs == ("brief",)
+        assert graph.spec("script").inputs == ("brief", "concept")
+
+
+def test_edge_problems_reports_an_old_positional_graph() -> None:
+    from spectracut.studio.departments import all_departments
+    from spectracut.studio.producer import edge_problems
+
+    registry = all_departments()
+    producer = Producer(registry)
+    graph = _standard_graph(producer)
+    assert edge_problems(graph, registry) == []
+    stale = graph.spec("style_frames").model_copy(update={"inputs": ("script",)})
+    graph.update_node(stale)
+    problems = edge_problems(graph, registry)
+    assert len(problems) == 1
+    assert "'style_frames'" in problems[0] and "'script'" in problems[0]
+    assert edge_problems(graph, {}) == []
 
 
 def test_script_driven_breakdown_uses_script_shots_length_and_vo() -> None:
@@ -148,14 +216,19 @@ def test_add_then_drop_step_updates_graph_and_estimate() -> None:
     assert all(s is NodeStatus.CLEAN for s in graph.statuses().values())
     before = producer.estimate(graph)
 
-    added = producer.add_step(graph, "grade", after="shots", tier=None)
+    # Voiceover has a department (#251) and reads the script; edit, still without
+    # one, reads the stage before it, so a step inserted after voiceover feeds edit.
+    added = producer.add_step(graph, "grade", after="voiceover", tier=None)
     order = graph.order()
-    assert order.index("shots") < order.index("grade") < order.index("voiceover")
-    assert graph.spec("grade").inputs == ("shots",)
-    assert graph.spec("voiceover").inputs == ("grade",)
+    assert order.index("voiceover") < order.index("grade") < order.index("edit")
+    assert graph.spec("grade").inputs == ("voiceover",)
+    assert graph.spec("edit").inputs == ("grade",)
     assert graph.status("grade") is NodeStatus.PENDING
-    assert graph.status("shots") is NodeStatus.CLEAN
-    downstream = order[order.index("voiceover") :]
+    assert graph.status("voiceover") is NodeStatus.CLEAN
+    downstream = {"edit"}
+    for n in order[order.index("edit") :]:
+        if set(graph.spec(n).inputs) & downstream:
+            downstream.add(n)
     assert all(graph.status(n) is NodeStatus.DIRTY for n in downstream)
     assert all(graph.status(n) is NodeStatus.CLEAN for n in order[: order.index("grade")])
     assert len(added.stages) == len(before.stages) + 1
@@ -166,9 +239,9 @@ def test_add_then_drop_step_updates_graph_and_estimate() -> None:
     _drive(producer, graph, Recorder())
     dropped = producer.drop_step(graph, "grade")
     assert "grade" not in graph.order()
-    assert graph.spec("voiceover").inputs == ("shots",)
-    assert graph.status("voiceover") is NodeStatus.DIRTY
-    assert graph.status("shots") is NodeStatus.CLEAN
+    assert graph.spec("edit").inputs == ("voiceover",)
+    assert graph.status("edit") is NodeStatus.DIRTY
+    assert graph.status("voiceover") is NodeStatus.CLEAN
     assert len(dropped.stages) == len(before.stages)
     assert dropped.total == before.total
     assert graph.profile is not None and "grade" not in graph.profile.stages

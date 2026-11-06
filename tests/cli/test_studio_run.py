@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
+from pydantic import JsonValue
 from typer.testing import CliRunner
 
 from spectracut.cli import studio as studio_mod
 from spectracut.cli.app import app
+from spectracut.providers.mock_text import MockTextProvider, instance_of
 from spectracut.spec.brief import AudienceProfile, Brief, ClaimSource, Persona, ProofPoint
 from spectracut.studio.departments import all_departments
 
@@ -67,7 +70,18 @@ def test_run_builds_brief_and_stops_at_the_brief_human_gate(home: Path, brief_fi
     assert "awaiting approval: brief" in result.output
 
 
-def test_approving_each_gate_builds_concept_then_script(home: Path, brief_file: Path) -> None:
+def _respond(system: str, prompt: str, schema: dict[str, Any]) -> JsonValue:
+    """The mock's schema instance, with the palette swatch the mock cannot infer (minProperties)."""
+    output = instance_of(schema)
+    if isinstance(output, dict) and isinstance(output.get("palette"), dict):
+        output["palette"] = {"swatches": {"primary": "#1a2b3c"}}
+    return output
+
+
+def test_approving_each_gate_builds_concept_then_script(
+    home: Path, brief_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(studio_mod, "text_provider_factory", lambda: MockTextProvider(_respond))
     created = runner.invoke(
         app, ["studio", "new", str(brief_file), "--id", "film", "--profile", "standard"]
     )
@@ -78,5 +92,12 @@ def test_approving_each_gate_builds_concept_then_script(home: Path, brief_file: 
         assert f"awaiting approval: {built}" in result.output
         approved = runner.invoke(app, ["studio", "approve", "film", built])
         assert approved.exit_code == 0, approved.output
-    # style_frames needs an art_direction node the standard profile does not emit yet.
-    assert "executed: script" in runner.invoke(app, ["studio", "run", "film"]).output
+    # Art direction builds beside the concept (it reads only the brief); style frames
+    # read the brief and the art direction, never the script.
+    # Voiceover (#251) reads only the script, so it builds here too; edit has no
+    # department yet and reads the stage before it, so it is reached and fails clearly.
+    result = runner.invoke(app, ["studio", "run", "film"])
+    assert "executed: script" in result.output
+    assert "undeclared kind" not in result.output
+    assert result.exit_code == 1, result.output
+    assert "no department registered for 'edit'" in result.output

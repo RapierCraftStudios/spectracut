@@ -5,7 +5,9 @@
   :class:`~spectracut.spec.spec.Spec`) into a :class:`ProductionPlan`: the shot
   list, the asset list, and one department task per stage of the quality
   profile, gated as the profile says. :meth:`Producer.new_graph` builds the
-  production graph from it.
+  production graph from it. The tasks are wired as each department declares its
+  inputs; :func:`edge_problems` lists the edges of a graph that do not agree
+  (e.g. a production created before the departments declared them).
 - :meth:`Producer.add_step` and :meth:`Producer.drop_step` change the steps of a
   production; both rewire the neighbouring nodes, mark exactly the affected
   dependants dirty and return the new estimate.
@@ -13,7 +15,10 @@
   estimated cost plus what the production has used (and what this run has
   already let through) is checked against each cap. A node that would exceed a
   cap is held, not run; it stays pending, its dependants wait, and the report
-  asks for approval (:attr:`ProducerReport.needs_approval`).
+  asks for approval (:attr:`ProducerReport.needs_approval`). With an
+  :class:`~spectracut.studio.autonomy.AutonomyPolicy`, a node whose projected
+  spend stays within the policy's ceiling for every exceeded cap builds anyway
+  and is recorded (:attr:`ProducerReport.auto_approved`).
 - :class:`ScheduledRunner` schedules tasks against GPU leases and AI capacity:
   a task of a GPU department waits for a lease (``waiting_for_gpu``), and a task
   whose provider is out of capacity (``ProviderExhausted``) waits in
@@ -38,6 +43,8 @@ from spectracut.providers.base import ProviderExhausted
 from spectracut.spec._base import Slug, StrictModel
 from spectracut.spec.brief import Brief, CreativeBrief
 from spectracut.spec.spec import Spec
+from spectracut.studio.autonomy import AutonomyPolicy, BudgetApproval
+from spectracut.studio.conformance import Conformance
 from spectracut.studio.department import CostEstimate, Department
 from spectracut.studio.departments import department_for
 from spectracut.studio.estimate import (
@@ -122,6 +129,38 @@ class ProducerReport:
     needs_approval: list[BudgetHold] = field(default_factory=list)
     supervisor_hold: SupervisorHold | None = None
     """The tripped breaker, when the supervisor stopped new admissions."""
+    auto_approved: list[BudgetApproval] = field(default_factory=list)
+    """Over-cap nodes the autonomy policy let build, within its spend ceiling."""
+
+
+def edge_problems(
+    graph: ProductionGraph | Iterable[NodeSpec], departments: Mapping[str, type[Department]]
+) -> list[str]:
+    """Every input whose kind its node's department does not declare, as text.
+
+    Nodes whose department is not in ``departments`` are skipped (they fail on
+    their own when run). An empty list means the graph's edges agree with the
+    departments' declared ``inputs``.
+    """
+    specs = (
+        [graph.spec(n) for n in graph.order()]
+        if isinstance(graph, ProductionGraph)
+        else list(graph)
+    )
+    kinds = {s.id: s.kind for s in specs}
+    problems: list[str] = []
+    for spec in specs:
+        dept = departments.get(spec.department)
+        if dept is None:
+            continue
+        for input_id in spec.inputs:
+            kind = kinds.get(input_id, input_id)
+            if kind not in dept.inputs:
+                problems.append(
+                    f"node {spec.id!r} reads {input_id!r} of kind {kind!r}, "
+                    f"which department {dept.name!r} does not declare"
+                )
+    return problems
 
 
 def _metric(c: CostEstimate, name: str) -> float:
@@ -300,13 +339,22 @@ class Producer:
         critic: Critic | None = None,
         max_workers: int = 1,
         supervisor: Supervisor | None = None,
+        autonomy: AutonomyPolicy | None = None,
+        conformance: Conformance | None = None,
     ) -> ProducerReport:
         """Run ``graph``, holding any node that could push usage past a cap.
 
         With a ``supervisor``, transient failures retry with backoff, a burst of
         permanent failures stops new admissions, and a node out of revisions is
         retried once at the next tier; its decisions are recorded on the node.
+
+        With ``autonomy``, its delegated gates apply to ``graph`` and a node over a
+        cap builds without approval when its projected spend is within the
+        policy's ceiling for every exceeded metric (``report.auto_approved``).
+        ``conformance`` reviews edit and delivery against the film contract.
         """
+        if autonomy is not None:
+            graph.autonomy = autonomy
         est = self.estimate(graph)
         limits = caps.limits() if caps is not None else {}
         approvals = frozenset(approved)
@@ -319,6 +367,7 @@ class Producer:
             ),
         }
         holds: dict[str, BudgetHold] = {}
+        auto: dict[str, list[BudgetApproval]] = {}
         lock = threading.Lock()
 
         def hold(spec: NodeSpec) -> str | None:
@@ -330,20 +379,42 @@ class Producer:
                 return None
             with lock:
                 if spec.id not in approvals:
+                    passed: list[BudgetApproval] = []
                     for metric, limit in limits.items():
                         need = _metric(cost, metric)
                         projected = spent[metric] + need
                         if need > 0 and projected > limit:
+                            if autonomy is not None and autonomy.within_ceiling(metric, projected):
+                                ceiling = autonomy.budget_ceiling.limit(metric)
+                                passed.append(
+                                    BudgetApproval(
+                                        node_id=spec.id,
+                                        metric=metric,
+                                        projected=projected,
+                                        limit=limit,
+                                        ceiling=ceiling,
+                                        approver="auto",
+                                        evidence=(
+                                            f"projected {projected:g} <= ceiling {ceiling:g}"
+                                            f" (cap {limit:g})"
+                                        ),
+                                    )
+                                )
+                                continue
                             holds[spec.id] = BudgetHold(
                                 node_id=spec.id, metric=metric, projected=projected, limit=limit
                             )
                             return f"needs budget approval: {holds[spec.id].text()}"
+                    if passed:
+                        auto[spec.id] = passed
                 for metric in spent:
                     spent[metric] += _metric(cost, metric)
             return None
 
         if supervisor is None:
-            report = graph.run(runner, critic=critic, max_workers=max_workers, hold=hold)
+            report = graph.run(
+                runner, critic=critic, max_workers=max_workers, hold=hold, conformance=conformance
+            )
         else:
             mark = {n: len(d) for n, d in supervisor.decisions.items()}
             report = graph.run(
@@ -352,6 +423,7 @@ class Producer:
                 max_workers=max_workers,
                 hold=hold,
                 escalate=supervisor.escalate,
+                conformance=conformance,
             )
             for nid, log in supervisor.decisions.items():
                 if nid in graph.order() and len(log) > mark.get(nid, 0):
@@ -362,6 +434,7 @@ class Producer:
             estimate=self.estimate(graph),
             needs_approval=held,
             supervisor_hold=supervisor.hold_record() if supervisor is not None else None,
+            auto_approved=[a for n in graph.order() for a in auto.get(n, [])],
         )
 
 
