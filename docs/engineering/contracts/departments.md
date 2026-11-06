@@ -191,7 +191,7 @@ board, palette, Look), `style-frame-artist` (`style_frames`), `storyboard`
   renderer (Blender on the farm; the control plane never runs Blender). The node
   waits at its human gate (`PREPRODUCTION_GATES`).
 - **Image exploration** uses a local model unless `image_provider = "chatgpt"` is
-  set in the `[ai]` config (`storyboard.select_image_provider`); opting in without
+  set in the `[ai]` config (`storyboard.choose_exploration_provider`); opting in without
   a ChatGPT provider is an error, not a fallback.
 - **Animatic** is built in code (`storyboard.build_animatic`): boards as picture
   clips, temp VO from the local TTS and optional music on audio tracks, each board

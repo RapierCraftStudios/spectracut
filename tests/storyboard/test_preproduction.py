@@ -20,15 +20,15 @@ from spectracut.providers.base import ProviderError
 from spectracut.providers.local.registry import MockLocalProvider
 from spectracut.providers.mock_image import MockImageProvider
 from spectracut.providers.mock_text import MockTextProvider
-from spectracut.storyboard import (
+from spectracut.storyboard.animatic import TempAudio, build_animatic, check_locked_timing
+from spectracut.storyboard.explore import choose_exploration_provider, record_image
+from spectracut.storyboard.models import (
+    ArtDirection,
+    ImageRecord,
     Storyboard,
-    TempAudio,
-    build_animatic,
-    check_locked_timing,
-    select_image_provider,
+    StyleFrame,
+    StyleFrames,
 )
-from spectracut.storyboard.explore import record_image
-from spectracut.storyboard.models import ArtDirection, ImageRecord, StyleFrame, StyleFrames
 from spectracut.studio import (
     CapacityLimits,
     DepartmentRunner,
@@ -229,11 +229,11 @@ def test_storyboard_has_one_board_per_shot() -> None:
 
 def test_image_exploration_is_local_by_default_and_chatgpt_only_when_configured() -> None:
     local, chatgpt = MockLocalProvider("image"), MockImageProvider()
-    assert select_image_provider(None, local=local, chatgpt=chatgpt) is local
-    assert select_image_provider({}, local=local, chatgpt=chatgpt) is local
-    assert select_image_provider({"image_provider": "local"}, local=local) is local
+    assert choose_exploration_provider(None, local=local, chatgpt=chatgpt) is local
+    assert choose_exploration_provider({}, local=local, chatgpt=chatgpt) is local
+    assert choose_exploration_provider({"image_provider": "local"}, local=local) is local
     assert (
-        select_image_provider({"image_provider": "chatgpt"}, local=local, chatgpt=chatgpt)
+        choose_exploration_provider({"image_provider": "chatgpt"}, local=local, chatgpt=chatgpt)
         is chatgpt
     )
 
@@ -241,9 +241,9 @@ def test_image_exploration_is_local_by_default_and_chatgpt_only_when_configured(
 def test_chatgpt_without_a_provider_or_unknown_choice_is_an_error_not_a_fallback() -> None:
     local = MockLocalProvider("image")
     with pytest.raises(ProviderError, match="no ChatGPT provider"):
-        select_image_provider({"image_provider": "chatgpt"}, local=local)
+        choose_exploration_provider({"image_provider": "chatgpt"}, local=local)
     with pytest.raises(ProviderError, match="unknown image_provider"):
-        select_image_provider({"image_provider": "dalle"}, local=local)
+        choose_exploration_provider({"image_provider": "dalle"}, local=local)
 
 
 def test_exploration_runs_on_the_local_provider(tmp_path: Path) -> None:

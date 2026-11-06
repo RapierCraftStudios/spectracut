@@ -5,7 +5,7 @@
   from the creative brief.
 - ``style-frame-artist`` (kind ``style_frames``): plans a few key stills. The
   :class:`PreproductionRunner` then explores each on an image provider (a local
-  model unless ChatGPT is configured, :func:`~spectracut.storyboard.explore.select_image_provider`)
+  model unless ChatGPT is configured, `storyboard.explore.choose_exploration_provider`)
   and renders it at the **final** tier through an injected renderer. On the farm that
   is Blender on a render host; the control plane never runs Blender. The node waits at
   its human gate.

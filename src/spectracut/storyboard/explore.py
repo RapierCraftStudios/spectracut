@@ -21,7 +21,7 @@ class ExploreProvider(Protocol):
     def generate(self, prompt: str, out_path: Path, **options: Any) -> Path: ...
 
 
-def select_image_provider(
+def choose_exploration_provider(
     config: Mapping[str, Any] | None,
     *,
     local: ExploreProvider,
