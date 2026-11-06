@@ -424,7 +424,7 @@ def check_sync(
     return _row(name, not bad, _finite(worst), 1.0, "; ".join(bad) or "max onset error (frames)")
 
 
-def check_repetition(cues: Sequence[CueTiming]) -> QACheck:
+def check_sample_reuse(cues: Sequence[CueTiming]) -> QACheck:
     """The same sample is not reused within ``MIN_SAMPLE_GAP_S`` seconds."""
     name = "audio.repetition"
     if not any(c.sample for c in cues):
@@ -467,7 +467,7 @@ def check_mix(
     rows.append(check_vo_intelligibility(stems or {}))
     rows += check_cutoff(rate, channels)
     rows.append(check_sync(sync_rate, sync_channels, cues, fps))
-    rows.append(check_repetition(cues))
+    rows.append(check_sample_reuse(cues))
     if predictors:
         rows += check_predictors({**(stems or {}), "mix": path}, predictors)
     return rows
