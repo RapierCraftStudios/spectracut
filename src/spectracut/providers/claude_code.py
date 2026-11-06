@@ -32,6 +32,7 @@ from spectracut.providers.base import (
     subscription_env,
 )
 from spectracut.providers.config import configured_claude_bin, resolve_claude_bin
+from spectracut.providers.schema import strict_json_schema
 
 CLI = "claude"
 
@@ -174,14 +175,19 @@ TEXT_ISOLATION_FLAGS = [
 def claude_text_argv(
     claude_bin: str, system: str, prompt: str, schema: dict[str, Any]
 ) -> list[str]:
-    """The isolated headless ``claude -p`` command line for one text completion."""
+    """The isolated headless ``claude -p`` command line for one text completion.
+
+    ``schema`` is reduced to the CLI's strict draft-07 subset
+    (:func:`~spectracut.providers.schema.strict_json_schema`); callers validate the
+    reply against the original model.
+    """
     return [
         claude_bin,
         "-p",
         "--output-format",
         "json",
         "--json-schema",
-        json.dumps(schema, separators=(",", ":")),
+        json.dumps(strict_json_schema(schema), separators=(",", ":")),
         *TEXT_ISOLATION_FLAGS,
         "--system-prompt",
         system,
