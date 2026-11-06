@@ -1,5 +1,34 @@
 {
   "$defs": {
+    "Assumption": {
+      "additionalProperties": false,
+      "description": "A brief aspect nobody answered, filled with a default and a one-line rationale.",
+      "properties": {
+        "aspect": {
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Aspect",
+          "type": "string"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "value": {
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "aspect",
+        "value",
+        "rationale"
+      ],
+      "title": "Assumption",
+      "type": "object"
+    },
     "AudienceProfile": {
       "additionalProperties": false,
       "description": "Personas, prior knowledge, objections and platform expectations.",
@@ -121,6 +150,13 @@
   "additionalProperties": false,
   "description": "The approved output of Discovery.",
   "properties": {
+    "assumptions": {
+      "items": {
+        "$ref": "#/$defs/Assumption"
+      },
+      "title": "Assumptions",
+      "type": "array"
+    },
     "audience": {
       "$ref": "#/$defs/AudienceProfile"
     },
@@ -128,6 +164,14 @@
       "minLength": 1,
       "title": "Cta",
       "type": "string"
+    },
+    "dropped_claims": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Dropped Claims",
+      "type": "array"
     },
     "id": {
       "maxLength": 128,
