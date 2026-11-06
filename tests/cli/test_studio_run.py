@@ -21,10 +21,11 @@ from spectracut.spec.brief import AudienceProfile, Brief, ClaimSource, Persona, 
 from spectracut.storyboard.models import Board, Storyboard
 from spectracut.studio import device_shot as ds
 from spectracut.studio.departments import all_departments
+from spectracut.studio.departments import finishing as finishing_depts
 from spectracut.studio.departments import shots as shot_depts
 from spectracut.studio.gates import GatePolicy
 from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
-from spectracut.studio.node import NodeSpec
+from spectracut.studio.node import NodeSpec, Tier
 from spectracut.studio.profiles import load_profile
 from spectracut.studio.store import ProductionStore
 
@@ -64,10 +65,10 @@ def test_new_lists_the_stages_with_no_department(home: Path, brief_file: Path) -
     result = runner.invoke(app, ["studio", "new", str(brief_file), "--profile", "standard"])
     assert result.exit_code == 0, result.output
     assert "  brief: department=strategist" in result.output
-    assert "no department registered yet for:" in result.output
-    unregistered = result.output.split("no department registered yet for:")[1]
-    assert "render" in unregistered
-    assert "voiceover" not in unregistered
+    unregistered = result.output.partition("no department registered yet for:")[2]
+    # Finishing (#252) registers edit, render and delivery.
+    for stage in ("render", "edit", "delivery", "voiceover"):
+        assert stage not in unregistered.split()
 
 
 def test_run_builds_brief_and_stops_at_the_brief_human_gate(home: Path, brief_file: Path) -> None:
@@ -106,13 +107,12 @@ def test_approving_each_gate_builds_concept_then_script(
         assert approved.exit_code == 0, approved.output
     # Art direction builds beside the concept (it reads only the brief); style frames
     # read the brief and the art direction, never the script.
-    # Voiceover (#251) reads only the script, so it builds here too; edit has no
-    # department yet and reads the stage before it, so it is reached and fails clearly.
+    # Voiceover (#251) reads only the script, so it builds here too; edit (#252) is
+    # registered and waits on the animatic, so it is not reached.
     result = runner.invoke(app, ["studio", "run", "film"])
     assert "executed: script" in result.output
     assert "undeclared kind" not in result.output
-    assert result.exit_code == 1, result.output
-    assert "no department registered for 'edit'" in result.output
+    assert "no department registered" not in result.output
 
 
 # ---- template_shots / shots through default_runner (#250) -----------------------
@@ -248,3 +248,59 @@ def test_standard_shot_nodes_render_on_the_farm_through_default_runner(
     assert all(job["worker_tag"] == "tag-1" for job in fake.submitted)
     again = graph.run(run, critic=shot_depts.shot_critic(0.6))
     assert not again.executed and len(fake.submitted) == 2
+
+
+def test_default_runner_routes_finishing_nodes_to_the_finishing_runner(
+    home: Path, brief_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """edit/render/delivery are built in code, never by the LLM text runner."""
+    created = runner.invoke(app, ["studio", "new", str(brief_file), "--id", "fin"])
+    assert created.exit_code == 0, created.output
+    store = ProductionStore(home)
+    text_kinds: list[str] = []
+
+    class Text:
+        def __init__(self, *_a: object, **_kw: object) -> None:
+            pass
+
+        def __call__(self, ctx: RunContext) -> RunResult:
+            text_kinds.append(ctx.spec.kind)
+            return RunResult(output={"node": ctx.spec.id})
+
+    built: list[str] = []
+
+    def factory(production: studio_mod.Production) -> studio_mod.DeviceShotDeps:
+        built.append(production.id)
+        config = ds.DeviceShotConfig(
+            flamenco_url="http://fake",
+            shared=tmp_path / "shared",
+            worker_tag=TAG,
+            assets_dir=str(tmp_path / "a"),
+        )
+        return studio_mod.DeviceShotDeps(
+            config=config,
+            client=FakeFlamenco(),
+            key=load_private_key(generate_keypair()[0]),
+            judge=MockJudge(),
+            options=ds.ExecutorOptions(clock=Ticks(), sleep=lambda _s: None, poll_interval=0.0),
+        )
+
+    routed: list[str] = []
+
+    def edit(self: finishing_depts.FinishingRunner, ctx: RunContext) -> RunResult:
+        routed.append(ctx.spec.kind)
+        return RunResult(output={"node": ctx.spec.id})
+
+    monkeypatch.setattr(studio_mod, "device_shot_factory", factory)
+    monkeypatch.setattr(studio_mod, "DepartmentRunner", Text)
+    monkeypatch.setattr(finishing_depts.FinishingRunner, "_edit", edit)
+    graph = ProductionGraph("fin", profile=load_profile("standard"), gates=GatePolicy())
+    graph.add_nodes([NodeSpec(id="script", kind="script", department="script-writer")])
+    run = studio_mod.default_runner(studio_mod.Production("fin", store), graph)
+    spec = finishing_depts.finishing_nodes()[0]
+    ctx = RunContext(spec=spec, tier=Tier.FINAL, key="k", inputs={}, attempt=1)
+    assert run(ctx).output == {"node": "edit"}
+    assert routed == ["edit"] and text_kinds == [] and built == ["fin"]
+    other = RunContext(spec=graph.spec("script"), tier=Tier.FINAL, key="k", inputs={}, attempt=1)
+    run(other)
+    assert text_kinds == ["script"] and built == ["fin"]

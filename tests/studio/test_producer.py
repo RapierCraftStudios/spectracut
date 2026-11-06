@@ -216,13 +216,14 @@ def test_add_then_drop_step_updates_graph_and_estimate() -> None:
     assert all(s is NodeStatus.CLEAN for s in graph.statuses().values())
     before = producer.estimate(graph)
 
-    # Voiceover has a department (#251) and reads the script; edit, still without
-    # one, reads the stage before it, so a step inserted after voiceover feeds edit.
+    # Voiceover has a department (#251) and reads the script; edit (#252) reads the
+    # animatic, the shots and the voiceover, so a step inserted after voiceover takes
+    # voiceover's place among edit's inputs.
     added = producer.add_step(graph, "grade", after="voiceover", tier=None)
     order = graph.order()
     assert order.index("voiceover") < order.index("grade") < order.index("edit")
     assert graph.spec("grade").inputs == ("voiceover",)
-    assert graph.spec("edit").inputs == ("grade",)
+    assert graph.spec("edit").inputs == ("animatic", "template_shots", "shots", "grade")
     assert graph.status("grade") is NodeStatus.PENDING
     assert graph.status("voiceover") is NodeStatus.CLEAN
     downstream = {"edit"}
@@ -239,7 +240,7 @@ def test_add_then_drop_step_updates_graph_and_estimate() -> None:
     _drive(producer, graph, Recorder())
     dropped = producer.drop_step(graph, "grade")
     assert "grade" not in graph.order()
-    assert graph.spec("edit").inputs == ("voiceover",)
+    assert graph.spec("edit").inputs == ("animatic", "template_shots", "shots", "voiceover")
     assert graph.status("edit") is NodeStatus.DIRTY
     assert graph.status("voiceover") is NodeStatus.CLEAN
     assert len(dropped.stages) == len(before.stages)

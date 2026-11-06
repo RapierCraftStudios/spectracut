@@ -33,7 +33,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
-from pydantic import BaseModel, Field, JsonValue, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from spectracut.edit.conform import replace_shot
 from spectracut.edit.otio_io import write_otio
@@ -123,6 +123,14 @@ class EditCut(StrictModel):
 
 
 class EndCardRecord(StrictModel):
+    """The end card's shot and the copy gate verdicts on its on-screen copy."""
+
+    # ``copy`` shadows ``BaseModel.copy``, so the field is ``copy_lines`` serialised as
+    # ``copy`` (``Department.validate_output`` dumps without ``by_alias``).
+    model_config = ConfigDict(
+        **StrictModel.model_config, validate_by_name=True, serialize_by_alias=True
+    )
+
     shot_id: Slug
     copy_lines: list[str] = Field(default_factory=list, alias="copy")
     verdicts: list[CopyVerdict] = Field(default_factory=list)
