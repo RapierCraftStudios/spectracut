@@ -32,7 +32,9 @@ REPO_ENV = "SPECTRACUT_REPO"
 LINUX_WHEELS = "$HOME/.cache/spectracut/wheels"
 WINDOWS_WHEELS = "spectracut/wheels"  # under $env:USERPROFILE
 BUILD_TIMEOUT = 900.0
-CHUNK_BYTES = 256 * 1024  # raw bytes per copy step; one stalled step costs one chunk
+CHUNK_BYTES = 64 * 1024  # raw bytes per copy step; one stalled step costs one chunk
+COPY_BASE_TIMEOUT = 120.0
+COPY_MIN_RATE = 32 * 1024  # bytes/s a copy must sustain; a chunk's timeout scales to it
 
 
 @dataclass(frozen=True)
@@ -154,6 +156,11 @@ def wheel_chunks(raw: bytes) -> list[bytes]:
     return [raw[i : i + CHUNK_BYTES] for i in range(0, len(raw), CHUNK_BYTES)] or [b""]
 
 
+def copy_timeout(nbytes: int) -> float:
+    """Seconds a chunk of ``nbytes`` may take: the base plus time at the minimum rate."""
+    return COPY_BASE_TIMEOUT + nbytes / COPY_MIN_RATE
+
+
 def wheel_copy_steps(facts: HostFacts, wheels: LocalWheels) -> list[Step]:
     """Copy each wheel to the host in chunks; its bytes travel base64-encoded on stdin only.
 
@@ -198,8 +205,9 @@ def wheel_copy_steps(facts: HostFacts, wheels: LocalWheels) -> list[Step]:
                     f"copy {wheel.name} part {n + 1}",
                     cmd,
                     shell,
-                    stdin=base64.b64encode(chunk).decode("ascii"),
+                    stdin=(payload := base64.b64encode(chunk).decode("ascii")),
                     kind="copy",
+                    timeout=copy_timeout(len(payload)),
                 )
             )
         if windows:
