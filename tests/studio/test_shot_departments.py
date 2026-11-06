@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 from spectracut.providers.base import VisionScore
+from spectracut.providers.schema import claude_output_schema
 from spectracut.queue.flamenco import WorkerTag
 from spectracut.queue.signing import (
     generate_keypair,
@@ -328,3 +329,73 @@ def test_shot_critic_fails_on_render_qa_and_delegates_other_kinds() -> None:
     assert critic(spec, {"node": "shots"}).passed
     assert not sd.shot_critic(0.6, inner)(spec, {"node": "shots"}).passed
     assert seen == ["script", "shots"]
+
+
+def _template_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """The ``template`` property of one planned shot, with ``$ref``s resolved."""
+    defs = schema.get("$defs", {})
+
+    def resolve(node: dict[str, Any]) -> dict[str, Any]:
+        ref = node.get("$ref")
+        return resolve(defs[ref.rsplit("/", 1)[-1]]) if isinstance(ref, str) else node
+
+    shot = resolve(resolve(schema["properties"]["shots"])["items"])
+    return resolve(shot["properties"]["template"])
+
+
+def test_shot_planner_schema_enumerates_every_registered_template() -> None:
+    sent, _wrap = claude_output_schema(sd.ShotPlanner.output_schema())
+    template = _template_schema(sent)
+    options = [template, *template.get("anyOf", [])]
+    enums = [o["enum"] for o in options if "enum" in o]
+    assert enums == [sorted(TEMPLATES)], template
+    assert {"type": "null"} in options  # a board that fits no template leaves it unset
+
+
+def test_board_that_fits_no_template_goes_to_the_scene_builder(tmp_path: Path) -> None:
+    plan = _plan(close={"template": None, "variant": None, "slots": {}})
+    plan["shots"][1]["scene_builder"] = "slow orbit around the glowing product"  # type: ignore[index, call-overload]
+    rig = Rig(tmp_path, plan)
+    report = rig.run()
+    assert "template_shots" in report.executed and not report.failed, report
+    out = sd.RenderedShots.model_validate(rig.graph.output("template_shots"))
+    assert [s.shot_id for s in out.shots] == ["open"]
+    assert [(s.shot_id, s.description) for s in out.scene_builder] == [
+        ("close", "slow orbit around the glowing product")
+    ]
+    final = sd.RenderedShots.model_validate(rig.graph.output("shots"))
+    assert final.scene_builder == out.scene_builder
+    # One preview job and one tier re-render, both for the template board only.
+    assert len(rig.fake.submitted) == 2
+
+
+@pytest.mark.parametrize(
+    "shot",
+    [
+        {"shot_id": "open"},
+        {"shot_id": "open", "template": "typography", "scene_builder": "a wide city shot"},
+        {"shot_id": "open", "template": "hero_object_move"},
+    ],
+)
+def test_plan_shot_needs_exactly_one_known_template_or_scene_builder(
+    shot: dict[str, JsonValue],
+) -> None:
+    with pytest.raises(ValidationError):
+        sd.TemplateShot.model_validate(shot)
+
+
+def test_motion_designer_prompt_lists_every_template() -> None:
+    prompt = sd.ShotPlanner.pack().prompt
+    for template_id in TEMPLATES:
+        assert f"`{template_id}`" in prompt, template_id
+    assert "scene_builder" in prompt
+
+
+def test_shot_critic_passes_a_scene_builder_only_record() -> None:
+    record: JsonValue = {
+        "shots": [],
+        "scene_builder": [{"shot_id": "open", "description": "a city"}],
+    }
+    assert sd.shot_critic(0.6)(sd.shot_nodes()[0], record).passed
+    with pytest.raises(ValidationError):
+        sd.RenderedShots.model_validate({"shots": []})
