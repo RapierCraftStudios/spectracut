@@ -9,6 +9,15 @@ from spectracut.studio.department import (
     DepartmentOutputError,
     SkillPack,
 )
+from spectracut.studio.facts import (
+    Decision,
+    FactsDraft,
+    FactsRecord,
+    FactsStore,
+    PreserveRow,
+    propose_failures,
+    recurring_findings,
+)
 from spectracut.studio.gates import Critic, CriticVerdict, GateDecision, GateMode, GatePolicy
 from spectracut.studio.graph import (
     ProductionGraph,
@@ -30,9 +39,13 @@ __all__ = [
     "CostEstimate",
     "Critic",
     "CriticVerdict",
+    "Decision",
     "Department",
     "DepartmentOutputError",
     "DepartmentRunner",
+    "FactsDraft",
+    "FactsRecord",
+    "FactsStore",
     "GateDecision",
     "GateMode",
     "GatePolicy",
@@ -42,6 +55,7 @@ __all__ = [
     "NodeSpec",
     "NodeState",
     "NodeStatus",
+    "PreserveRow",
     "Producer",
     "ProducerReport",
     "ProductionGraph",
@@ -58,5 +72,7 @@ __all__ = [
     "Usage",
     "available_profiles",
     "load_profile",
+    "propose_failures",
+    "recurring_findings",
     "node_key",
 ]

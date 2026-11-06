@@ -39,6 +39,8 @@ class CriticVerdict(StrictModel):
     passed: bool
     scores: dict[Slug, float] = Field(default_factory=dict)
     comment: str = ""
+    findings: tuple[Slug, ...] = ()
+    """Stable slugs of the problems raised; recurring ones feed the failure corpus."""
     usage: dict[Slug, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
     """Judge tokens this review used, by metric; the graph adds them to the node's ledger entry."""
 
