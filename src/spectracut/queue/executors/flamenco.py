@@ -54,14 +54,21 @@ FLAMENCO_STATUS: Final[dict[str, JobStatus]] = {
 class FlamencoJobFailed(RuntimeError):
     """The Flamenco job ended ``failed`` or ``canceled``."""
 
-    def __init__(self, flamenco_id: str, status: str) -> None:
+    def __init__(self, flamenco_id: str, status: str, *, usage: Usage | None = None) -> None:
         self.flamenco_id = flamenco_id
         self.status = status
+        self.usage = usage if usage is not None else Usage()
+        """GPU minutes the job held before it ended (submit to failure)."""
         super().__init__(f"flamenco job {flamenco_id} ended {status}")
 
 
 class FlamencoTimeout(RuntimeError):
     """The Flamenco job did not finish within the executor's timeout."""
+
+    def __init__(self, *args: object, usage: Usage | None = None) -> None:
+        super().__init__(*args)
+        self.usage = usage if usage is not None else Usage()
+        """GPU minutes the job held before the executor gave up (submit to timeout)."""
 
 
 class FlamencoApi(Protocol):
@@ -127,6 +134,9 @@ class FlamencoExecutor:
         if self._on_status is not None:
             self._on_status(job, status)
 
+    def _usage_since(self, started: float) -> Usage:
+        return Usage(gpu_minutes=max(0.0, self._clock() - started) / 60.0)
+
     def run(self, job: Job) -> JobResult:
         payload = job.payload
         envelope = JobEnvelope.model_validate(payload["envelope"])
@@ -163,12 +173,15 @@ class FlamencoExecutor:
                         "worker_tag": tag.name,
                     },
                     render_profile=job.render_profile,
-                    usage=Usage(gpu_minutes=max(0.0, self._clock() - started) / 60.0),
+                    usage=self._usage_since(started),
                 )
             if status is JobStatus.FAILED:
-                raise FlamencoJobFailed(flamenco_id, raw)
+                raise FlamencoJobFailed(flamenco_id, raw, usage=self._usage_since(started))
             self._observe(job, status)
             if self.timeout_s is not None and waited >= self.timeout_s:
-                raise FlamencoTimeout(f"flamenco job {flamenco_id} still {raw} after {waited}s")
+                raise FlamencoTimeout(
+                    f"flamenco job {flamenco_id} still {raw} after {waited}s",
+                    usage=self._usage_since(started),
+                )
             self._sleep(self.poll_interval)
             waited += self.poll_interval

@@ -24,8 +24,9 @@ from spectracut.queue.executors.base import (
 )
 from spectracut.queue.executors.hostpool import HostPoolExecutor, HostSlot
 from spectracut.queue.profile import RenderProfile, frame_cache_key
-from spectracut.queue.queue import Job, JobQueue, QueueStalled
-from spectracut.studio.ledger import Usage
+from spectracut.queue.queue import Job, JobFailed, JobQueue, QueueStalled
+from spectracut.studio import NodeSpec, NodeStatus, ProductionGraph, RunContext
+from spectracut.studio.ledger import Usage, usage_of
 
 RECIPE = "sha256:" + "a" * 64
 OTHER_RECIPE = "sha256:" + "b" * 64
@@ -208,6 +209,62 @@ def test_executor_accounts_gpu_minutes(make: MakeExecutor) -> None:
     result = ex.run(Job(id="g2", kind="model", resources=Resources(gpus=2)))
     assert result.usage.gpu_minutes == pytest.approx(4.0)
     assert result.usage.ai_usage == {"claude": 1}
+
+
+@EXECUTORS
+def test_executor_bills_gpu_minutes_on_failure(make: MakeExecutor) -> None:
+    clock = Clock()
+
+    def body(job: Job) -> JobResult:
+        clock.sleep(40 * 60)
+        raise RuntimeError("boom")
+
+    ex = make(body, cards=(CARD_12, CARD_8), clock=clock.mono)
+    req = Resources(gpus=2)
+    with pytest.raises(RuntimeError, match="boom") as info:
+        ex.run(Job(id="g3", kind="model", resources=req))
+    assert usage_of(info.value).gpu_minutes == pytest.approx(80.0)
+    assert ex.can_run_now(req)
+
+
+@EXECUTORS
+def test_executor_adds_lease_minutes_to_usage_the_failure_carries(make: MakeExecutor) -> None:
+    clock = Clock()
+
+    def body(job: Job) -> JobResult:
+        clock.sleep(60)
+        raise JobFailed("inner", usage=Usage(gpu_minutes=2.0, ai_usage={"claude": 3}))
+
+    ex = make(body, cards=(CARD_8,), clock=clock.mono)
+    with pytest.raises(JobFailed) as info:
+        ex.run(Job(id="g4", kind="model", resources=Resources(gpus=1)))
+    usage = usage_of(info.value)
+    assert usage.gpu_minutes == pytest.approx(3.0) and usage.ai_usage == {"claude": 3}
+
+
+@EXECUTORS
+def test_failed_gpu_job_minutes_reach_ledger(make: MakeExecutor) -> None:
+    clock = Clock()
+
+    def body(job: Job) -> JobResult:
+        clock.sleep(40 * 60)
+        raise RuntimeError("render host lost")
+
+    ex = make(body, cards=(CARD_12, CARD_8), clock=clock.mono)
+    q = JobQueue([ex], now=clock.now)
+    graph = ProductionGraph("prod-1", now=clock.now, clock=clock.mono)
+    graph.add_node(NodeSpec(id="shot-1", kind="render", department="lighting"))
+
+    def make_job(ctx: RunContext) -> Job:
+        return Job(id=f"{ctx.spec.id}-a{ctx.attempt}", kind="model", resources=Resources(gpus=2))
+
+    report = graph.run(q.as_runner(make_job, sleep=clock.sleep))
+    assert report.failed == ["shot-1"] and graph.status("shot-1") is NodeStatus.FAILED
+    assert "RuntimeError: render host lost" in (graph.state("shot-1").error or "")
+    (entry,) = graph.ledger.entries()
+    assert entry.outcome == "failed" and entry.gpu_minutes == pytest.approx(80.0)
+    assert graph.ledger.totals().gpu_minutes == pytest.approx(80.0)
+    assert q.job("shot-1-a1").failed_usage == Usage(gpu_minutes=80.0)
 
 
 @EXECUTORS

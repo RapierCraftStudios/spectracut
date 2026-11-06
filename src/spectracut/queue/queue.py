@@ -41,6 +41,7 @@ from spectracut.queue.executors.base import (
 from spectracut.queue.executors.flamenco import FlamencoExecutor
 from spectracut.queue.profile import RenderProfile
 from spectracut.studio.graph import RunContext, Runner, RunResult
+from spectracut.studio.ledger import Usage, usage_of
 from spectracut.studio.node import Tier
 
 __all__ = ["Job", "JobFailed", "JobQueue", "QueueStalled"]
@@ -52,6 +53,11 @@ _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 class JobFailed(RuntimeError):
     """A job driven through :meth:`JobQueue.as_runner` ended failed."""
+
+    def __init__(self, *args: object, usage: Usage | None = None) -> None:
+        super().__init__(*args)
+        self.usage = usage if usage is not None else Usage()
+        """What the failed run consumed (GPU minutes included), for the ledger."""
 
 
 class QueueStalled(RuntimeError):
@@ -78,6 +84,8 @@ class Job:
     attempts: int = 0
     error: str | None = None
     result: JobResult | None = None
+    failed_usage: Usage | None = None
+    """Usage the last failed attempt consumed (carried on its exception)."""
     status_history: list[JobStatus] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -202,9 +210,10 @@ class JobQueue:
             return False
         except Exception as exc:  # noqa: BLE001 - an executor failure fails the job
             job.error = f"{type(exc).__name__}: {exc}"
+            job.failed_usage = usage_of(exc)
             job.observe(JobStatus.FAILED)
             return True
-        job.result, job.error = result, None
+        job.result, job.error, job.failed_usage = result, None, None
         profile = result.render_profile or job.render_profile
         if self.cache is not None and job.recipe_hash and profile is not None:
             self.cache.put(job.recipe_hash, profile, result)
@@ -243,7 +252,10 @@ class JobQueue:
             self.submit(job)
             self.run_until_idle(sleep=sleep)
             if job.status is not JobStatus.SUCCEEDED or job.result is None:
-                raise JobFailed(f"job {job.id} {job.status.value}: {job.error}")
+                raise JobFailed(
+                    f"job {job.id} {job.status.value}: {job.error}",
+                    usage=job.failed_usage or Usage(),
+                )
             return RunResult(output=job.result.output, usage=job.result.usage)
 
         return runner

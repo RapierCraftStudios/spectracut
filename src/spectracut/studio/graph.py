@@ -31,7 +31,7 @@ from pydantic import AwareDatetime, Field, JsonValue
 
 from spectracut.spec._base import ContentHash, Slug, StrictModel, content_hash
 from spectracut.studio.gates import Critic, CriticVerdict, GateDecision, GateMode, GatePolicy
-from spectracut.studio.ledger import Ledger, LedgerEntry, Outcome, Usage
+from spectracut.studio.ledger import Ledger, LedgerEntry, Outcome, Usage, usage_of
 from spectracut.studio.node import NEEDS_BUILD, NodeSpec, NodeState, NodeStatus, Tier, node_key
 from spectracut.studio.profiles import QualityProfile
 
@@ -582,7 +582,9 @@ class ProductionGraph:
                 result = runner(ctx)
             except Exception as exc:  # noqa: BLE001 - a department failure is recorded, not raised
                 with self._lock:
-                    self._record(spec, tier, key, attempt, started_at, start, Usage(), "failed")
+                    self._record(
+                        spec, tier, key, attempt, started_at, start, usage_of(exc), "failed"
+                    )
                     self._set(spec.id, NodeStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
                 return NodeStatus.FAILED
             accepted = _Accepted(result.output, content_hash(result.output))
