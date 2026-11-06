@@ -29,18 +29,22 @@ from spectracut.spec.brand import BrandKit, load_brand_kit
 from spectracut.spec.recipe import Recipe
 from spectracut.studio.device_shot import referenced_assets
 from spectracut.templates import (
-    ASPECTS,
     END_CARD,
     HERO_OBJECT,
     LAPTOP,
     PHONE,
     TEMPLATES,
     TYPOGRAPHY,
+)
+from spectracut.templates.base import (
+    ASPECTS,
+    CAMERA,
+    VERTICAL_CAMERA,
     CameraVariant,
     Template,
     TemplateError,
+    swatch,
 )
-from spectracut.templates.base import CAMERA, VERTICAL_CAMERA, swatch
 from spectracut.templates.devices import DeviceSlots
 
 ROOT = Path(__file__).resolve().parents[2]

@@ -31,7 +31,8 @@ from spectracut.spec.brand import BrandKit, load_brand_kit
 from spectracut.spec.recipe import Recipe
 from spectracut.studio import device_shot as ds
 from spectracut.studio.node import Tier
-from spectracut.templates import LAPTOP, TEMPLATES, CameraVariant
+from spectracut.templates import LAPTOP, TEMPLATES
+from spectracut.templates.base import CameraVariant
 
 E2E = os.environ.get("SPECTRACUT_E2E") == "1" and bool(os.environ.get("SPECTRACUT_FLAMENCO_URL"))
 skip_unless_e2e = pytest.mark.skipif(

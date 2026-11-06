@@ -192,7 +192,7 @@ def swatch(kit: BrandKit, role: str) -> list[JsonValue]:
     return _rgb(swatches[role])
 
 
-def check_copy(kit: BrandKit, text: str) -> str:
+def require_clean_copy(kit: BrandKit, text: str) -> str:
     """Refuse on-screen ``text`` containing one of the kit's forbidden words."""
     folded = text.casefold()
     for word in kit.forbidden_words:

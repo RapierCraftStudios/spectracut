@@ -26,8 +26,8 @@ from spectracut.templates.base import (
     PinnedAsset,
     Template,
     TemplateError,
-    check_copy,
     font_arg,
+    require_clean_copy,
     swatch,
 )
 
@@ -63,7 +63,7 @@ def kit_logo(kit: BrandKit, logo: PinnedAsset | None) -> PinnedAsset | None:
 
 
 def _scene(kit: BrandKit, slots: EndCardSlots, pipeline: ColorPipeline) -> list[Call]:
-    text = check_copy(kit, slots.cta)
+    text = require_clean_copy(kit, slots.cta)
     logo = kit_logo(kit, slots.logo)
     calls: list[Call] = [
         (

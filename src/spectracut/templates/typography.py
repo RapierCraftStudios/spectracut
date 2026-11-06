@@ -23,8 +23,8 @@ from spectracut.templates.base import (
     Call,
     CameraVariant,
     Template,
-    check_copy,
     font_arg,
+    require_clean_copy,
     swatch,
 )
 
@@ -47,7 +47,7 @@ class TypeSlots(StrictModel):
 
 def _scene(kit: BrandKit, slots: TypeSlots, pipeline: ColorPipeline) -> list[Call]:
     del pipeline  # no emissive surfaces to calibrate
-    body = check_copy(kit, slots.body)
+    body = require_clean_copy(kit, slots.body)
     calls: list[Call] = [
         (
             "object.add_primitive",
