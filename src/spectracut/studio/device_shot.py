@@ -369,14 +369,37 @@ def _asset_manifest(source: Path) -> list[tuple[str, str]]:
     return sorted((p.relative_to(source).as_posix(), _sha256(p)) for p in files)
 
 
+def _pin(refs: dict[str, str], value: object) -> None:
+    if isinstance(value, dict):
+        path, sha = value.get("path"), value.get("sha256")
+        if isinstance(path, str) and isinstance(sha, str):
+            refs[path] = sha
+
+
 def referenced_assets(recipe: Recipe) -> dict[str, str]:
-    """Asset relpath -> pinned sha256 for every ``material.apply_screen`` step in ``recipe``."""
+    """Asset relpath -> pinned sha256 for every pinned asset ``recipe`` loads.
+
+    ``material.apply_screen`` images, ``device.add`` screen frames or movie,
+    ``world.set_hdri`` environments and ``text.add`` fonts.
+    """
     refs: dict[str, str] = {}
     for step in recipe.steps:
+        args = step.args
         if step.tool == "material.apply_screen":
-            image, sha = step.args.get("image"), step.args.get("image_sha256")
+            image, sha = args.get("image"), args.get("image_sha256")
             if isinstance(image, str) and isinstance(sha, str):
                 refs[image] = sha
+        elif step.tool == "device.add":
+            screen = args.get("screen")
+            if isinstance(screen, dict):
+                frames = screen.get("frames")
+                for frame in frames if isinstance(frames, list) else []:
+                    _pin(refs, frame)
+                _pin(refs, screen.get("movie"))
+        elif step.tool == "world.set_hdri":
+            _pin(refs, args)
+        elif step.tool == "text.add":
+            _pin(refs, args.get("font"))
     return refs
 
 
