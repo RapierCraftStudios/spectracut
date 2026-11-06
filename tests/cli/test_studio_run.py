@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -13,16 +15,18 @@ from typer.testing import CliRunner
 
 from spectracut.cli import studio as studio_mod
 from spectracut.cli.app import app
+from spectracut.edit.timeline import Edit
 from spectracut.providers.base import VisionScore
 from spectracut.providers.mock_text import MockTextProvider, instance_of
 from spectracut.queue.flamenco import WorkerTag
 from spectracut.queue.signing import generate_keypair, load_private_key
 from spectracut.spec.brief import AudienceProfile, Brief, ClaimSource, Persona, ProofPoint
-from spectracut.storyboard.models import Board, Storyboard
+from spectracut.storyboard.models import Board, Storyboard, StyleFrames
 from spectracut.studio import device_shot as ds
 from spectracut.studio.departments import all_departments
+from spectracut.studio.departments import art as art_depts
 from spectracut.studio.departments import shots as shot_depts
-from spectracut.studio.gates import GatePolicy
+from spectracut.studio.gates import GateMode, GatePolicy
 from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
 from spectracut.studio.node import NodeSpec
 from spectracut.studio.profiles import load_profile
@@ -91,9 +95,11 @@ def _respond(system: str, prompt: str, schema: dict[str, Any]) -> JsonValue:
 
 
 def test_approving_each_gate_builds_concept_then_script(
-    home: Path, brief_file: Path, monkeypatch: pytest.MonkeyPatch
+    home: Path, brief_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(studio_mod, "text_provider_factory", lambda: MockTextProvider(_respond))
+    # Style frames build beside the concept and render on the (fake) farm.
+    monkeypatch.setattr(studio_mod, "device_shot_factory", _fake_farm(tmp_path, FakeFlamenco(), []))
     created = runner.invoke(
         app, ["studio", "new", str(brief_file), "--id", "film", "--profile", "standard"]
     )
@@ -164,13 +170,65 @@ class Ticks:
         return self.t
 
 
+def _fake_farm(
+    tmp_path: Path, fake: FakeFlamenco, built: list[str]
+) -> Callable[[studio_mod.Production], studio_mod.DeviceShotDeps]:
+    """A ``device_shot_factory`` on ``fake``; records each production it builds for."""
+    private, _public = generate_keypair()
+
+    def factory(production: studio_mod.Production) -> studio_mod.DeviceShotDeps:
+        built.append(production.id)
+        config = ds.DeviceShotConfig(
+            flamenco_url="http://fake",
+            shared=tmp_path / "shared",
+            worker_tag=TAG,
+            assets_dir=str(tmp_path / "a"),
+        )
+        return studio_mod.DeviceShotDeps(
+            config=config,
+            client=fake,
+            key=load_private_key(private),
+            judge=MockJudge(),
+            options=ds.ExecutorOptions(clock=Ticks(), sleep=lambda _s: None, poll_interval=0.0),
+        )
+
+    return factory
+
+
+SCRIPT_OUT: dict[str, Any] = {
+    "concept_id": "concept-1",
+    "lines": [{"beat": "hook", "vo": "Send a URL."}, {"beat": "cta"}],
+}
+ART_OUT: dict[str, Any] = {
+    "mood_board": [{"ref": "clean studio product shot", "take": "soft key light"}],
+    "palette": {"swatches": {"ink": "#101820", "signal": "#00c2a8"}},
+    "materials": ["matte anodised aluminium"],
+    "look": {"id": "clean"},
+}
+FRAMES_OUT: dict[str, Any] = {
+    "frames": [
+        {"id": "hero", "description": "Dashboard hero", "prompt": "clean dashboard on a plinth"},
+        {"id": "cta", "description": "End card", "prompt": "logo on dark ink"},
+    ]
+}
+
+
 class _FakeDepartments:
-    """Stands in for DepartmentRunner: canned storyboard, animatic and shot plan."""
+    """Stands in for DepartmentRunner: canned script, art, frames, storyboard and shot plan."""
+
+    kinds: list[str] = []
 
     def __init__(self, *_a: object, **_kw: object) -> None:
         pass
 
     def __call__(self, ctx: RunContext) -> RunResult:
+        _FakeDepartments.kinds.append(ctx.spec.kind)
+        if ctx.spec.kind == "script":
+            return RunResult(output=SCRIPT_OUT)
+        if ctx.spec.kind == art_depts.ART_DIRECTION:
+            return RunResult(output=ART_OUT)
+        if ctx.spec.kind == art_depts.STYLE_FRAMES:
+            return RunResult(output=FRAMES_OUT)
         if ctx.spec.kind == shot_depts.SHOT_PLAN:
             plan = {"shots": [{"shot_id": "open", "template": "end-card", "slots": {"cta": "Go"}}]}
             return RunResult(output=plan)
@@ -210,41 +268,74 @@ def test_standard_shot_nodes_render_on_the_farm_through_default_runner(
     assert stored.spec(shot_depts.SHOTS).params == params
 
     fake = FakeFlamenco()
-    private, _public = generate_keypair()
     built: list[str] = []
-
-    def factory(production: studio_mod.Production) -> studio_mod.DeviceShotDeps:
-        built.append(production.id)
-        config = ds.DeviceShotConfig(
-            flamenco_url="http://fake",
-            shared=tmp_path / "shared",
-            worker_tag=TAG,
-            assets_dir=str(tmp_path / "a"),
-        )
-        return studio_mod.DeviceShotDeps(
-            config=config,
-            client=fake,
-            key=load_private_key(private),
-            judge=MockJudge(),
-            options=ds.ExecutorOptions(clock=Ticks(), sleep=lambda _s: None, poll_interval=0.0),
-        )
-
-    monkeypatch.setattr(studio_mod, "device_shot_factory", factory)
+    monkeypatch.setattr(studio_mod, "device_shot_factory", _fake_farm(tmp_path, fake, built))
     monkeypatch.setattr(studio_mod, "DepartmentRunner", _FakeDepartments)
     # The same storyboard -> animatic -> template_shots -> shots edges the breakdown wires.
     graph = ProductionGraph("film", profile=load_profile("standard"), gates=GatePolicy())
     graph.add_nodes(
         [
+            NodeSpec(id="script", kind="script", department="script-writer"),
             NodeSpec(id="storyboard", kind="storyboard", department="storyboard"),
-            NodeSpec(id="animatic", kind="animatic", department="animatic-editor"),
+            NodeSpec(
+                id="animatic",
+                kind="animatic",
+                department="animatic-editor",
+                inputs=("script", "storyboard"),
+            ),
             *shot_depts.shot_nodes(params=params),
         ]
     )
     run = studio_mod.default_runner(studio_mod.Production("film", store), graph)
     report = graph.run(run, critic=shot_depts.shot_critic(0.6))
-    assert report.executed == ["storyboard", "animatic", "template_shots", "shots"], report
+    assert report.executed == ["script", "storyboard", "animatic", "template_shots", "shots"], (
+        report
+    )
     assert built == ["film"]
     assert len(fake.submitted) == 2
     assert all(job["worker_tag"] == "tag-1" for job in fake.submitted)
     again = graph.run(run, critic=shot_depts.shot_critic(0.6))
     assert not again.executed and len(fake.submitted) == 2
+
+
+def test_standard_style_frames_render_on_the_farm_through_default_runner(
+    home: Path, brief_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = runner.invoke(app, ["studio", "new", str(brief_file), "--id", "film"])
+    assert created.exit_code == 0, created.output
+    store = ProductionStore(home)
+    fake = FakeFlamenco()
+    built: list[str] = []
+    monkeypatch.setattr(studio_mod, "device_shot_factory", _fake_farm(tmp_path, fake, built))
+    monkeypatch.setattr(studio_mod, "DepartmentRunner", _FakeDepartments)
+    monkeypatch.setattr(_FakeDepartments, "kinds", [])
+    auto = {k: GateMode.AUTO for k in art_depts.PREPRODUCTION_GATES}
+    graph = ProductionGraph(
+        "film", profile=load_profile("standard"), gates=GatePolicy(defaults=auto)
+    )
+    graph.add_nodes(
+        [
+            NodeSpec(id="brief", kind="brief", department="strategist"),
+            NodeSpec(id="script", kind="script", department="script-writer", inputs=("brief",)),
+            *art_depts.preproduction_nodes(),
+        ]
+    )
+    run = studio_mod.default_runner(studio_mod.Production("film", store), graph)
+    report = graph.run(run)
+    assert report.failed == [], {n: graph.state(n).error for n in report.failed}
+    assert art_depts.STYLE_FRAMES in report.executed and art_depts.ANIMATIC in report.executed
+
+    frames = StyleFrames.model_validate(graph.output(art_depts.STYLE_FRAMES))
+    assert len(frames.frames) == 2
+    for frame in frames.frames:
+        assert frame.render is not None and frame.tier == "final"
+        assert Path(frame.render.path).is_file()
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", frame.render.sha256)
+        assert frame.render.provider == "blender-farm"
+    assert built == ["film"]
+    assert len(fake.submitted) == len(frames.frames)
+    assert all(job["worker_tag"] == "tag-1" for job in fake.submitted)
+    assert graph.ledger.totals(art_depts.STYLE_FRAMES).gpu_minutes > 0
+
+    Edit.model_validate(graph.output(art_depts.ANIMATIC))
+    assert art_depts.ANIMATIC not in _FakeDepartments.kinds
