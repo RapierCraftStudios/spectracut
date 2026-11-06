@@ -17,7 +17,7 @@ from spectracut.providers.local.runtime import ModelRuntime
 KIND = "foley"
 
 
-def build_prompt(
+def build_foley_prompt(
     description: str, *, size: str = "medium", duration_s: float, palette: str = ""
 ) -> str:
     """The foley prompt: the action to voice, matched to the picture it is given."""
@@ -27,7 +27,7 @@ def build_prompt(
     return ", ".join(parts)
 
 
-def provider(
+def foley_provider(
     runtime: ModelRuntime | None = None, *, config: Mapping[str, Any] | None = None
 ) -> LocalProvider:
     """The configured local foley provider (the mock in mock mode)."""

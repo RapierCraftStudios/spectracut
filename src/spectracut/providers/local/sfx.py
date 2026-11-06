@@ -17,7 +17,7 @@ from spectracut.providers.local.runtime import ModelRuntime
 KIND = "sfx"
 
 
-def build_prompt(
+def build_sfx_prompt(
     description: str, *, size: str = "medium", duration_s: float, palette: str = ""
 ) -> str:
     """The prompt for one cue: what it is, how big, how long, in the Look's sonic palette."""
@@ -27,7 +27,7 @@ def build_prompt(
     return ", ".join(parts)
 
 
-def provider(
+def sfx_provider(
     runtime: ModelRuntime | None = None, *, config: Mapping[str, Any] | None = None
 ) -> LocalProvider:
     """The configured local sound-effect provider (the mock in mock mode)."""

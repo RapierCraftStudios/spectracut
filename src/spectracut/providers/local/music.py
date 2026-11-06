@@ -17,7 +17,7 @@ from spectracut.providers.local.runtime import ModelRuntime
 KIND = "music"
 
 
-def build_prompt(
+def build_music_prompt(
     description: str,
     *,
     size: str = "medium",
@@ -34,7 +34,7 @@ def build_prompt(
     return ", ".join(parts)
 
 
-def provider(
+def music_provider(
     runtime: ModelRuntime | None = None, *, config: Mapping[str, Any] | None = None
 ) -> LocalProvider:
     """The configured local music provider (the mock in mock mode)."""

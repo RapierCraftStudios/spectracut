@@ -33,7 +33,7 @@ Scorer = Callable[[Path], float]
 """Scores one candidate file; higher is better. Plug in CLAP or the listening critic here."""
 
 KINDS = ("sfx", "foley", "music")
-_PROMPTS = {"sfx": sfx.build_prompt, "foley": foley.build_prompt, "music": music.build_prompt}
+_PROMPTS = {"sfx": sfx.build_sfx_prompt, "foley": foley.build_foley_prompt, "music": music.build_music_prompt}
 DEFAULT_CANDIDATES = 3
 
 
@@ -58,7 +58,7 @@ class CueRequest:
 
 
 @dataclass(frozen=True)
-class Candidate:
+class GeneratedCandidate:
     index: int
     path: Path
     score: float
@@ -73,7 +73,7 @@ class Selection:
     model: str
     version: str
     prompt: str
-    candidates: tuple[Candidate, ...]
+    candidates: tuple[GeneratedCandidate, ...]
     chosen: int
     """Index into ``candidates`` of the winner."""
     spec: SoundSpec = field(compare=False)
@@ -187,11 +187,11 @@ def generate_scene(
 
             def run(
                 job: tuple[CueRequest, int], provider: LocalProvider = provider, kind: str = kind
-            ) -> Candidate:
+            ) -> GeneratedCandidate:
                 r, i = job
                 path = out_dir / kind / f"{r.cue_id}.c{i}.wav"
                 provider.generate(_prompt(r), path, **_options(r, r.seed + i))
-                return Candidate(i, path, float(scorer(path)))
+                return GeneratedCandidate(i, path, float(scorer(path)))
 
             if parallel == 1:
                 made = [run(j) for j in jobs]
@@ -203,7 +203,7 @@ def generate_scene(
     return [done[i] for i in ids]
 
 
-def _select(r: CueRequest, made: list[Candidate], model: str, version: str) -> Selection:
+def _select(r: CueRequest, made: list[GeneratedCandidate], model: str, version: str) -> Selection:
     chosen = max(range(len(made)), key=lambda i: (made[i].score, -i))
     prompt = _prompt(r)
     spec = SoundSpec(
