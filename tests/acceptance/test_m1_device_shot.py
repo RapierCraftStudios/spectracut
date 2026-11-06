@@ -271,9 +271,17 @@ class MockJudge:
 
     def __init__(self) -> None:
         self.frames: list[Path] = []
+        self.last_usage: dict[str, int] = {}
 
     def score(self, frame_path: Path, rubric: str) -> VisionScore:
         self.frames.append(frame_path)
+        # The shape of a Claude envelope's ``usage``: a cached prompt plus a fresh frame.
+        self.last_usage = {
+            "input_tokens": 100,
+            "cache_read_input_tokens": 3000,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 40,
+        }
         return VisionScore(score=0.92, notes="screen legible")
 
 
@@ -393,6 +401,8 @@ def test_studio_run_renders_preview_and_final_and_status_shows_ledger(
     minutes = re.search(r"gpu_minutes=([0-9.]+)", status.output)
     assert minutes is not None and float(minutes.group(1)) > 0
     assert "vision_qa_requests=1" in status.output
+    assert "vision_qa_input_tokens=3100" in status.output
+    assert "vision_qa_output_tokens=40" in status.output
     assert private not in status.output
     for path in (home / "productions").rglob("*"):
         if path.is_file():

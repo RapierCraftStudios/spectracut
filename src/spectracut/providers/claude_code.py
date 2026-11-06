@@ -26,6 +26,7 @@ from spectracut.providers.base import (
     ProviderError,
     SignInState,
     VisionScore,
+    context_tokens,
     looks_like_auth_failure,
     run_cli,
     subscription_env,
@@ -123,12 +124,6 @@ def parse_judge_output(stdout: str) -> tuple[VisionScore, dict[str, Any]]:
     )
 
 
-def context_tokens(usage: dict[str, Any]) -> int:
-    """Input-side tokens of one call (fresh + cache read + cache creation)."""
-    keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
-    return sum(int(usage.get(k) or 0) for k in keys)
-
-
 class ClaudeCodeVisionJudge:
     """Scores frames through headless Claude Code and the Claude sign-in."""
 
@@ -140,6 +135,7 @@ class ClaudeCodeVisionJudge:
         self.last_usage: dict[str, Any] = {}
 
     def score(self, frame_path: Path, rubric: str) -> VisionScore:
+        self.last_usage = {}
         frame_path = Path(frame_path)
         if not frame_path.is_file():
             raise ProviderError(CLI, f"frame not found: {frame_path}")

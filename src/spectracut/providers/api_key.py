@@ -128,8 +128,10 @@ class AnthropicKeyVisionJudge:
         self.model = model
         self.opener: Opener = opener or urllib.request.urlopen
         self.timeout = timeout
+        self.last_usage: dict[str, Any] = {}
 
     def score(self, frame_path: Path, rubric: str) -> VisionScore:
+        self.last_usage = {}
         frame_path = Path(frame_path)
         if not frame_path.is_file():
             raise ProviderError("anthropic", f"frame not found: {frame_path}")
@@ -166,6 +168,8 @@ class AnthropicKeyVisionJudge:
             env_var="ANTHROPIC_API_KEY",
             timeout=self.timeout,
         )
+        usage = data.get("usage")
+        self.last_usage = dict(usage) if isinstance(usage, dict) else {}
         blocks = data.get("content")
         text = "".join(
             str(b.get("text", ""))
