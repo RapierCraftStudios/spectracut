@@ -4,17 +4,18 @@
 from __future__ import annotations
 
 import math
+import re
 import urllib.request
 from array import array
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 from pydantic import JsonValue
 
-from spectracut.audio.ardour import BUILD_OK, EXPORT_OK
+from spectracut.audio.ardour import BUILD_OK, EXPORT_OK, SOURCE_LINE
 from spectracut.audio.events import edit_events
 from spectracut.audio.render import Channels, read_wav, write_wav
 from spectracut.audio.vo import VoiceOver
@@ -44,6 +45,7 @@ FPS = 24
 SECONDS = 8
 CUTS = (48, 96)
 END_CARD = 144  # 6 s: the music's final hit lands here
+PICKUP_S = 0.25
 
 SCRIPT: dict[str, JsonValue] = {
     "concept_id": "launch",
@@ -103,7 +105,8 @@ class CountingVoice(MockElevenLabs):
 
 
 class ClickMusic:
-    """Local music model stand-in: 120 BPM kicks, a big hit at 6 s, then a ring-out."""
+    """Local music model stand-in: a 0.25 s pickup, then 120 BPM kicks, a big hit
+    three bars in (6.25 s) and a ring-out, so the cut needs real bar edits."""
 
     name = "click-music"
     rate = 8000
@@ -116,8 +119,9 @@ class ClickMusic:
         n = int(float(options["duration_s"]) * self.rate)
         data = array("f", bytes(4 * n))
         for k in range(12):  # beats every 0.5 s up to the hit
-            self._kick(data, round(k * 0.5 * self.rate), 0.9 if k % 4 == 0 else 0.4, 0.06)
-        self._kick(data, round(6.0 * self.rate), 1.0, 0.45)
+            at = round((PICKUP_S + k * 0.5) * self.rate)
+            self._kick(data, at, 0.9 if k % 4 == 0 else 0.4, 0.06)
+        self._kick(data, round((PICKUP_S + 6.0) * self.rate), 1.0, 0.45)
         write_wav(Path(out_path), [data], self.rate, float_format=True)
         return Path(out_path)
 
@@ -136,7 +140,8 @@ class PassThrough:
 
 
 class FakeArdour:
-    """Stands in for ardour8-lua: an empty session, then a master at ``lufs``."""
+    """Stands in for ardour8-lua: the placeholder of every layer the build script
+    creates (as tests/audio/test_recipe.py does), then a master at ``lufs``."""
 
     rate = 8000
 
@@ -145,15 +150,29 @@ class FakeArdour:
 
     def run(self, script: Path, workdir: Path, xdg: Path, marker: str) -> str:
         if marker == BUILD_OK:
-            (workdir / "session" / "interchange" / "session" / "audiofiles").mkdir(parents=True)
-            return BUILD_OK
+            audiofiles = workdir / "session" / "interchange" / "session" / "audiofiles"
+            audiofiles.mkdir(parents=True)
+            lua = script.read_text(encoding="utf-8")
+            match = re.search(r"create_session\(.*, (\d+)\)", lua)
+            assert match is not None
+            sr = int(match.group(1))
+            lines = []
+            for name, length in re.findall(r'new_layer\("([^"]+)", "[^"]*", \d+, (\d+),', lua):
+                for ch, side in enumerate("LR"):
+                    file = f"ph_{name}%{side}.wav"
+                    silent = array("f", bytes(4 * int(length)))
+                    write_wav(audiofiles / file, [silent], sr, float_format=True)
+                    lines.append(f"{SOURCE_LINE}\t{name}\t{ch}\t{file}")
+            return "\n".join([*lines, BUILD_OK])
         n = self.rate * 2
         tone = [math.sin(2 * math.pi * 997 * i / self.rate) for i in range(n)]
         gain = 10 ** ((self.lufs - integrated_loudness(self.rate, [tone, tone])) / 20)
         master = array("f", (x * gain for x in tone))
         for name in ("master", "dx", "mx", "fx"):
             chan = master if name == "master" else array("f", bytes(4 * n))
-            write_wav(workdir / "export" / name / "mix.wav", [chan, chan], self.rate)
+            write_wav(
+                workdir / "export" / name / "mix.wav", [chan, chan], self.rate, float_format=False
+            )
         return "SPECTRACUT_ROUTING_OK\nSPECTRACUT_AUTOMATION_OK\n" + EXPORT_OK
 
 
@@ -244,8 +263,10 @@ def test_sound_design_cues_land_on_the_cuts_and_are_generated_locally(tmp_path: 
     design = SoundDesign.model_validate(result.output)
     cut_frames = sorted(e.frame for e in edit_events(_edit()) if e.kind == "cut")
     assert cut_frames == list(CUTS)
-    assert sorted({c.frame for c in design.recipe.cues}) == list(CUTS)
-    starts = {c.id: c.frame + c.offset_frames for c in design.recipe.cues}
+    frames = [c.frame for c in design.recipe.cues]
+    assert all(f is not None for f in frames)  # placed on edit frames, not markers
+    assert sorted({f for f in frames if f is not None}) == list(CUTS)
+    starts = {c.id: (c.frame or 0) + c.offset_frames for c in design.recipe.cues}
     assert design.cues and {c.frame for c in design.cues} == set(starts.values())
     for cue in design.cues:
         assert cue.provenance.source == "generated"
