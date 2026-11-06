@@ -87,7 +87,8 @@ def bounded(record: FactsRecord) -> FactsRecord:
                 for r in record.rejected[:MAX_ENTRIES]
             ),
             "findings": tuple(
-                FactFinding(key=f.key, example=_clip(f.example)) for f in record.findings[:MAX_ENTRIES]
+                FactFinding(key=f.key, example=_clip(f.example))
+                for f in record.findings[:MAX_ENTRIES]
             ),
         }
     )
