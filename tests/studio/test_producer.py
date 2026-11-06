@@ -143,14 +143,19 @@ def test_every_profile_graph_satisfies_department_input_kinds() -> None:
 
 
 def test_preproduction_edges_match_the_art_node_builder() -> None:
+    from spectracut.spec.brand import load_brand_kit
     from spectracut.studio.departments.art import preproduction_nodes
 
+    kit = load_brand_kit(Path(__file__).parents[2] / "brands" / "alterlab" / "brand-kit.yaml")
     for name in ("standard", "premium", "cinema"):
         profile = load_profile(name)
         graph = Producer().new_graph(
-            "p", Producer().breakdown(_brief(), profile, duration_s=60), profile
+            "p", Producer().breakdown(_brief(), profile, duration_s=60, brand_kit=kit), profile
         )
-        for built in preproduction_nodes("brief", "script"):
+        built_nodes = preproduction_nodes(
+            "brief", "script", concept_id="concept", brand_kit_id="brand_kit"
+        )
+        for built in built_nodes:
             spec = graph.spec(built.id)
             assert (spec.kind, spec.department, spec.inputs) == (
                 built.kind,

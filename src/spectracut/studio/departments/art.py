@@ -173,7 +173,9 @@ class StyleFrameArtist(Department):
         concept = Concept.model_validate(raw)
         refs = {_norm(r) for r in (*concept.structure, *concept.visuals)}
         frames = StyleFrames.model_validate(output)
-        off = [f"{f.id}={f.concept_ref!r}" for f in frames.frames if _norm(f.concept_ref) not in refs]
+        off = [
+            f"{f.id}={f.concept_ref!r}" for f in frames.frames if _norm(f.concept_ref) not in refs
+        ]
         if off:
             raise DepartmentOutputError(
                 cls.name,

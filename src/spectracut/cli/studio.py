@@ -21,7 +21,7 @@ from spectracut.studio import device_shot as ds
 from spectracut.studio import intake
 from spectracut.studio.autonomy import AutonomyPolicy, BudgetApproval, load_autonomy
 from spectracut.studio.department import Department
-from spectracut.studio.departments import all_departments
+from spectracut.studio.departments import all_departments, art
 from spectracut.studio.departments import shots as shot_depts
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
@@ -133,6 +133,8 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
 
     def run(ctx: RunContext) -> RunResult:
         nonlocal shots
+        if ctx.spec.kind == art.BRAND_KIT:
+            return art.build_brand_kit(ctx)
         if ctx.spec.kind not in (shot_depts.TEMPLATE_SHOTS, shot_depts.SHOTS):
             return text(ctx)
         with lock:
@@ -308,7 +310,15 @@ def new(
             specs = breakdown(brief, quality)
             specs = [_with_params(s, shot_params) if s.kind == ds.SHOT_STAGE else s for s in specs]
         else:
-            specs = list(Producer(DEPARTMENTS).breakdown(brief, quality, duration_s=duration).nodes)
+            kit = (
+                BrandKit.model_validate(template_params[ds.BRAND_KIT_PARAM])
+                if template_params
+                else None
+            )
+            plan = Producer(DEPARTMENTS).breakdown(
+                brief, quality, duration_s=duration, brand_kit=kit
+            )
+            specs = list(plan.nodes)
             if template_params:
                 specs = [
                     s.model_copy(update={"params": {**s.params, **template_params}})
@@ -325,6 +335,8 @@ def new(
     except (ProductionError, ValueError, OSError) as exc:
         raise _fail(str(exc)) from exc
     typer.echo(f"production {pid} created at {path}")
+    if shot_params is None and brand_kit is None and art.ART_DIRECTION in quality.stages:
+        typer.echo("no --brand-kit: art direction has no brand kit to draw from")
     est = estimate(graph, DEPARTMENTS)
     for line in est.lines():
         typer.echo(line)

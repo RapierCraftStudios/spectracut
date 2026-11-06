@@ -39,7 +39,12 @@ Class methods: `pack()` (the loaded `SkillPack`, cached per class), `rubric()`
 `model_dump(mode="json")`) and `validate_inputs(node_id, inputs, kinds)` (each
 input's kind must be declared and its output must validate against its model).
 Both raise `DepartmentOutputError(department, node_id, detail)`, a `ValueError`
-whose detail summarises the pydantic errors.
+whose detail summarises the pydantic errors. `check_output(node_id, output,
+inputs, kinds)` checks an already validated output against the node's inputs
+(an input's kind is `kinds.get(id, id)`, as in `validate_inputs`). The default
+does nothing; a department that overrides it raises `DepartmentOutputError` when
+its output contradicts its inputs (the art director's palette and Look against
+the brand kit, the style frames against the approved concept).
 
 ### Skill pack
 
@@ -91,7 +96,8 @@ front. For each node it:
 4. **Holds capacity.** A GPU department first takes a GPU lease, then every
    task takes an AI slot around `provider.complete(...)`. Both are
    `threading.BoundedSemaphore`s sized by `CapacityLimits(ai ≥ 1, gpu_leases ≥ 0)`.
-5. **Validates the output** with `validate_output`. A failure raises
+5. **Validates the output** with `validate_output`, then checks it against the
+   node's inputs with `check_output`. A failure of either raises
    `DepartmentOutputError`, so the graph records the node `failed` with the
    error and a `failed` ledger entry, and accepts no output. There is no
    automatic retry: revisions are for Critic verdicts.
@@ -184,7 +190,21 @@ departments (#28) and Critic scoring (#30).
 `preproduction_nodes()` wires them: `art-director` (kind `art_direction`: mood
 board, palette, Look), `style-frame-artist` (`style_frames`), `storyboard`
 (`storyboard`: a board per shot with camera and action) and `animatic-editor`
-(`animatic`: an `Edit`). `PreproductionRunner` wraps the department runner:
+(`animatic`: an `Edit`). `preproduction_nodes(concept_id=..., brand_kit_id=...)`
+also wires the approved concept and the brand kit into art direction, style frames
+and storyboard, in each department's declared input order.
+
+The brand kit is a graph node of kind `brand_kit` (department `brand-kit`,
+`brand_kit_node(kit)`), built in code by `build_brand_kit` from the node's
+`brand_kit` param, never by a text provider. `Producer.breakdown(...,
+brand_kit=kit)` adds it for any profile, right after the first stage
+(`estimate.breakdown(seeds=...)`); `studio new --brand-kit` passes the kit. The
+art director's palette must use the kit's swatch hexes and its Look must be one
+of the kit's Looks; each style frame's `concept_ref` must be one of the concept's
+beats (`structure`) or signature visuals (`visuals`). `check_output` enforces
+both, so a violation fails the node.
+
+`PreproductionRunner` wraps the department runner (it also builds `brand_kit`):
 
 - **Style frames** build at the final tier (the runner refuses a lower one).
   Each frame is explored on an image provider, then rendered by an injected
