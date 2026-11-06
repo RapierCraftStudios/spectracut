@@ -1,0 +1,31 @@
+{
+  "id": "alterlab-launch",
+  "product": "AlterLab",
+  "audience": {
+    "personas": [
+      {
+        "name": "Platform engineer",
+        "description": "Builds data pipelines that need clean, structured pages from the web and has no time to babysit scrapers."
+      },
+      {
+        "name": "Product lead",
+        "description": "Ships features on top of web data and needs a dependable source without growing an in-house scraping team."
+      }
+    ],
+    "prior_knowledge": "Has written or maintained a scraper and knows how often they break.",
+    "objections": ["Another API to integrate", "Will it keep working when sites change?"],
+    "platform_expectations": {
+      "web": "A clear 60 s film with the product interface as the hero",
+      "social": "Short vertical and square cut-downs that land the message in the first seconds"
+    }
+  },
+  "sources": [
+    {"id": "alterlab-site", "title": "AlterLab website", "ref": "https://alterlab.io"}
+  ],
+  "proof_points": [
+    {"claim": "One API turns any web page into clean, structured data.", "source_id": "alterlab-site"},
+    {"claim": "Teams send a URL and get structured results back.", "source_id": "alterlab-site"}
+  ],
+  "offer": "Start free",
+  "cta": "Try AlterLab"
+}
