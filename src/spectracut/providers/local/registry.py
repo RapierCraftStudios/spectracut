@@ -67,7 +67,9 @@ MODELS: dict[str, ModelSpec] = {
             version="1.5",
             licence="MIT",
         ),
-        ModelSpec("kokoro-82m", "tts", "kokoro", 2, source="hexgrad/Kokoro-82M", licence="Apache-2.0"),
+        ModelSpec(
+            "kokoro-82m", "tts", "kokoro", 2, source="hexgrad/Kokoro-82M", licence="Apache-2.0"
+        ),
         ModelSpec(
             "qwen2.5-omni-7b-q4",
             "critic",

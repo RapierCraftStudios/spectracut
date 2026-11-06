@@ -24,14 +24,18 @@ from pathlib import Path
 MODEL_ROOT_ENV = "SPECTRACUT_MODEL_ROOT"
 """Overrides the host model root on the model host."""
 LINUX_MODEL_ROOT = "$HOME/.local/share/spectracut/models"
-WINDOWS_MODEL_ROOT = "$env:LOCALAPPDATA/spectracut/models"
-"""The Windows default in PowerShell form (``%LOCALAPPDATA%\\spectracut\\models``)."""
+WINDOWS_MODEL_ROOT = "%LOCALAPPDATA%\\spectracut\\models"
+"""The Windows default (setup steps spell it ``$env:LOCALAPPDATA/spectracut/models``)."""
 
 TORCH_INDEX = "https://download.pytorch.org/whl/cu128"
 """CUDA torch for the model host (PyPI's Windows torch is CPU-only)."""
 HF_CLI = "huggingface-hub==1.33.0"
 """The ``hf`` CLI setup downloads weights with (the version the extras pin)."""
 SRC_DIR = "src"
+BIN_DIR = "bin"
+LLAMA_CPP_RELEASE = "b12110"
+"""The llama.cpp release measured on legion (local-model-selection.md, CUDA 12.4 build)."""
+_LLAMA_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_CPP_RELEASE}"
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,8 @@ class ModelAsset:
     git_repo: str | None = None
     git_commit: str | None = None
     gated: bool = False
+    windows_archives: tuple[str, ...] = ()
+    """Release zips setup expands into ``.../<model id>/bin`` on a Windows model host."""
 
 
 ASSETS: dict[str, ModelAsset] = {
@@ -153,6 +159,10 @@ ASSETS: dict[str, ModelAsset] = {
                 ),
             ),
             6.3,
+            windows_archives=(
+                f"{_LLAMA_URL}/llama-{LLAMA_CPP_RELEASE}-bin-win-cuda-12.4-x64.zip",
+                f"{_LLAMA_URL}/cudart-llama-bin-win-cuda-12.4-x64.zip",
+            ),
         ),
         ModelAsset(
             "diffusers-gguf",
@@ -215,6 +225,7 @@ def model_version(model_id: str) -> str:
     parts = [f"{w.repo}@{w.revision}:{','.join(w.include)}" for w in a.weights]
     if a.git_repo:
         parts.append(f"{a.git_repo}@{a.git_commit}")
+    parts += a.windows_archives
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:12]
 
 
@@ -237,8 +248,10 @@ def default_model_root() -> Path:
 
 __all__ = [
     "ASSETS",
+    "BIN_DIR",
     "HF_CLI",
     "LINUX_MODEL_ROOT",
+    "LLAMA_CPP_RELEASE",
     "MODEL_ROOT_ENV",
     "SRC_DIR",
     "TORCH_INDEX",

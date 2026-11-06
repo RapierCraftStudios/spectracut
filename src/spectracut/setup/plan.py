@@ -37,6 +37,18 @@ from spectracut.setup.manifest import (
     StepKind,
     StepRunner,
 )
+from spectracut.setup.model_assets import (
+    ASSETS,
+    BIN_DIR,
+    LINUX_MODEL_ROOT,
+    MODEL_ROOT_ENV,
+    SRC_DIR,
+    TORCH_INDEX,
+    ModelAsset,
+    asset_for,
+    extras_digest,
+    model_version,
+)
 from spectracut.setup.storage import (
     CONTROL,
     GPU_SCRIPT,
@@ -703,6 +715,175 @@ def _registration_step(f: HostFacts, public_key: str) -> Step:
     return replace(step, component=HOST_REG_PSEUDO, version=version)
 
 
+MODELS_DEPS = "models-deps"
+"""State component of the family extras installed into the spectracut-host tool venv."""
+MODEL_PREFIX = "model:"
+"""State component prefix of one model's weights (``model:<model id>``)."""
+DISK_MARGIN_GB = 2.0
+_WINDOWS_ROOT_PS = "$env:LOCALAPPDATA/spectracut/models"
+DEPS_TIMEOUT = 7200.0
+"""Seconds for the family extras install (CUDA torch alone is a few GB)."""
+SECONDS_PER_GB = 4096.0
+"""Weights download allowance per GB: 256 KiB/s, below legion's slowest measured link."""
+
+
+def models_deps_version(host_pin: str) -> str:
+    """The models-deps state version: the spectracut-host pin plus the extras digest."""
+    return f"{host_pin}+{extras_digest()}"
+
+
+def _models_deps_step(f: HostFacts, wheels: LocalWheels, host_pin: str) -> Step:
+    """Reinstall spectracut-host with every family extra and CUDA torch (cu128 index)."""
+    fields = install_fields(f.os, wheels)
+    extras = ",".join(a.extra for a in ASSETS.values())
+    args = (
+        "tool install --force --python 3.12 --python-preference only-managed "
+        f'--find-links "{fields["wheel_dir"]}" --with "{fields["spectracut_wheel"]}" '
+        f"--index {TORCH_INDEX} --index-strategy unsafe-best-match "
+        f'"{fields["host_wheel"]}[{extras}]"'
+    )
+    if f.os == "windows":
+        cmd = (
+            "$ErrorActionPreference = 'Stop'; "
+            f"& (Join-Path $env:USERPROFILE '.local/bin/uv.exe') {args}; "
+            "if ($LASTEXITCODE -ne 0) "
+            '{ throw "installing the model families failed ($LASTEXITCODE)" }'
+        )
+    else:
+        cmd = f'set -e; "$HOME/.local/bin/uv" {args}'
+    return Step(
+        f.name,
+        f"models:deps:{f.name}",
+        "install the local model families into spectracut-host",
+        cmd,
+        "powershell" if f.os == "windows" else "sh",
+        component=MODELS_DEPS,
+        version=models_deps_version(host_pin),
+        kind="install",
+        timeout=DEPS_TIMEOUT,
+    )
+
+
+def _need_kib(asset: ModelAsset) -> int:
+    return int((asset.size_gb + DISK_MARGIN_GB) * 1024 * 1024)
+
+
+def _sh_weights(model_id: str, asset: ModelAsset) -> str:
+    need = asset.size_gb + DISK_MARGIN_GB
+    lines = [
+        f'set -e; root="${{{MODEL_ROOT_ENV}:-{LINUX_MODEL_ROOT}}}"',
+        f'd="$root/{asset.family}/{model_id}"; mkdir -p "$d"',
+        "avail=$(df -Pk \"$d\" | awk 'NR==2 {print $4}')",
+        f'if [ "$avail" -lt {_need_kib(asset)} ]; then echo "not enough disk for {model_id}: '
+        f'need {need:g} GB free at $d, have $((avail / 1048576)) GB" >&2; exit 1; fi',
+        'hf="$("$HOME/.local/bin/uv" tool dir)/spectracut-host/bin/hf"',
+    ]
+    for w in asset.weights:
+        inc = "".join(f" --include {shlex.quote(p)}" for p in w.include)
+        lines.append(
+            f'"$hf" download {w.repo} --revision {w.revision} --local-dir "$d/{w.subdir}"{inc}'
+        )
+    if asset.git_repo:
+        src = f'"$d/{SRC_DIR}"'
+        lines += [
+            f"[ -d {src}/.git ] || git clone --quiet {asset.git_repo} {src}",
+            f"git -C {src} fetch --quiet origin {asset.git_commit}",
+            f"git -C {src} checkout --quiet --detach {asset.git_commit}",
+        ]
+    return "; ".join(lines)
+
+
+def _ps_weights(model_id: str, asset: ModelAsset) -> str:
+    need = asset.size_gb + DISK_MARGIN_GB
+    check = 'if ($LASTEXITCODE -ne 0) {{ throw "{what} failed ($LASTEXITCODE)" }}'
+    lines = [
+        "$ErrorActionPreference = 'Stop'",
+        f"$root = if ($env:{MODEL_ROOT_ENV}) {{ $env:{MODEL_ROOT_ENV} }} "
+        f'else {{ "{_WINDOWS_ROOT_PS}" }}',
+        f"$d = Join-Path $root '{asset.family}/{model_id}'",
+        "New-Item -ItemType Directory -Force $d | Out-Null",
+        "$free = (Get-PSDrive (Get-Item $d).PSDrive.Name).Free",
+        f'if ($free -lt {_need_kib(asset) * 1024}) {{ throw "not enough disk for {model_id}: '
+        f'need {need:g} GB free at $d, have $([math]::Floor($free / 1GB)) GB" }}',
+        "$uv = Join-Path $env:USERPROFILE '.local/bin/uv.exe'",
+        "$hf = Join-Path (& $uv tool dir | Out-String).Trim() 'spectracut-host/Scripts/hf.exe'",
+    ]
+    for w in asset.weights:
+        inc = "".join(f" --include '{p}'" for p in w.include)
+        lines += [
+            f"& $hf download {w.repo} --revision {w.revision} "
+            f"--local-dir (Join-Path $d '{w.subdir}'){inc}",
+            check.format(what=f"downloading {w.repo}"),
+        ]
+    if asset.git_repo:
+        lines += [
+            f"$src = Join-Path $d '{SRC_DIR}'",
+            f"if (-not (Test-Path (Join-Path $src '.git'))) "
+            f"{{ git clone --quiet {asset.git_repo} $src; "
+            + check.format(what=f"cloning {asset.git_repo}")
+            + " }",
+            f"git -C $src fetch --quiet origin {asset.git_commit}",
+            check.format(what=f"fetching {asset.git_commit}"),
+            f"git -C $src checkout --quiet --detach {asset.git_commit}",
+            check.format(what=f"checking out {asset.git_commit}"),
+        ]
+    if asset.windows_archives:
+        lines += [
+            f"$bin = Join-Path $d '{BIN_DIR}'",
+            "New-Item -ItemType Directory -Force $bin | Out-Null",
+        ]
+        for url in asset.windows_archives:
+            lines += [
+                "$z = Join-Path $env:TEMP 'spectracut-model.zip'",
+                f"Invoke-WebRequest '{url}' -OutFile $z -UseBasicParsing",
+                "Expand-Archive -Force $z $bin; Remove-Item $z",
+            ]
+    return "; ".join(lines)
+
+
+def model_weights_step(f: HostFacts, model_id: str) -> Step:
+    """Pull ``model_id``'s pinned weights (and source) onto ``f`` after a free-disk check."""
+    asset = asset_for(model_id)
+    windows = f.os == "windows"
+    return Step(
+        f.name,
+        f"models:weights:{model_id}:{f.name}",
+        f"download {model_id} weights (~{asset.size_gb:g} GB)",
+        _ps_weights(model_id, asset) if windows else _sh_weights(model_id, asset),
+        "powershell" if windows else "sh",
+        component=f"{MODEL_PREFIX}{model_id}",
+        version=model_version(model_id),
+        kind="install",
+        timeout=1800.0 + asset.size_gb * SECONDS_PER_GB,
+    )
+
+
+def model_steps(
+    f: HostFacts, have: Mapping[str, str], wheels: LocalWheels, *, reinstalled: bool
+) -> tuple[list[Step], list[str]]:
+    """The model host's deps step and the weights steps it lacks, with any disk note.
+
+    The deps step reruns when its version changed or spectracut-host is reinstalled in
+    this plan (a reinstall drops the extras).
+    """
+    from spectracut.providers.local.registry import MODELS
+
+    steps: list[Step] = []
+    deps = _models_deps_step(f, wheels, wheels.pin)
+    if reinstalled or have.get(MODELS_DEPS) != deps.version:
+        steps.append(deps)
+    missing = [m for m in MODELS if have.get(f"{MODEL_PREFIX}{m}") != model_version(m)]
+    steps += [model_weights_step(f, m) for m in missing]
+    need = sum(asset_for(m).size_gb for m in missing)
+    notes = []
+    if missing and f.free_gb < need:
+        notes.append(
+            f"{f.name} has {f.free_gb:g} GB free but the missing model weights need about "
+            f"{need:g} GB: free space at the model root or set {MODEL_ROOT_ENV}"
+        )
+    return steps, notes
+
+
 def build_plan(
     manifest: Manifest,
     set_id: str,
@@ -714,12 +895,15 @@ def build_plan(
     *,
     wheels: LocalWheels,
     signing_public_key: str | None = None,
+    model_host: str | None = None,
 ) -> Plan:
     """Steps still needed to bring every machine to ``set_id`` with storage on ``storage``.
 
     ``storage`` defaults to the target already in ``state``, else the wired
     machine with the most free space. With ``signing_public_key`` every worker gets
-    a ``host.json`` registering it under its registered name with that key.
+    a ``host.json`` registering it under its registered name with that key. With
+    ``model_host`` (a probed worker) the model families and pinned weights are installed
+    there too, after every other step.
     """
     target = storage or state.storage or choose_default_host(facts)
     layout = state.layout()
@@ -777,6 +961,16 @@ def build_plan(
     if MISSING_CONFIG in facts[CONTROL].missing and not storage_steps:
         storage_steps = manager_config_steps(facts, layout)
     steps += storage_steps
+    model_notes: list[str] = []
+    if model_host is not None and model_host in workers and model_host in facts:
+        reinstall = f"install:spectracut-host:{model_host}"
+        msteps, model_notes = model_steps(
+            facts[model_host],
+            state.hosts.get(model_host, HostState()).components,
+            wheels,
+            reinstalled=any(s.id == reinstall for s in steps),
+        )
+        steps += msteps
     return Plan(
         set_id,
         tuple(steps),
@@ -786,6 +980,7 @@ def build_plan(
             + migration_notes(target, state.storage, facts, state.storage_layout)
             + wifi_warnings(facts, target)
             + worker_task_notes(facts, need_task)
+            + model_notes
         ),
         layout,
     )

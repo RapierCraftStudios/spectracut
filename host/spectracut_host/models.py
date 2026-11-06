@@ -16,6 +16,7 @@ import importlib
 import json
 import os
 import re
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterator
@@ -45,9 +46,7 @@ FAMILIES = (
     "clap",
 )
 #: The installed factory of every registry family (``spectracut setup`` installs its deps).
-FACTORIES: dict[str, str] = {
-    f: f"{LOADERS_PACKAGE}.{f.replace('-', '_')}:load" for f in FAMILIES
-}
+FACTORIES: dict[str, str] = {f: f"{LOADERS_PACKAGE}.{f.replace('-', '_')}:load" for f in FAMILIES}
 
 
 def entry_env(family: str) -> str:
@@ -75,7 +74,7 @@ def load_model(spec: ModelSpec) -> ModelSession:
             raise ProviderError(
                 "local",
                 f"family {spec.family} not installed on this host ({spec.id}: {exc}): "
-                "run `spectracut setup`",
+                f"run `spectracut setup` (or set {var}=module:factory)",
             ) from exc
         raise ProviderError("local", f"cannot load {entry} for {spec.id}: {exc}") from exc
     except (ImportError, AttributeError) as exc:
@@ -84,9 +83,10 @@ def load_model(spec: ModelSpec) -> ModelSession:
 
 
 def _try_lock(fh: IO[bytes]) -> bool:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
+        fh.seek(0)
         try:
             msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError:
@@ -102,7 +102,7 @@ def _try_lock(fh: IO[bytes]) -> bool:
 
 
 def _unlock(fh: IO[bytes]) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         fh.seek(0)
@@ -176,7 +176,8 @@ def serve(
         finally:
             session, loaded = None, None
             if held is not None:
-                held, h = None, held
+                h = held
+                held = None
                 h.__exit__(None, None, None)
 
     try:
