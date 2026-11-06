@@ -134,7 +134,8 @@ carried over are Pixal3D (MIT) and Hunyuan3D-2.1 (Tencent Hunyuan Community) for
 
 ## Still to measure on legion
 
-Each of these runs is ready to go; only the download is missing. Run `push.sh legion`, then on `legion`:
+Each of these runs is ready to go; only the download is missing. These runs are tracked in #216, and image-to-3D
+and motion in #125. Run `push.sh legion`, then on `legion`:
 
 | Job | Run | Download |
 |---|---|---|
