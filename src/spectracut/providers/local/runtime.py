@@ -35,6 +35,8 @@ class ModelSpec:
     """Weights source (a Hugging Face repo id or a path)."""
     version: str = ""
     """Model release or variant, recorded as provenance of what it generates."""
+    licence: str = ""
+    """Weights licence (SPDX id or licence name) from docs/engineering/local-model-selection.md."""
 
     @property
     def resources(self) -> Resources:

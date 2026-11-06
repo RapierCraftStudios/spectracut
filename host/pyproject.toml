@@ -8,6 +8,46 @@ dependencies = [
     "spectracut",
 ]
 
+# One extra per local model family (spectracut.providers.local.registry). ``spectracut
+# setup`` installs all of them into the spectracut-host tool venv on the model host, with
+# CUDA torch from the PyTorch cu128 index (spectracut.setup.plan). Measured pins:
+# transformers 5.0.0 (scripts/model_check/sfx_moss.py; later releases break MOSS), shared
+# by every family so all nine install into one venv; torch 2.11.0 is the newest build on
+# the cu128 index for Windows. The rest are exact pins of the releases current at the time
+# of #296. llama-cpp runs the llama.cpp b12110 release binary (setup.model_assets).
+[project.optional-dependencies]
+ezaudio = [
+    "torch==2.11.0", "torchaudio==2.11.0", "transformers==5.0.0", "einops==0.8.2",
+    "soundfile==0.14.0", "huggingface-hub==1.33.0",
+]
+moss-sfx = [
+    "torch==2.11.0", "torchaudio==2.11.0", "transformers==5.0.0", "accelerate==1.15.0",
+    "bitsandbytes==0.50.2", "soundfile==0.14.0", "huggingface-hub==1.33.0",
+]
+hunyuan-foley = [
+    "torch==2.11.0", "torchaudio==2.11.0", "torchvision==0.26.0", "transformers==5.0.0",
+    "diffusers==0.42.1", "accelerate==1.15.0", "einops==0.8.2", "soundfile==0.14.0",
+    "huggingface-hub==1.33.0",
+]
+ace-step = [
+    "torch==2.11.0", "torchaudio==2.11.0", "transformers==5.0.0", "diffusers==0.42.1",
+    "accelerate==1.15.0", "soundfile==0.14.0", "huggingface-hub==1.33.0",
+]
+kokoro = [
+    "torch==2.11.0", "kokoro==0.9.4; python_version < '3.13'", "soundfile==0.14.0",
+    "huggingface-hub==1.33.0",
+]
+llama-cpp = ["soundfile==0.14.0", "huggingface-hub==1.33.0"]
+diffusers-gguf = [
+    "torch==2.11.0", "transformers==5.0.0", "diffusers==0.42.1", "accelerate==1.15.0",
+    "gguf==0.19.0", "huggingface-hub==1.33.0",
+]
+faster-whisper = ["faster-whisper==1.2.1", "soundfile==0.14.0", "huggingface-hub==1.33.0"]
+clap = [
+    "torch==2.11.0", "torchaudio==2.11.0", "transformers==5.0.0", "soundfile==0.14.0",
+    "huggingface-hub==1.33.0",
+]
+
 [project.scripts]
 spectracut-host = "spectracut_host.agent:main"
 
