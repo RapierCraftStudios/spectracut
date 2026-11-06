@@ -53,8 +53,10 @@ class TemplateError(ValueError):
 class PinnedAsset(StrictModel):
     """A file under the host assets dir, pinned by sha256 (the host re-checks the hash)."""
 
-    path: NonEmptyStr
-    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    path: NonEmptyStr = Field(description="The file's path relative to the assets dir.")
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] = Field(
+        description="The file's sha256 hex digest."
+    )
 
     @field_validator("path")
     @classmethod

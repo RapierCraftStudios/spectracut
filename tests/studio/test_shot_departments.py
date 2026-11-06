@@ -258,7 +258,12 @@ def test_rerun_with_no_change_hits_the_cache_and_a_changed_board_rebuilds(tmp_pa
         (_plan(close={"slots": {}}), "close"),
         ({"shots": _plan()["shots"][:1]}, "unplanned: close"),  # type: ignore[index]
         (
-            {"shots": [*_plan()["shots"], {"shot_id": "extra", "template": "typography"}]},  # type: ignore[misc]
+            {
+                "shots": [
+                    *_plan()["shots"],  # type: ignore[misc]
+                    {"shot_id": "extra", "template": "typography", "slots": {"body": "Hi"}},
+                ]
+            },
             "not on the storyboard: extra",
         ),
     ],
@@ -331,25 +336,117 @@ def test_shot_critic_fails_on_render_qa_and_delegates_other_kinds() -> None:
     assert seen == ["script", "shots"]
 
 
-def _template_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """The ``template`` property of one planned shot, with ``$ref``s resolved."""
+def _resolver(schema: dict[str, Any]) -> Any:
     defs = schema.get("$defs", {})
 
     def resolve(node: dict[str, Any]) -> dict[str, Any]:
         ref = node.get("$ref")
         return resolve(defs[ref.rsplit("/", 1)[-1]]) if isinstance(ref, str) else node
 
+    return resolve
+
+
+def _branches(schema: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each branch of one planned shot in the schema sent to Claude, ``$ref``s resolved."""
+    resolve = _resolver(schema)
     shot = resolve(resolve(schema["properties"]["shots"])["items"])
-    return resolve(shot["properties"]["template"])
+    return [resolve(b) for b in shot["oneOf"]]
 
 
 def test_shot_planner_schema_enumerates_every_registered_template() -> None:
     sent, _wrap = claude_output_schema(sd.ShotPlanner.output_schema())
-    template = _template_schema(sent)
-    options = [template, *template.get("anyOf", [])]
-    enums = [o["enum"] for o in options if "enum" in o]
-    assert enums == [sorted(TEMPLATES)], template
-    assert {"type": "null"} in options  # a board that fits no template leaves it unset
+    branches = _branches(sent)
+    consts = [b["properties"]["template"].get("const") for b in branches]
+    assert sorted(c for c in consts if c is not None) == sorted(TEMPLATES)
+    # A board that fits no template leaves it unset (the scene-builder branch).
+    scene = [b for b in branches if b["title"] == "SceneBuilderPlan"]
+    assert [b["properties"]["template"]["type"] for b in scene] == ["null"]
+    assert scene[0]["required"] == ["shot_id", "scene_builder"]
+
+
+def test_shot_planner_schema_carries_each_template_slot_schema() -> None:
+    sent, _wrap = claude_output_schema(sd.ShotPlanner.output_schema())
+    resolve = _resolver(sent)
+    by_id = {
+        b["properties"]["template"]["const"]: b
+        for b in _branches(sent)
+        if "const" in b["properties"]["template"]
+    }
+    for template_id, template in TEMPLATES.items():
+        branch = by_id[template_id]
+        assert set(branch["required"]) >= {"shot_id", "template", "slots"}, template_id
+        slots = resolve(branch["properties"]["slots"])
+        model = template.slots.model_json_schema()
+        assert slots["title"] == model["title"], template_id
+        assert set(slots["properties"]) == set(model["properties"]), template_id
+        assert sorted(slots.get("required", [])) == sorted(model.get("required", [])), template_id
+        assert slots["additionalProperties"] is False, template_id
+        described = [k for k, v in slots["properties"].items() if "description" in v]
+        assert described, template_id
+        variants = branch["properties"]["variant"]["anyOf"][0]["enum"]
+        assert variants == [v.id for v in template.variants], template_id
+    typography = resolve(by_id["typography"]["properties"]["slots"])
+    assert typography["required"] == ["body"]
+    assert "description" in typography["properties"]["body"]
+    # The live failure (#293): brief fields and notes in slots, the copy line missing.
+    bad = {"source_id": "brief-1", "notes": "insert the request"}
+    with pytest.raises(ValidationError, match="body"):
+        sd.ShotPlan.model_validate(
+            {"shots": [{"shot_id": "s02b", "template": "typography", "slots": bad}]}
+        )
+    with pytest.raises(ValidationError, match="source_id"):
+        sd.ShotPlan.model_validate(
+            {
+                "shots": [
+                    {"shot_id": "s02b", "template": "typography", "slots": {"body": "Hi", **bad}}
+                ]
+            }
+        )
+
+
+_SHA = "0" * 64
+SAMPLE_SLOTS: dict[str, dict[str, JsonValue]] = {
+    "device-laptop": {
+        "screen_frames": [{"path": "ui/frame_0001.png", "sha256": _SHA}],
+        "hdri": {"path": "hdri/studio.exr", "sha256": _SHA},
+    },
+    "device-phone": {
+        "screen_movie": {"path": "ui/app.mp4", "sha256": _SHA},
+        "hdri": {"path": "hdri/studio.exr", "sha256": _SHA},
+    },
+    "end-card": {"cta": "Start free"},
+    "hero-object": {"primitive": "uv_sphere", "animation": "reveal"},
+    "typography": {"body": "One API, any page", "mode": "cutout"},
+}
+
+
+def test_every_registered_template_has_a_sample_reply() -> None:
+    assert set(SAMPLE_SLOTS) == set(TEMPLATES)
+
+
+@pytest.mark.parametrize("template_id", sorted(SAMPLE_SLOTS))
+def test_sample_reply_per_template_validates_and_normalises(template_id: str) -> None:
+    variant = TEMPLATES[template_id].variants[-1].id
+    shot: dict[str, JsonValue] = {
+        "shot_id": "open",
+        "template": template_id,
+        "variant": variant,
+        "slots": SAMPLE_SLOTS[template_id],
+    }
+    plan = sd.ShotPlan.model_validate({"shots": [shot]})
+    normalised = sd._planned_shot(plan.shots[0])
+    assert normalised.template == template_id and normalised.variant == variant
+    assert normalised.slots == SAMPLE_SLOTS[template_id]
+    TEMPLATES[template_id].slots.model_validate(normalised.slots)
+    # The reply round-trips through the runner's dump (department.validate_output).
+    dumped = sd.ShotPlanner.validate_output("template_shots", {"shots": [shot]})
+    sd.ShotPlan.model_validate(dumped)
+
+
+def test_recorded_launch_film_shot_plan_still_validates() -> None:
+    recorded = Path(__file__).parents[1] / "acceptance" / "recorded" / "ShotPlan.json"
+    plan = sd.ShotPlan.model_validate(json.loads(recorded.read_text()))
+    assert {sd._planned_shot(s).template for s in plan.shots} == {"typography"}
 
 
 def test_board_that_fits_no_template_goes_to_the_scene_builder(tmp_path: Path) -> None:

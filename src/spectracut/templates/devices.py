@@ -35,14 +35,28 @@ def _deg(*angles: float) -> tuple[float, float, float]:
 
 
 class DeviceSlots(StrictModel):
-    """The screen content (frames or a movie) and the HDRI world."""
+    """The screen content (frames or a movie) and the HDRI world (``hdri``, required:
+    the pinned HDRI file lighting the device)."""
 
-    screen_frames: list[PinnedAsset] | None = Field(default=None, min_length=1)
-    screen_movie: PinnedAsset | None = None
-    frame_offset: Annotated[int, Field(ge=0)] = 0
+    screen_frames: list[PinnedAsset] | None = Field(
+        default=None,
+        min_length=1,
+        description="Pinned product UI frames shown on the screen; set this or screen_movie.",
+    )
+    screen_movie: PinnedAsset | None = Field(
+        default=None,
+        description="A pinned product UI movie shown on the screen; set this or screen_frames.",
+    )
+    frame_offset: Annotated[int, Field(ge=0)] = Field(
+        default=0, description="Frames to skip at the start of the screen content."
+    )
     hdri: PinnedAsset
-    hdri_strength: Annotated[float, Field(ge=0, le=1000)] = 1.0
-    hdri_rotation: Annotated[float, Field(ge=-360, le=360)] = 0.0
+    hdri_strength: Annotated[float, Field(ge=0, le=1000)] = Field(
+        default=1.0, description="Brightness of the HDRI world."
+    )
+    hdri_rotation: Annotated[float, Field(ge=-360, le=360)] = Field(
+        default=0.0, description="Rotation of the HDRI world in degrees."
+    )
 
     @model_validator(mode="after")
     def _one_screen(self) -> DeviceSlots:

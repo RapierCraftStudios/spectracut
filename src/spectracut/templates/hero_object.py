@@ -34,13 +34,27 @@ def kit_mesh_path(kit: BrandKit) -> str | None:
 class HeroSlots(StrictModel):
     """The mesh (glTF path, else the kit's hero mesh, else a primitive) and its animation."""
 
-    mesh: str | None = Field(default=None, pattern=r"^[\w./-]+\.(glb|gltf)$")
-    primitive: Primitive = "cube"
-    animation: Animation = "turntable"
-    frame_start: Annotated[int, Field(ge=1)] = 1
-    frame_end: Annotated[int, Field(ge=2)] = 120
-    seed: Annotated[int, Field(ge=0, le=2**31 - 1)] = 0
-    pieces: Annotated[int, Field(ge=2, le=256)] = 24
+    mesh: str | None = Field(
+        default=None,
+        pattern=r"^[\w./-]+\.(glb|gltf)$",
+        description="A glTF file under the assets dir; unset uses the kit's hero mesh.",
+    )
+    primitive: Primitive = Field(
+        default="cube", description="The stand-in shape when there is no mesh."
+    )
+    animation: Animation = Field(default="turntable", description="How the object moves.")
+    frame_start: Annotated[int, Field(ge=1)] = Field(
+        default=1, description="First frame of the animation."
+    )
+    frame_end: Annotated[int, Field(ge=2)] = Field(
+        default=120, description="Last frame of the animation."
+    )
+    seed: Annotated[int, Field(ge=0, le=2**31 - 1)] = Field(
+        default=0, description="Seed for the shatter and assemble pieces."
+    )
+    pieces: Annotated[int, Field(ge=2, le=256)] = Field(
+        default=24, description="Number of pieces for shatter and assemble."
+    )
 
     @field_validator("mesh")
     @classmethod

@@ -26,15 +26,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Annotated, ClassVar, Self
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, Self, Union
 
 from pydantic import (
     AfterValidator,
     BaseModel,
+    Discriminator,
     Field,
     JsonValue,
+    Tag,
     ValidationError,
     WithJsonSchema,
+    create_model,
     model_validator,
 )
 
@@ -54,7 +57,7 @@ from spectracut.studio.graph import RunContext, Runner, RunResult
 from spectracut.studio.ledger import Usage
 from spectracut.studio.node import NodeSpec, Tier
 from spectracut.templates import TEMPLATES
-from spectracut.templates.base import RESOLUTIONS, TemplateAspect, require_clean_copy
+from spectracut.templates.base import RESOLUTIONS, Template, TemplateAspect, require_clean_copy
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -112,10 +115,106 @@ class TemplateShot(StrictModel):
         return self
 
 
+SCENE_BUILDER = "scene_builder"
+"""Tag of the planner branch for a board no template fits."""
+
+
+class SceneBuilderPlan(StrictModel):
+    """A planned board no template fits: a concrete shot description for the scene builder."""
+
+    shot_id: Slug
+    template: None = Field(default=None, description="Unset: no template fits this board.")
+    scene_builder: str = Field(
+        min_length=1,
+        description="The shot for the scene builder: subject, setting, camera, motion and mood.",
+    )
+    variant: None = None
+    aspect: TemplateAspect = "16:9"
+    slots: dict[str, JsonValue] = Field(default_factory=dict, max_length=0)
+
+
+def _literal(values: tuple[str, ...]) -> Any:
+    return Literal.__getitem__(values)
+
+
+def _model_name(template_id: str) -> str:
+    return "".join(p.capitalize() for p in template_id.replace("_", "-").split("-")) + "Plan"
+
+
+def _template_plan(template: Template[Any]) -> type[StrictModel]:
+    """The planner branch for ``template``: its id, its variants and its slot model."""
+    variants = tuple(v.id for v in template.variants)
+    model: type[StrictModel] = create_model(
+        _model_name(template.id),
+        __base__=StrictModel,
+        __doc__=f"A board rendered from the `{template.id}` template; slots follow its schema.",
+        shot_id=(Slug, ...),
+        template=(_literal((template.id,)), ...),
+        variant=(_literal(variants) | None, Field(default=None, description="Camera variant.")),
+        aspect=(TemplateAspect, "16:9"),
+        slots=(template.slots, ...),
+    )
+    return model
+
+
+def _route(value: Any) -> str:
+    """The planner branch a shot belongs to: its template id, else the scene builder."""
+    raw = value.get("template") if isinstance(value, Mapping) else getattr(value, "template", None)
+    return SCENE_BUILDER if raw is None else str(raw)
+
+
+TEMPLATE_PLANS: dict[str, type[StrictModel]] = {
+    tid: _template_plan(t) for tid, t in sorted(TEMPLATES.items())
+}
+"""One planner branch per registered template, keyed by template id."""
+
+ShotPlanEntry: Any = Annotated[
+    Union[  # noqa: UP007 - built from the registry at import time
+        tuple(
+            [Annotated[m, Tag(tid)] for tid, m in TEMPLATE_PLANS.items()]
+            + [Annotated[SceneBuilderPlan, Tag(SCENE_BUILDER)]]
+        )
+    ],
+    Discriminator(
+        _route,
+        custom_error_type="unknown_template",
+        custom_error_message=(
+            f"unknown template; known: {', '.join(sorted(TEMPLATES))} "
+            f"(or leave template unset and set scene_builder)"
+        ),
+    ),
+]
+"""One planned board: a branch per registered template (``template`` -> its slot model),
+or the scene builder. The JSON schema sent to the planner carries every slot schema."""
+
+
 class ShotPlan(StrictModel):
     """The template shot, or scene-builder description, for every storyboard board."""
 
-    shots: list[TemplateShot] = Field(min_length=1)
+    shots: list[ShotPlanEntry] = Field(min_length=1)
+
+
+def _planned_shot(entry: BaseModel) -> TemplateShot:
+    """``entry`` as the runner's :class:`TemplateShot` (only the values the planner set)."""
+    return TemplateShot.model_validate(entry.model_dump(mode="json", exclude_unset=True))
+
+
+def _plan_errors(exc: ValidationError, raw: JsonValue) -> str:
+    """The plan's validation errors, each named by its shot id and branch."""
+    shots = raw.get("shots") if isinstance(raw, dict) else None
+    lines: list[str] = []
+    for err in exc.errors():
+        loc = list(err["loc"])
+        where = ".".join(str(p) for p in loc)
+        if len(loc) >= 2 and loc[0] == "shots" and isinstance(loc[1], int):
+            shot = shots[loc[1]] if isinstance(shots, list) and loc[1] < len(shots) else None
+            sid = shot.get("shot_id") if isinstance(shot, dict) else None
+            field = ".".join(str(p) for p in loc[3:]) or ".".join(str(p) for p in loc[2:])
+            where = f"shot {sid!r} ({loc[2] if len(loc) > 2 else '?'}): {field}"
+        got = err.get("input")
+        shown = "" if isinstance(got, (dict, list)) else f" (got {got!r})"
+        lines.append(f"{where}: {err['msg']}{shown}")
+    return "; ".join(lines)
 
 
 class ShotQA(StrictModel):
@@ -325,8 +424,8 @@ class ShotRunner:
 
     # ---- template_shots ------------------------------------------------------------
 
-    def plan(self, ctx: RunContext) -> tuple[ShotPlan, Usage]:
-        """Ask the text runner for a :class:`ShotPlan` covering every board."""
+    def plan(self, ctx: RunContext) -> tuple[list[TemplateShot], Usage]:
+        """Ask the text runner for a :class:`ShotPlan` covering every board, in board order."""
         if STORYBOARD not in ctx.inputs:
             raise ValueError(
                 f"node {ctx.spec.id!r} needs a storyboard input (compose shot_nodes after "
@@ -338,9 +437,11 @@ class ShotRunner:
         try:
             plan = ShotPlan.model_validate(result.output)
         except ValidationError as exc:
-            raise ValueError(f"node {ctx.spec.id!r}: shot plan is invalid: {exc}") from None
+            detail = _plan_errors(exc, result.output)
+            raise ValueError(f"node {ctx.spec.id!r}: shot plan is invalid: {detail}") from None
+        shots = [_planned_shot(entry) for entry in plan.shots]
         boards = [b.shot_id for b in storyboard.boards]
-        planned = [s.shot_id for s in plan.shots]
+        planned = [s.shot_id for s in shots]
         unknown = sorted(set(planned) - set(boards))
         if unknown:
             raise ValueError(f"shot plan has shots not on the storyboard: {', '.join(unknown)}")
@@ -350,16 +451,14 @@ class ShotRunner:
         if len(set(planned)) != len(planned):
             raise ValueError("shot plan has more than one shot per board")
         order = {b: n for n, b in enumerate(boards)}
-        return plan.model_copy(
-            update={"shots": sorted(plan.shots, key=lambda s: order[s.shot_id])}
-        ), result.usage
+        return sorted(shots, key=lambda s: order[s.shot_id]), result.usage
 
     def _template_shots(self, ctx: RunContext) -> RunResult:
-        plan, usage = self.plan(ctx)
+        shots, usage = self.plan(ctx)
         kit = _kit(ctx.spec)
         builds: list[tuple[TemplateShot, Recipe, Recipe]] = []
         pending: list[SceneBuilderShot] = []
-        for shot in plan.shots:
+        for shot in shots:
             if shot.template is None:
                 assert shot.scene_builder is not None
                 pending.append(
