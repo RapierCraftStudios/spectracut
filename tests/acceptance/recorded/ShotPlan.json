@@ -1,0 +1,46 @@
+{
+  "shots": [
+    {
+      "shot_id": "problem",
+      "template": "typography",
+      "slots": {
+        "body": "Scrapers break"
+      }
+    },
+    {
+      "shot_id": "one-call",
+      "template": "typography",
+      "slots": {
+        "body": "Send a URL"
+      }
+    },
+    {
+      "shot_id": "results",
+      "template": "typography",
+      "slots": {
+        "body": "Structured data back"
+      }
+    },
+    {
+      "shot_id": "any-page",
+      "template": "typography",
+      "slots": {
+        "body": "One API, any page"
+      }
+    },
+    {
+      "shot_id": "no-babysitting",
+      "template": "typography",
+      "slots": {
+        "body": "No babysitting"
+      }
+    },
+    {
+      "shot_id": "start-free",
+      "template": "typography",
+      "slots": {
+        "body": "Start free"
+      }
+    }
+  ]
+}

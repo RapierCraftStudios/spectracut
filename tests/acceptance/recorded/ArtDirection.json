@@ -1,0 +1,23 @@
+{
+  "mood_board": [
+    {
+      "ref": "Calm product interfaces on dark ink",
+      "take": "Legible type, one accent colour",
+      "avoid": "Busy glows"
+    }
+  ],
+  "palette": {
+    "swatches": {
+      "ink": "#0b1220",
+      "surface": "#f5f7fa",
+      "accent": "#2f6bff"
+    }
+  },
+  "materials": [
+    "matte surface",
+    "soft studio light"
+  ],
+  "look": {
+    "id": "clean"
+  }
+}

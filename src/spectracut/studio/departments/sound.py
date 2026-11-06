@@ -410,7 +410,9 @@ class SoundRunner:
         edit = self._edit(ctx)
         vo = VoiceoverTrack.model_validate(ctx.inputs[VOICEOVER])
         design = SoundDesign.model_validate(ctx.inputs[SOUND_DESIGN])
-        music = MusicBed.model_validate(ctx.inputs[MUSIC])
+        # Profiles without a music stage (standard) mix dialogue and effects only.
+        bed = ctx.inputs.get(MUSIC)
+        music = MusicBed.model_validate(bed) if bed is not None else None
         recipe, files = mix_recipe(edit, vo, design, music)
         selections = [_file_selection(spec, path) for spec, path in files]
         result = render_mix(
@@ -452,9 +454,10 @@ class SoundRunner:
 
 
 def mix_recipe(
-    edit: Edit, vo: VoiceoverTrack, design: SoundDesign, music: MusicBed
+    edit: Edit, vo: VoiceoverTrack, design: SoundDesign, music: MusicBed | None
 ) -> tuple[AudioRecipe, list[tuple[SoundSpec, Path]]]:
-    """The mix of ``edit``: DX from the VO lines, MX from the bed, FX from sound design.
+    """The mix of ``edit``: DX from the VO lines, MX from the bed (none when ``music``
+    is ``None``), FX from sound design.
 
     Returns the recipe and the file behind every sound in it.
     """
@@ -485,13 +488,14 @@ def mix_recipe(
             provenance=vo_source,
         )
         add(f"vo-{line.id}", "dx", frame, line.media_ref, spec)
-    bed = SoundSpec(
-        kind="music-edit",
-        duration_seconds=music.duration_s,
-        params={"plan": music.plan_hash, "media": music.media_ref},
-        provenance=music.provenance,
-    )
-    add("music-bed", "mx", 0, music.media_ref, bed)
+    if music is not None:
+        bed = SoundSpec(
+            kind="music-edit",
+            duration_seconds=music.duration_s,
+            params={"plan": music.plan_hash, "media": music.media_ref},
+            provenance=music.provenance,
+        )
+        add("music-bed", "mx", 0, music.media_ref, bed)
     by_layer = {(c.cue_id, c.layer_id): c.media_ref for c in design.cues}
     for cue in design.recipe.cues:
         cues.append(cue)

@@ -6,6 +6,12 @@ nodes, one per shot and aspect), the real ``Edit`` and OpenTimelineIO round trip
 and the cut-down builder; only the render department is a counting fake. After
 the cut-downs are made the graph is run again and must dispatch nothing.
 
+The standard-film case (#253) reads the cut-downs the real ``delivery`` node wrote
+when the ``launch_film`` fixture (``tests/acceptance/recorded``) ran the AlterLab brief through
+``studio new``/``run``/``approve`` with recorded providers and a fake farm: 15 s and
+30 s in 16:9, 9:16, 1:1 and 4:5, each an ``.otio`` on disk matching its digest, no
+longer than its length and cut only from the master's shots.
+
 The ``e2e`` case runs on the farm host after the M1 check
 (``m1-device-shot-farm-e2e``) has rendered and stored production
 ``alterlab-dashboard-e2e`` (override with ``SPECTRACUT_CUTDOWN_PRODUCTION``): it
@@ -17,12 +23,16 @@ for the film's shots, not farm frames.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+import opentimelineio as otio
 import pytest
+import recorded
 from pydantic import JsonValue
+from recorded import Film
 from typer.testing import CliRunner
 
 from spectracut.cli.app import app
@@ -41,10 +51,14 @@ from spectracut.formats.safe_areas import Overlay, export_preset
 from spectracut.qa.common import QACheck
 from spectracut.qa.report import QAReport
 from spectracut.spec._base import content_hash
+from spectracut.studio.departments.finishing import DeliveryReport
 from spectracut.studio.gates import GateMode, GatePolicy
 from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
 from spectracut.studio.node import NodeSpec, NodeStatus
 from spectracut.studio.store import ProductionStore
+
+launch_film = recorded.launch_film
+"""The standard film, run once with recorded providers and a fake farm (session fixture)."""
 
 HOOKS = ("hook-dashboard", "hook-speed", "hook-team")
 VISUAL = "product-tour"
@@ -212,6 +226,39 @@ def test_one_production_yields_three_15s_9x16_ads_and_a_30s_16x9_ad_without_new_
     again = graph.run(renderer)
     assert not again.did_work
     assert renderer.renders == rendered
+
+
+def _picture_shots(edit: Edit) -> list[str]:
+    for track in edit.tracks:
+        shots = [str(c.shot_id) for c in track.clips() if c.shot_id is not None]
+        if track.kind == "video" and shots:
+            return shots
+    return []
+
+
+def _load(ref: str) -> Edit:
+    return from_otio(otio.adapters.read_from_file(ref))
+
+
+def test_standard_film_delivery_writes_real_cutdowns_in_every_aspect(launch_film: Film) -> None:
+    """The delivery node of the real standard pipeline (#253) wrote the 8 cut-downs."""
+    report = DeliveryReport.model_validate(launch_film.graph.output("delivery"))
+    master = _load(report.master.otio_ref)
+    master_shots = set(_picture_shots(master))
+    assert len(master_shots) > 2 and master.seconds >= 30
+    assert {(c.length_s, c.aspect) for c in report.cutdowns} == {
+        (s, a) for s in (15.0, 30.0) for a in ("16:9", "9:16", "1:1", "4:5")
+    }
+    for cut in report.cutdowns:
+        path = Path(cut.otio_ref)
+        assert path.is_file() and path.suffix == ".otio", cut.id
+        digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        assert cut.otio_sha256 == digest, cut.id
+        edit = _load(cut.otio_ref)
+        assert cut.length_s is not None and edit.seconds <= cut.length_s, cut.id
+        shots = _picture_shots(edit)
+        assert shots and set(shots) <= master_shots, cut.id
+        assert cut.qa_passed, (cut.id, cut.qa_failures)
 
 
 E2E = os.environ.get("SPECTRACUT_E2E") == "1" and bool(os.environ.get("SPECTRACUT_FLAMENCO_URL"))

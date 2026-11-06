@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import socket
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -27,6 +27,7 @@ from spectracut.studio.departments import all_departments
 from spectracut.studio.departments import art as art_depts
 from spectracut.studio.departments import finishing as finishing_depts
 from spectracut.studio.departments import shots as shot_depts
+from spectracut.studio.departments import sound as sound_depts
 from spectracut.studio.departments.style_frame_farm import FarmStyleFrameRenderer
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
@@ -39,7 +40,11 @@ from spectracut.studio.store import ProductionError, ProductionStore, write_atom
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+    from spectracut.audio.music_edit import Stretcher
+    from spectracut.audio.render import ArdourRunner
+    from spectracut.audio.vo import VoiceOver
     from spectracut.providers.base import VisionJudge
+    from spectracut.providers.local.registry import LocalProvider
 
 studio_app = typer.Typer(
     no_args_is_help=True,
@@ -114,6 +119,37 @@ def _local_runtime(home: Path) -> ModelRuntime | None:
     return ModelRuntime(load_model, LeasePool(slot.cpus, slot.mem_gb, slot.gpus), host=slot.name)
 
 
+@dataclass
+class SoundDeps:
+    """What the sound runner (voiceover, sound design, music, mix) talks to.
+
+    ``None`` fields take :class:`~spectracut.studio.departments.sound.SoundRunner`'s
+    defaults: ElevenLabs final VO when configured else local TTS temp VO, the local
+    audio models on ``runtime``, and Ardour for the mix.
+    """
+
+    runtime: ModelRuntime | None = None
+    voice_over: VoiceOver | None = None
+    elevenlabs_configured: Callable[[], bool] = sound_depts.elevenlabs_configured
+    providers: Mapping[str, LocalProvider] | None = None
+    ardour: ArdourRunner | None = None
+    stretcher: Stretcher | None = None
+
+
+def default_sound(production: Production) -> SoundDeps:
+    """Real sound dependencies: the local model runtime when this is a render host."""
+    return SoundDeps(runtime=_local_runtime(production.store.home))
+
+
+sound_factory: Callable[[Production], SoundDeps] = default_sound
+"""Builds the sound dependencies; tests inject a fake voice, music model and Ardour."""
+
+SOUND_KINDS = frozenset(
+    {sound_depts.VOICEOVER, sound_depts.SOUND_DESIGN, sound_depts.MUSIC, sound_depts.MIX}
+)
+"""Node kinds :class:`~spectracut.studio.departments.sound.SoundRunner` builds."""
+
+
 def default_runner(production: Production, graph: ProductionGraph) -> Runner:
     """Run nodes through :data:`DEPARTMENTS`; a node with no department fails clearly.
 
@@ -128,7 +164,10 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
     so text-only runs never need the Flamenco env or the signing key. ``edit``,
     ``render`` and ``delivery`` nodes are built in code by
     :class:`~spectracut.studio.departments.finishing.FinishingRunner` (on the same lazily
-    built farm dependencies), never by the text runner.
+    built farm dependencies), never by the text runner. ``voiceover``,
+    ``sound_design``, ``music`` and ``mix`` are built in code by
+    :class:`~spectracut.studio.departments.sound.SoundRunner` on dependencies from
+    :data:`sound_factory`, built on the first sound node.
     """
     if graph.profile is not None and graph.profile.name == ds.PROFILE:
         deps = device_shot_factory(production)
@@ -145,6 +184,7 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
     preproduction: art_depts.PreproductionRunner | None = None
     farm: DeviceShotDeps | None = None
     finishing: finishing_depts.FinishingRunner | None = None
+    sound: sound_depts.SoundRunner | None = None
     lock = threading.Lock()
     farm_lock = threading.Lock()
 
@@ -212,10 +252,31 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
             runner = finishing
         return runner(ctx)
 
+    def audio(ctx: RunContext) -> RunResult:
+        nonlocal sound
+        with lock:
+            if sound is None:
+                deps = sound_factory(production)
+                sound = sound_depts.SoundRunner(
+                    text,
+                    DEPARTMENTS,
+                    workdir=production.store.path(production.id) / "sound",
+                    voice_over=deps.voice_over,
+                    elevenlabs_configured=deps.elevenlabs_configured,
+                    runtime=deps.runtime,
+                    providers=deps.providers,
+                    ardour=deps.ardour,
+                    stretcher=deps.stretcher,
+                )
+            runner = sound
+        return runner(ctx)
+
     def run(ctx: RunContext) -> RunResult:
         nonlocal shots
         if ctx.spec.kind == art_depts.BRAND_KIT:
             return art_depts.build_brand_kit(ctx)
+        if ctx.spec.kind in SOUND_KINDS:
+            return audio(ctx)
         if ctx.spec.kind in FINISHING_KINDS:
             return finish(ctx)
         if ctx.spec.kind in (art_depts.STYLE_FRAMES, art_depts.ANIMATIC):

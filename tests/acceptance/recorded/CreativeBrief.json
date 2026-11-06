@@ -1,0 +1,42 @@
+{
+  "id": "alterlab-launch",
+  "message": "Send a URL to AlterLab and get clean, structured data back.",
+  "audience": {
+    "personas": [
+      {
+        "name": "Platform engineer",
+        "description": "Builds data pipelines that need clean, structured pages from the web."
+      },
+      {
+        "name": "Product lead",
+        "description": "Ships features on top of web data without an in-house scraping team."
+      }
+    ],
+    "prior_knowledge": "Has written or maintained a scraper and knows how often they break.",
+    "objections": [
+      "Another API to integrate",
+      "Will it keep working when sites change?"
+    ]
+  },
+  "sources": [
+    {
+      "id": "alterlab-site",
+      "title": "AlterLab website",
+      "ref": "https://alterlab.io"
+    }
+  ],
+  "proof_points": [
+    {
+      "claim": "One API turns any web page into clean, structured data.",
+      "source_id": "alterlab-site"
+    },
+    {
+      "claim": "Teams send a URL and get structured results back.",
+      "source_id": "alterlab-site"
+    }
+  ],
+  "tone": "Clear, precise and calm; the product interface is the hero.",
+  "success_measure": "Viewers start a free AlterLab account.",
+  "offer": "Start free",
+  "cta": "Try AlterLab"
+}

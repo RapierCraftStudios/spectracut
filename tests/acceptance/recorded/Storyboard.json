@@ -1,0 +1,58 @@
+{
+  "boards": [
+    {
+      "shot_id": "problem",
+      "beat": "problem",
+      "size": "wide",
+      "move": "static",
+      "action": "Headline types on: scrapers break",
+      "text": "Scrapers break",
+      "duration_s": 5.0
+    },
+    {
+      "shot_id": "one-call",
+      "beat": "one-call",
+      "size": "wide",
+      "move": "static",
+      "action": "A URL appears and is sent",
+      "text": "Send a URL",
+      "duration_s": 5.0
+    },
+    {
+      "shot_id": "results",
+      "beat": "results",
+      "size": "wide",
+      "move": "static",
+      "action": "Structured fields resolve line by line",
+      "text": "Structured data back",
+      "duration_s": 5.0
+    },
+    {
+      "shot_id": "any-page",
+      "beat": "any-page",
+      "size": "wide",
+      "move": "static",
+      "action": "Headline settles: one API, any page",
+      "text": "One API, any page",
+      "duration_s": 5.0
+    },
+    {
+      "shot_id": "no-babysitting",
+      "beat": "no-babysitting",
+      "size": "wide",
+      "move": "static",
+      "action": "The pipeline runs on its own",
+      "text": "No babysitting",
+      "duration_s": 5.0
+    },
+    {
+      "shot_id": "start-free",
+      "beat": "cta",
+      "size": "wide",
+      "move": "static",
+      "action": "The offer lands",
+      "text": "Start free",
+      "duration_s": 5.0
+    }
+  ]
+}

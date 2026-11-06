@@ -1,0 +1,16 @@
+{
+  "title": "URL in, data out",
+  "logline": "A messy web page becomes clean, structured data with one AlterLab call.",
+  "structure": [
+    "The scraper problem",
+    "One URL",
+    "Structured results",
+    "Keeps working",
+    "Try AlterLab"
+  ],
+  "fit": "Answers the integration and maintenance objections with the product as the hero.",
+  "visuals": [
+    "Structured data panel",
+    "AlterLab end card"
+  ]
+}
