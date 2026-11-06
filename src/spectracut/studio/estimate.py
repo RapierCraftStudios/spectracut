@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Production estimates: what a graph may cost before it runs.
 
-:func:`breakdown` turns a brief into one node per profile stage, each reading
-the stage before it; the Producer (:mod:`spectracut.studio.producer`) adds the
+:func:`breakdown` turns a brief into one node per profile stage, wired by the
+inputs each stage's department declares (the stage before it when no department
+is registered yet); the Producer (:mod:`spectracut.studio.producer`) adds the
 shot and asset list as the first node's ``plan`` param. :func:`estimate` adds up
 the upper-bound cost of building every node once with its revisions: the
 department runs each stage may take (1 plus its revision budget when a Critic or
@@ -156,34 +157,35 @@ def _cost_text(c: CostEstimate) -> str:
     )
 
 
-EXTRA_INPUTS: dict[str, tuple[str, ...]] = {"script": ("brief",)}
-"""Stage -> earlier stages it reads besides the one before it."""
-
-
 def breakdown(brief: Brief | CreativeBrief, profile: QualityProfile) -> list[NodeSpec]:
-    """One node per profile stage (id = kind = stage), chained in order.
+    """One node per profile stage (id = kind = stage), wired as the departments declare.
 
-    The department is :func:`~spectracut.studio.departments.department_for` the stage;
-    the script also reads the brief, as its department declares.
+    The department is :func:`~spectracut.studio.departments.department_for` the stage.
+    A stage whose department is registered reads, in the order its department
+    declares its ``inputs``, the earlier profile stages of those kinds: the same edges the
+    departments' node builders (``discovery_nodes``, ``pick_concept``,
+    ``preproduction_nodes``) wire. A stage with no registered department yet reads
+    the stage before it. The first node carries the brief.
     """
+    from spectracut.studio.departments import all_departments
+
+    registry = all_departments()
+    earlier: set[str] = set()
     specs: list[NodeSpec] = []
     previous: str | None = None
     for stage in profile.stages:
         params = {BRIEF_PARAM: brief.model_dump(mode="json")} if previous is None else {}
-        reads = [previous] if previous is not None else []
-        for extra in EXTRA_INPUTS.get(stage, ()):
-            if extra in profile.stages and extra not in reads:
-                reads.append(extra)
+        name = department_for(stage)
+        dept = registry.get(name)
+        if dept is not None:
+            reads = [k for k in dept.inputs if k in earlier]
+        else:
+            reads = [previous] if previous is not None else []
         specs.append(
-            NodeSpec(
-                id=stage,
-                kind=stage,
-                department=department_for(stage),
-                inputs=tuple(reads),
-                params=params,
-            )
+            NodeSpec(id=stage, kind=stage, department=name, inputs=tuple(reads), params=params)
         )
         previous = stage
+        earlier.add(stage)
     return specs
 
 

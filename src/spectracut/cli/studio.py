@@ -23,7 +23,7 @@ from spectracut.studio.departments import all_departments
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
 from spectracut.studio.node import NodeSpec
-from spectracut.studio.producer import BudgetCaps, Producer, scheduled
+from spectracut.studio.producer import BudgetCaps, Producer, edge_problems, scheduled
 from spectracut.studio.profiles import available_profiles, load_profile
 from spectracut.studio.runner import DepartmentRunner
 from spectracut.studio.store import ProductionError, ProductionStore, write_atomic
@@ -328,6 +328,13 @@ def run_cmd(
     """Build every pending or dirty node whose inputs are ready, then save the production."""
     store = ProductionStore(home)
     graph = _load(store, production_id)
+    if graph.profile is None or graph.profile.name != ds.PROFILE:
+        problems = edge_problems(graph, DEPARTMENTS)
+        if problems:
+            raise _fail(
+                f"production {production_id!r} was created with an older production graph "
+                f"({problems[0]}); recreate it with 'spectracut studio new ... --force'"
+            )
     try:
         runner = runner_factory(Production(production_id, store), graph)
     except (LookupError, ValueError) as exc:

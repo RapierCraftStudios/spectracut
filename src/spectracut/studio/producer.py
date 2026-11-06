@@ -5,7 +5,9 @@
   :class:`~spectracut.spec.spec.Spec`) into a :class:`ProductionPlan`: the shot
   list, the asset list, and one department task per stage of the quality
   profile, gated as the profile says. :meth:`Producer.new_graph` builds the
-  production graph from it.
+  production graph from it. The tasks are wired as each department declares its
+  inputs; :func:`edge_problems` lists the edges of a graph that do not agree
+  (e.g. a production created before the departments declared them).
 - :meth:`Producer.add_step` and :meth:`Producer.drop_step` change the steps of a
   production; both rewire the neighbouring nodes, mark exactly the affected
   dependants dirty and return the new estimate.
@@ -122,6 +124,36 @@ class ProducerReport:
     needs_approval: list[BudgetHold] = field(default_factory=list)
     supervisor_hold: SupervisorHold | None = None
     """The tripped breaker, when the supervisor stopped new admissions."""
+
+
+def edge_problems(
+    graph: ProductionGraph | Iterable[NodeSpec], departments: Mapping[str, type[Department]]
+) -> list[str]:
+    """Every input whose kind its node's department does not declare, as text.
+
+    Nodes whose department is not in ``departments`` are skipped (they fail on
+    their own when run). An empty list means the graph's edges agree with the
+    departments' declared ``inputs``.
+    """
+    specs = (
+        [graph.spec(n) for n in graph.order()]
+        if isinstance(graph, ProductionGraph)
+        else list(graph)
+    )
+    kinds = {s.id: s.kind for s in specs}
+    problems: list[str] = []
+    for spec in specs:
+        dept = departments.get(spec.department)
+        if dept is None:
+            continue
+        for input_id in spec.inputs:
+            kind = kinds.get(input_id, input_id)
+            if kind not in dept.inputs:
+                problems.append(
+                    f"node {spec.id!r} reads {input_id!r} of kind {kind!r}, "
+                    f"which department {dept.name!r} does not declare"
+                )
+    return problems
 
 
 def _metric(c: CostEstimate, name: str) -> float:
