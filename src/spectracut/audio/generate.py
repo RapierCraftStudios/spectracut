@@ -33,7 +33,11 @@ Scorer = Callable[[Path], float]
 """Scores one candidate file; higher is better. Plug in CLAP or the listening critic here."""
 
 KINDS = ("sfx", "foley", "music")
-_PROMPTS = {"sfx": sfx.build_sfx_prompt, "foley": foley.build_foley_prompt, "music": music.build_music_prompt}
+_PROMPTS = {
+    "sfx": sfx.build_sfx_prompt,
+    "foley": foley.build_foley_prompt,
+    "music": music.build_music_prompt,
+}
 DEFAULT_CANDIDATES = 3
 
 
