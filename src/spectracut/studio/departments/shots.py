@@ -168,7 +168,7 @@ TEMPLATE_PLANS: dict[str, type[StrictModel]] = {
 }
 """One planner branch per registered template, keyed by template id."""
 
-ShotPlanEntry: Any = Annotated[
+PlannedShot: Any = Annotated[
     Union[  # noqa: UP007 - built from the registry at import time
         tuple(
             [Annotated[m, Tag(tid)] for tid, m in TEMPLATE_PLANS.items()]
@@ -191,7 +191,7 @@ or the scene builder. The JSON schema sent to the planner carries every slot sch
 class ShotPlan(StrictModel):
     """The template shot, or scene-builder description, for every storyboard board."""
 
-    shots: list[ShotPlanEntry] = Field(min_length=1)
+    shots: list[PlannedShot] = Field(min_length=1)
 
 
 def _planned_shot(entry: BaseModel) -> TemplateShot:
