@@ -203,7 +203,16 @@ def test_dry_run_reads_only_and_reports() -> None:
 CRED = Credential("spectracut-share", "pw")
 FACTS = {
     CONTROL: HostFacts(CONTROL, "linux", "100.64.0.1", wired=True, free_gb=900),
-    "legion": HostFacts("legion", "windows", "100.64.0.2", wired=True, free_gb=500),
+    "legion": HostFacts(
+        "legion",
+        "windows",
+        "100.64.0.2",
+        wired=True,
+        free_gb=500,
+        account="LEGION\\artac-remote",
+        sid="S-1-5-21-1-2-3-1001",
+        home="C:\\Users\\artac-remote",
+    ),
     "rig": HostFacts("rig", "linux", "100.64.0.3", wired=True, free_gb=100),
 }
 

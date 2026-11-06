@@ -71,8 +71,16 @@ command to run:
 
 ```
 warning: mrdubey-1 needs a one-time admin step: ... run
-`powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\<account>\spectracut\windows_worker_task.ps1"`
+`$b = [IO.File]::ReadAllBytes('C:\Users\<account>\spectracut\windows_worker_task.ps1'); ...`;
+it refuses to run unless windows_worker_task.ps1 has the SHA-256 <hash> that setup wrote, ...
 ```
+
+The script sits in a folder the SSH account can write, so the command does not run it in
+place. It reads the file once and refuses to run it if its SHA-256 differs from what setup
+wrote. Setup fills in the account name, SID and profile before writing the script, so it
+knows that hash. The command then runs those checked bytes from a new file in the
+administrator's own `%TEMP%`. A program running as the standard account (a render, for
+example) therefore cannot change what runs elevated.
 
 On that PC, open PowerShell with **Run as administrator** and run the command once. It
 registers `spectracut-worker` to run at startup as the SSH account. It also gives that account
@@ -114,7 +122,9 @@ folder. The password is passed on stdin and never appears on a command line.
 
 - If the SSH account is an Administrator, setup runs the script itself.
 - If the SSH account is a standard user, setup prints the elevated command (including
-  `-Path`) and stops. Run that command once, then re-run `spectracut setup`.
+  `-Path`) and stops. Run that command once, then re-run `spectracut setup`. Like the
+  worker task command, it checks the script's SHA-256 against the one setup wrote and runs
+  a copy from the administrator's `%TEMP%`, never the file in the account's profile.
 
 If a share named `flamenco` already exists, the script compares its folder with the storage
 path:
