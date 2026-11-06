@@ -9,7 +9,15 @@ from spectracut.studio.department import (
     DepartmentOutputError,
     SkillPack,
 )
-from spectracut.studio.gates import Critic, CriticVerdict, GateDecision, GateMode, GatePolicy
+from spectracut.studio.gates import (
+    Critic,
+    CriticVerdict,
+    Finding,
+    GateDecision,
+    GateMode,
+    GatePolicy,
+    Severity,
+)
 from spectracut.studio.graph import (
     ProductionGraph,
     RevisionNote,
@@ -33,6 +41,7 @@ __all__ = [
     "Department",
     "DepartmentOutputError",
     "DepartmentRunner",
+    "Finding",
     "GateDecision",
     "GateMode",
     "GatePolicy",
@@ -52,6 +61,7 @@ __all__ = [
     "RunReport",
     "RunResult",
     "Runner",
+    "Severity",
     "SkillPack",
     "TaskContext",
     "Tier",

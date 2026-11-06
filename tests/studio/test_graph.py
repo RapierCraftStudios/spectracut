@@ -12,6 +12,7 @@ from pydantic import JsonValue, ValidationError
 
 from spectracut.studio import (
     CriticVerdict,
+    Finding,
     GateMode,
     GatePolicy,
     Ledger,
@@ -22,6 +23,7 @@ from spectracut.studio import (
     QualityProfile,
     RunContext,
     RunResult,
+    Severity,
     Tier,
     Usage,
     available_profiles,
@@ -524,3 +526,61 @@ def test_approve_clears_notes_and_unknown_node_note_fails() -> None:
         g.add_note("nope", RevisionNote(node_id="nope", text="x", created_at=NOTE_AT))
     with pytest.raises(ValueError):
         g.add_note("board", RevisionNote(node_id="render", text="x", created_at=NOTE_AT))
+
+
+def _severity_graph() -> ProductionGraph:
+    profile = QualityProfile(
+        name="t",
+        description="test",
+        stages=("brief", "script"),
+        revision_budget={"brief": 0, "script": 0},
+        tier={"brief": Tier.PREVIEW, "script": Tier.PREVIEW},
+        gates={"script": GateMode.CRITIC},
+    )
+    g = ProductionGraph("p", profile=profile)
+    g.add_nodes([node("brief"), node("script", "brief"), node("vo", "script", kind="voiceover")])
+    return g
+
+
+def _finding(severity: Severity, text: str = "note", *, confirmed: bool = False) -> Finding:
+    return Finding(reviewer="sound", severity=severity, text=text, confirmed=confirmed)
+
+
+def test_confirmed_high_finding_blocks_dependants() -> None:
+    g = _severity_graph()
+    high = _finding(Severity.HIGH, confirmed=True)
+    report = g.run(
+        FakeRunner(),
+        critic=lambda *_: CriticVerdict(passed=False, findings=[high]),
+    )
+    assert report.rejected == ["script"] and report.blocked == ["vo"]
+
+
+def test_medium_finding_gets_one_polish_revision_then_is_accepted_with_notes() -> None:
+    g = _severity_graph()
+    r = FakeRunner()
+    verdict = CriticVerdict(
+        passed=True,
+        findings=[
+            _finding(Severity.MEDIUM, "tighten the cut"),
+            _finding(Severity.LOW, "slight hiss"),
+        ],
+    )
+    report = g.run(r, critic=lambda *_: verdict)
+    assert r.calls.count("script") == 2  # one polish revision, never more
+    assert g.status("script") is NodeStatus.CLEAN and not report.rejected
+    assert r.contexts[2].feedback is not None
+    outcomes = [e.outcome for e in g.ledger.entries_for("script")]
+    assert outcomes == ["revise", "accepted"]
+    texts = [n.text for n in g.notes("script")]
+    assert any("tighten the cut" in t for t in texts) and any("slight hiss" in t for t in texts)
+    assert len(texts) == 2
+
+
+def test_low_findings_are_noted_without_a_revision() -> None:
+    g = _severity_graph()
+    r = FakeRunner()
+    verdict = CriticVerdict(passed=True, findings=[_finding(Severity.LOW, "slight hiss")])
+    g.run(r, critic=lambda *_: verdict)
+    assert r.calls.count("script") == 1
+    assert [n.text for n in g.notes("script")] == ["[low] sound: slight hiss"]

@@ -33,12 +33,34 @@ class GateMode(StrEnum):
     HUMAN = "human"
 
 
+class Severity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class Finding(StrictModel):
+    """One issue a reviewer found: how bad, how sure, and whether a second check agrees."""
+
+    reviewer: Slug
+    severity: Severity
+    confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 1.0
+    text: str = Field(min_length=1, max_length=4000)
+    frame: int | None = Field(default=None, ge=0)
+    confirmed: bool = False
+    """A HIGH finding a second independent check upheld; only these block a node."""
+    reviewers: list[Slug] = Field(default_factory=list)
+    """Every reviewer that raised this finding, once duplicates are merged."""
+
+
 class CriticVerdict(StrictModel):
     """The Critic's review of one output against its rubric."""
 
     passed: bool
     scores: dict[Slug, float] = Field(default_factory=dict)
     comment: str = ""
+    findings: list[Finding] = Field(default_factory=list)
+    """Severity-graded findings; empty for a score-only Critic."""
     usage: dict[Slug, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
     """Judge tokens this review used, by metric; the graph adds them to the node's ledger entry."""
 
