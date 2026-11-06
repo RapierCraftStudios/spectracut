@@ -42,6 +42,7 @@ from spectracut.studio import (
     Usage,
     load_profile,
 )
+from spectracut.studio.departments import department_for
 from spectracut.studio.estimate import breakdown
 from spectracut.studio.graph import GraphSnapshot
 from spectracut.studio.store import ProductionStore
@@ -92,7 +93,7 @@ def test_studio_new_creates_production_and_prints_estimate(home: Path, brief_fil
     assert result.exit_code == 0, result.output
     assert "production spellwise created" in result.output
     for stage in load_profile("standard").stages:
-        assert f"  {stage}: department={stage}" in result.output
+        assert f"  {stage}: department={department_for(stage)}" in result.output
     assert "human gates=5" in result.output
     assert (home / "productions" / "spellwise" / "graph.json").is_file()
     again = runner.invoke(app, ["studio", "new", str(brief_file)])
@@ -147,12 +148,15 @@ def test_studio_run_approve_status_across_invocations(
     assert rejected.exit_code == 0 and "concept: rejected" in rejected.output
 
 
-def test_studio_run_without_departments_fails_clearly(home: Path, brief_file: Path) -> None:
+def test_studio_run_without_departments_fails_clearly(
+    home: Path, brief_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(studio_mod, "DEPARTMENTS", {})
     assert runner.invoke(app, ["studio", "new", str(brief_file)]).exit_code == 0
     result = runner.invoke(app, ["studio", "run", "spellwise"])
     assert result.exit_code == 1
     assert "failed: brief" in result.output
-    assert "no department registered for 'brief'" in result.output
+    assert "no department registered for 'strategist'" in result.output
 
 
 def test_studio_new_duration_prints_gpu_hours_and_wall_time(home: Path, brief_file: Path) -> None:

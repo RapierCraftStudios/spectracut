@@ -39,6 +39,7 @@ from spectracut.spec._base import Slug, StrictModel
 from spectracut.spec.brief import Brief, CreativeBrief
 from spectracut.spec.spec import Spec
 from spectracut.studio.department import CostEstimate, Department
+from spectracut.studio.departments import department_for
 from spectracut.studio.estimate import (
     BRIEF_PARAM,
     PLAN_PARAM,
@@ -231,7 +232,7 @@ class Producer:
             NodeSpec(
                 id=stage,
                 kind=stage,
-                department=department or stage,
+                department=department or department_for(stage),
                 inputs=(after,) if after is not None else (),
                 tier=tier if profile is None else None,
             )

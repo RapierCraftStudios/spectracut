@@ -9,13 +9,16 @@ temporary directory.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 from spectracut.providers.base import (
+    Completion,
     ProviderAuthError,
     ProviderError,
     SignInState,
@@ -101,6 +104,79 @@ class CodexCliImageProvider:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(image, out_path)
         return out_path
+
+
+def codex_text_argv(codex_bin: str, workdir: Path, schema_path: Path, prompt: str) -> list[str]:
+    """The isolated, read-only ``codex exec`` command line for one structured text completion."""
+    return [
+        codex_bin,
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "--sandbox",
+        "read-only",
+        "-C",
+        str(workdir),
+        "--output-schema",
+        str(schema_path),
+        "-o",
+        str(workdir / "last-message.txt"),
+        prompt,
+    ]
+
+
+def _parse_text_message(text: str) -> dict[str, Any]:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        text = text.split("\n", 1)[1] if "\n" in text else text
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end < start:
+        raise ProviderError(CLI, "codex did not return a JSON object")
+    try:
+        payload = json.loads(text[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise ProviderError(CLI, "codex returned output that is not JSON") from exc
+    if not isinstance(payload, dict):
+        raise ProviderError(CLI, "codex did not return a JSON object")
+    return payload
+
+
+class CodexCliTextProvider:
+    """A :class:`~spectracut.providers.base.TextProvider` through the signed-in Codex CLI.
+
+    Each call is ephemeral, read-only and in an empty scratch directory, with API
+    keys removed so only the ChatGPT sign-in works.
+    """
+
+    name = "codex-text"
+
+    def __init__(self, codex_bin: str | None = None, *, timeout: float = 600.0) -> None:
+        self.codex_bin = codex_bin or resolve_codex_bin() or configured_codex_bin()
+        self.timeout = timeout
+
+    def complete(self, system: str, prompt: str, *, schema: dict[str, Any]) -> Completion:
+        full = f"{system}\n\n{prompt}\n\nReply with only the JSON object that matches the schema."
+        with tempfile.TemporaryDirectory(prefix="spectracut-codex-") as tmp:
+            workdir = Path(tmp)
+            schema_path = workdir / "schema.json"
+            schema_path.write_text(json.dumps(schema), encoding="utf-8")
+            run_cli(
+                codex_text_argv(self.codex_bin, workdir, schema_path, full),
+                cli=CLI,
+                cwd=workdir,
+                env=subscription_env(),
+                timeout=self.timeout,
+                allow_empty=True,
+            )
+            message = workdir / "last-message.txt"
+            if not message.is_file():
+                raise ProviderError(CLI, "codex exec finished but wrote no message")
+            output = _parse_text_message(message.read_text(encoding="utf-8"))
+        return Completion(
+            output=output, usage={"codex_requests": 1, "codex_input_chars": len(full)}
+        )
 
 
 def codex_status(codex_bin: str | None = None) -> SignInState:
