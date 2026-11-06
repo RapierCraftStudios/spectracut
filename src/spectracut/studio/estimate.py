@@ -23,6 +23,7 @@ from pydantic import Field, JsonValue
 from spectracut.spec._base import Slug, StrictModel
 from spectracut.spec.brief import Brief, CreativeBrief
 from spectracut.studio.department import CostEstimate, Department
+from spectracut.studio.departments import department_for
 from spectracut.studio.gates import GateMode
 from spectracut.studio.graph import ProductionGraph
 from spectracut.studio.node import NodeSpec, Tier
@@ -155,18 +156,30 @@ def _cost_text(c: CostEstimate) -> str:
     )
 
 
+EXTRA_INPUTS: dict[str, tuple[str, ...]] = {"script": ("brief",)}
+"""Stage -> earlier stages it reads besides the one before it."""
+
+
 def breakdown(brief: Brief | CreativeBrief, profile: QualityProfile) -> list[NodeSpec]:
-    """One node per profile stage (id = kind = department = stage), chained in order."""
+    """One node per profile stage (id = kind = stage), chained in order.
+
+    The department is :func:`~spectracut.studio.departments.department_for` the stage;
+    the script also reads the brief, as its department declares.
+    """
     specs: list[NodeSpec] = []
     previous: str | None = None
     for stage in profile.stages:
         params = {BRIEF_PARAM: brief.model_dump(mode="json")} if previous is None else {}
+        reads = [previous] if previous is not None else []
+        for extra in EXTRA_INPUTS.get(stage, ()):
+            if extra in profile.stages and extra not in reads:
+                reads.append(extra)
         specs.append(
             NodeSpec(
                 id=stage,
                 kind=stage,
-                department=stage,
-                inputs=(previous,) if previous is not None else (),
+                department=department_for(stage),
+                inputs=tuple(reads),
                 params=params,
             )
         )

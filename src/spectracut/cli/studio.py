@@ -12,12 +12,13 @@ from typing import TYPE_CHECKING, Annotated
 import typer
 from pydantic import JsonValue, ValidationError
 
-from spectracut.providers.base import TextProvider
+from spectracut.providers.base import TextProvider, select_text_provider
 from spectracut.queue.executors.flamenco import FlamencoApi
 from spectracut.spec.brand import BrandKit, load_brand_kit
 from spectracut.spec.brief import Brief, CreativeBrief
 from spectracut.studio import device_shot as ds
 from spectracut.studio.department import Department
+from spectracut.studio.departments import all_departments
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
 from spectracut.studio.node import NodeSpec
@@ -36,11 +37,11 @@ studio_app = typer.Typer(
     help="Productions: create one from a brief, run it, review its status, pass human gates.",
 )
 
-DEPARTMENTS: dict[str, type[Department]] = {}
-"""Departments available to ``studio run``, by name. Concrete departments register here."""
+DEPARTMENTS: dict[str, type[Department]] = all_departments()
+"""Departments available to ``studio run``, by name (the registry in ``studio.departments``)."""
 
-text_provider_factory: Callable[[], TextProvider] | None = None
-"""Builds the text provider departments run through; ``None`` until one is configured."""
+text_provider_factory: Callable[[], TextProvider] | None = select_text_provider
+"""Builds the text provider departments run through: Claude sign-in, else Codex sign-in."""
 
 
 class Production:
@@ -100,17 +101,18 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
             options=deps.options,
         )
     inner: DepartmentRunner | None = None
-    if DEPARTMENTS and text_provider_factory is not None:
-        inner = DepartmentRunner(
-            DEPARTMENTS.values(), text_provider_factory(), brief=production.brief, graph=graph
-        )
 
     def run(ctx: RunContext) -> RunResult:
+        nonlocal inner
         name = ctx.spec.department
         if name not in DEPARTMENTS:
             raise LookupError(f"no department registered for {name!r}")
         if inner is None:
-            raise LookupError("no text provider configured for departments")
+            if text_provider_factory is None:
+                raise LookupError("no text provider configured for departments")
+            inner = DepartmentRunner(
+                DEPARTMENTS.values(), text_provider_factory(), brief=production.brief, graph=graph
+            )
         return inner(ctx)
 
     return run
@@ -221,8 +223,11 @@ def new(
     except (ProductionError, ValueError) as exc:
         raise _fail(str(exc)) from exc
     typer.echo(f"production {pid} created at {path}")
-    for line in estimate(graph, DEPARTMENTS).lines():
+    est = estimate(graph, DEPARTMENTS)
+    for line in est.lines():
         typer.echo(line)
+    if shot_params is None and est.unknown_departments:
+        typer.echo("no department registered yet for: " + ", ".join(est.unknown_departments))
 
 
 def _device_shot_params(kit_path: Path) -> dict[str, JsonValue]:

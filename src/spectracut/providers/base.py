@@ -285,3 +285,32 @@ def select_vision_judge() -> VisionJudge:
     raise ProviderAuthError(
         "claude", "no vision judge: install Claude Code and sign in, or set ANTHROPIC_API_KEY"
     )
+
+
+def select_text_provider() -> TextProvider:
+    """Pick the text provider: mock, then Claude sign-in, then Codex sign-in; never an API key.
+
+    A Claude CLI that is installed but signed out yields to the Codex CLI when that is
+    installed. The binaries are resolved from ``PATH``, so wrappers such as tokenbaton
+    shims are honoured.
+    """
+    from spectracut.providers.config import resolve_claude_bin, resolve_codex_bin
+
+    if _mock_mode():
+        from spectracut.providers.mock_text import MockTextProvider
+
+        return MockTextProvider()
+    claude = resolve_claude_bin()
+    codex = resolve_codex_bin()
+    if claude is not None:
+        from spectracut.providers.claude_code import ClaudeCodeTextProvider, claude_status
+
+        if codex is None or claude_status(claude).signed_in:
+            return ClaudeCodeTextProvider(claude)
+    if codex is not None:
+        from spectracut.providers.codex_cli import CodexCliTextProvider
+
+        return CodexCliTextProvider(codex)
+    raise ProviderAuthError(
+        "claude", "no text provider: install Claude Code (or the Codex CLI) and sign in"
+    )

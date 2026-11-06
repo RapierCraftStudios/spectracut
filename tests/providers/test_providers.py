@@ -473,3 +473,59 @@ def test_parse_text_output_falls_back_and_rejects_non_objects() -> None:
         parse_text_output(json.dumps({"is_error": False, "result": ""}))
     with pytest.raises(ProviderError, match="JSON object"):
         parse_text_output(json.dumps({"is_error": False, "result": "no json here"}))
+
+
+# --- Text provider selection and the Codex text provider (#249) ---------------
+
+
+def test_text_selection_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    from spectracut.providers import claude_code, codex_cli
+    from spectracut.providers.mock_text import MockTextProvider
+
+    monkeypatch.setattr(config, "resolve_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(config, "resolve_codex_bin", lambda: "/bin/codex")
+    monkeypatch.setattr(
+        claude_code, "claude_status", lambda b=None: base.SignInState("claude", True, True)
+    )
+    monkeypatch.delenv("SPECTRACUT_PROVIDERS", raising=False)
+    assert isinstance(base.select_text_provider(), claude_code.ClaudeCodeTextProvider)
+    # installed but signed out: Codex takes over
+    monkeypatch.setattr(
+        claude_code, "claude_status", lambda b=None: base.SignInState("claude", True, False)
+    )
+    assert isinstance(base.select_text_provider(), codex_cli.CodexCliTextProvider)
+    monkeypatch.setattr(config, "resolve_claude_bin", lambda: None)
+    assert isinstance(base.select_text_provider(), codex_cli.CodexCliTextProvider)
+    monkeypatch.setattr(config, "resolve_codex_bin", lambda: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    with pytest.raises(ProviderAuthError, match="no text provider"):
+        base.select_text_provider()
+    monkeypatch.setenv("SPECTRACUT_PROVIDERS", "mock")
+    assert isinstance(base.select_text_provider(), MockTextProvider)
+
+
+def test_codex_text_provider_reads_the_last_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    from spectracut.providers import codex_cli
+
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: Any) -> str:
+        seen.append(argv)
+        Path(argv[argv.index("-o") + 1]).write_text('```json\n{"a": 1}\n```', encoding="utf-8")
+        assert "OPENAI_API_KEY" not in kwargs["env"]
+        return ""
+
+    monkeypatch.setattr(codex_cli, "run_cli", fake_run)
+    out = codex_cli.CodexCliTextProvider("/bin/codex").complete(
+        "sys", "go", schema={"type": "object"}
+    )
+    assert out.output == {"a": 1}
+    assert out.usage["codex_requests"] == 1
+    assert "--output-schema" in seen[0] and "read-only" in seen[0]
+    monkeypatch.setattr(
+        codex_cli,
+        "run_cli",
+        lambda argv, **kw: Path(argv[argv.index("-o") + 1]).write_text("nope") and "",
+    )
+    with pytest.raises(ProviderError, match="JSON object"):
+        codex_cli.CodexCliTextProvider("/bin/codex").complete("s", "p", schema={})
