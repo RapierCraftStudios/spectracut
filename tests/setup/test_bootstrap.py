@@ -103,7 +103,9 @@ def test_general_host_is_installed_profiled_and_registered_under_its_alias(
     )
     assert max(installs) < ids.index("worker:start:legion") < ids.index("host:profile:legion")
     copies = [i for i in ids if i.startswith("wheel:")]
-    assert copies == [f"wheel:{w.name}:legion" for w in WHEELS.files]
+    assert copies == [
+        i for w in WHEELS.files for i in (f"wheel:{w.name}:legion:0", f"wheel:{w.name}:legion")
+    ]
     assert max(ids.index(c) for c in copies) < ids.index("install:spectracut-host:legion")
     (install,) = [s for s in fake.ran if s.id == "install:spectracut-host:legion"]
     assert install.version == WHEELS.pin

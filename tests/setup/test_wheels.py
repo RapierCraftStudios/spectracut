@@ -10,6 +10,7 @@ built wheels into a throwaway home through the setup runner.
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import shutil
 import subprocess
@@ -19,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import spectracut
+import spectracut.setup.wheels as wheels_mod
 from spectracut.setup.manifest import HostFacts, load_manifest
 from spectracut.setup.plan import (
     CommandRunner,
@@ -177,12 +179,41 @@ def fake(tmp_path: Path) -> LocalWheels:
 def test_copy_steps_carry_wheel_bytes_on_stdin_only(fake: LocalWheels) -> None:
     for name in WORKERS:
         steps = wheel_copy_steps(FACTS[name], fake)
-        assert [s.id for s in steps] == [f"wheel:{w.name}:{name}" for w in fake.files]
-        for step, wheel in zip(steps, fake.files, strict=True):
-            assert step.stdin is not None
-            assert base64.b64decode(step.stdin) == wheel.read_bytes()
-            assert step.stdin not in step.command
+        assert [s.id for s in steps] == [
+            i for w in fake.files for i in (f"wheel:{w.name}:{name}:0", f"wheel:{w.name}:{name}")
+        ]
+        for wheel in fake.files:
+            parts = [s for s in steps if s.id.startswith(f"wheel:{wheel.name}:{name}:")]
+            assert b"".join(base64.b64decode(s.stdin or "") for s in parts) == wheel.read_bytes()
+        for step in steps:
+            assert step.kind == "copy"
+            assert step.stdin is None or step.stdin not in step.command
             assert remote_wheel_dir(FACTS[name].os, fake.digest).split("/")[-1] in step.command
+
+
+def test_large_wheel_is_split_into_bounded_offset_chunks(
+    fake: LocalWheels, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wheels_mod, "CHUNK_BYTES", 300)  # core wheel is 1024 bytes: 4 chunks
+    for name in WORKERS:
+        steps = wheel_copy_steps(FACTS[name], fake)
+        parts = [s for s in steps if s.id.startswith(f"wheel:{fake.spectracut.name}:{name}:")]
+        assert len(parts) == 4
+        assert all(len(base64.b64decode(s.stdin or "")) <= 300 for s in parts)
+        assert b"".join(base64.b64decode(s.stdin or "") for s in parts) == (
+            fake.spectracut.read_bytes()
+        )
+        # a retried chunk rewrites its own offset (idempotent); only chunk 0 truncates
+        for n, s in enumerate(parts):
+            if FACTS[name].os == "windows":
+                assert f"Seek({n * 300}," in s.command
+                assert ("'Create'" in s.command) == (n == 0)
+            else:
+                assert f"seek={n} " in s.command and ("notrunc" in s.command) == (n > 0)
+        final = steps[steps.index(parts[-1]) + 1]
+        sha = hashlib.sha256(fake.spectracut.read_bytes()).hexdigest()
+        assert final.id == f"wheel:{fake.spectracut.name}:{name}" and final.stdin is None
+        assert sha.upper() in final.command or sha in final.command
 
 
 def test_windows_steps_need_no_admin_and_linux_steps_no_sudo(fake: LocalWheels) -> None:

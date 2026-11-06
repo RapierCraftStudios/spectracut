@@ -286,16 +286,19 @@ def test_no_windows_step_waits_for_stdin_eof(storage: StorageTarget | None) -> N
             assert STEP_INPUT in s.command, s.id
 
 
-def test_windows_wheel_copy_writes_part_checks_sha256_and_renames() -> None:
+def test_windows_wheel_copy_writes_part_chunks_checks_sha256_and_renames() -> None:
     plan = _windows_plan()
     for wheel in WHEELS.files:
         step = next(s for s in plan.steps if s.id == f"wheel:{wheel.name}:legion")
+        parts = [s for s in plan.steps if s.id.startswith(f"wheel:{wheel.name}:legion:")]
         sha = hashlib.sha256(wheel.read_bytes()).hexdigest().upper()
         cmd = step.command
         assert ".part" in cmd and "Get-FileHash" in cmd and sha in cmd and "Move-Item" in cmd
         assert cmd.index("Get-FileHash") < cmd.index("Move-Item")
         assert "exit 1" in cmd  # a mismatch fails the step
-        assert base64.b64decode(step.stdin or "") == wheel.read_bytes()
+        joined = b"".join(base64.b64decode(p.stdin or "") for p in parts)
+        assert joined == wheel.read_bytes() and step.stdin is None
+        assert all(".part" in p.command for p in parts)
 
 
 # --- a stopped worker is never left down ---------------------------------------
