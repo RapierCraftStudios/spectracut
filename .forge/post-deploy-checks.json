@@ -63,5 +63,10 @@
     "run": "gh search prs --owner RapierCraftStudios --match comments \"SpectraCut demo clip\" --json url -q '.[0].url'",
     "pass": "/https:\\/\\/github\\.com\\/\\S+\\/pull\\/\\d+/",
     "timeout": 60
+  },
+  "local-model-sfx-batch-load-once-e2e": {
+    "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && SPECTRACUT_E2E=1 uv run pytest -q -m e2e tests/providers/test_local_runtime.py",
+    "pass": "/\\b[1-9]\\d* passed in\\b/",
+    "timeout": 3600
   }
 }
