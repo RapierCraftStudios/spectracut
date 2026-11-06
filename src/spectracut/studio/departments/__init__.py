@@ -7,6 +7,10 @@ those modules. :func:`all_departments` lists every department ``studio run``
 can use, and :data:`STAGE_DEPARTMENTS` says which one builds each profile stage
 (node kind). A stage with no entry keeps its own name as the department name, so
 it shows up as unregistered in the estimate until a department is written.
+
+A department's declared ``inputs`` are the production graph's edges:
+:func:`spectracut.studio.estimate.breakdown` wires each stage to the earlier
+stages of the kinds its department declares.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ STAGE_DEPARTMENTS: dict[str, str] = {
     "brief": "strategist",
     "concept": "concept-writer",
     "script": "script-writer",
+    "art_direction": "art-director",
     "style_frames": "style-frame-artist",
     "storyboard": "storyboard",
     "animatic": "animatic-editor",
