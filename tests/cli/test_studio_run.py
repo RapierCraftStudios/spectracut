@@ -21,6 +21,7 @@ from spectracut.providers.mock_text import MockTextProvider, instance_of
 from spectracut.queue.flamenco import WorkerTag
 from spectracut.queue.signing import generate_keypair, load_private_key
 from spectracut.spec.brief import AudienceProfile, Brief, ClaimSource, Persona, ProofPoint
+from spectracut.storyboard.animatic import TempAudio
 from spectracut.storyboard.models import Board, Storyboard, StyleFrames
 from spectracut.studio import device_shot as ds
 from spectracut.studio.departments import all_departments
@@ -214,6 +215,25 @@ FRAMES_OUT: dict[str, Any] = {
 }
 
 
+def _fake_animatic_av(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """A fake mp4 preview and local voice for the animatic; returns the previews written."""
+    written: list[Path] = []
+
+    def preview(edit: Edit, out: Path) -> Path:
+        out.write_bytes(b"mp4")
+        written.append(out)
+        return out
+
+    def voice(text: str, path: Path) -> TempAudio:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"wav")
+        return TempAudio(media_ref=str(path), duration_s=1.5)
+
+    monkeypatch.setattr(studio_mod, "animatic_preview_factory", lambda: preview)
+    monkeypatch.setattr(art_depts, "default_voice", lambda runtime=None: voice)
+    return written
+
+
 class _FakeDepartments:
     """Stands in for DepartmentRunner: canned script, art, frames, storyboard and shot plan."""
 
@@ -234,7 +254,7 @@ class _FakeDepartments:
             plan = {"shots": [{"shot_id": "open", "template": "end-card", "slots": {"cta": "Go"}}]}
             return RunResult(output=plan)
         if ctx.spec.kind == "storyboard":
-            board = Board(shot_id="open", action="the card lands", duration_s=2.0)
+            board = Board(shot_id="open", beat="hook", action="the card lands", duration_s=2.0)
             return RunResult(output=Storyboard(boards=[board]).model_dump(mode="json"))
         return RunResult(output={"node": ctx.spec.id})
 
@@ -276,31 +296,40 @@ def test_standard_shot_nodes_render_on_the_farm_through_default_runner(
     built: list[str] = []
     monkeypatch.setattr(studio_mod, "device_shot_factory", _fake_farm(tmp_path, fake, built))
     monkeypatch.setattr(studio_mod, "DepartmentRunner", _FakeDepartments)
-    # The same storyboard -> animatic -> template_shots -> shots edges the breakdown wires.
+    _fake_animatic_av(monkeypatch)
+    # The same storyboard -> animatic -> template_shots -> shots edges the breakdown wires;
+    # no voiceover edge, so the animatic falls back to the local voice.
     graph = ProductionGraph("film", profile=load_profile("standard"), gates=GatePolicy())
     graph.add_nodes(
         [
             NodeSpec(id="script", kind="script", department="script-writer"),
             NodeSpec(id="storyboard", kind="storyboard", department="storyboard"),
+            NodeSpec(id="art_direction", kind="art_direction", department="art-director"),
             NodeSpec(
                 id="animatic",
                 kind="animatic",
                 department="animatic-editor",
-                inputs=("script", "storyboard"),
+                inputs=("script", "storyboard", "art_direction"),
             ),
             *shot_depts.shot_nodes(params=params),
         ]
     )
     run = studio_mod.default_runner(studio_mod.Production("film", store), graph)
     report = graph.run(run, critic=shot_depts.shot_critic(0.6))
-    assert report.executed == ["script", "storyboard", "animatic", "template_shots", "shots"], (
-        report
-    )
+    assert report.executed == [
+        "script",
+        "storyboard",
+        "art_direction",
+        "animatic",
+        "template_shots",
+        "shots",
+    ], report
     assert built == ["film"]
-    assert len(fake.submitted) == 2
+    # The animatic's board renders on the farm too: one board plus two shot nodes.
+    assert len(fake.submitted) == 3
     assert all(job["worker_tag"] == "tag-1" for job in fake.submitted)
     again = graph.run(run, critic=shot_depts.shot_critic(0.6))
-    assert not again.executed and len(fake.submitted) == 2
+    assert not again.executed and len(fake.submitted) == 3
 
 
 def test_standard_style_frames_render_on_the_farm_through_default_runner(
@@ -314,6 +343,7 @@ def test_standard_style_frames_render_on_the_farm_through_default_runner(
     monkeypatch.setattr(studio_mod, "device_shot_factory", _fake_farm(tmp_path, fake, built))
     monkeypatch.setattr(studio_mod, "DepartmentRunner", _FakeDepartments)
     monkeypatch.setattr(_FakeDepartments, "kinds", [])
+    previews = _fake_animatic_av(monkeypatch)
     auto = {k: GateMode.AUTO for k in art_depts.PREPRODUCTION_GATES}
     graph = ProductionGraph(
         "film", profile=load_profile("standard"), gates=GatePolicy(defaults=auto)
@@ -338,12 +368,17 @@ def test_standard_style_frames_render_on_the_farm_through_default_runner(
         assert re.fullmatch(r"sha256:[0-9a-f]{64}", frame.render.sha256)
         assert frame.render.provider == "blender-farm"
     assert built == ["film"]
-    assert len(fake.submitted) == len(frames.frames)
+    # Two style frames plus the animatic's one board, all on the farm.
+    assert len(fake.submitted) == len(frames.frames) + 1
     assert all(job["worker_tag"] == "tag-1" for job in fake.submitted)
     assert graph.ledger.totals(art_depts.STYLE_FRAMES).gpu_minutes > 0
+    assert graph.ledger.totals(art_depts.ANIMATIC).gpu_minutes > 0
 
-    Edit.model_validate(graph.output(art_depts.ANIMATIC))
+    edit = Edit.model_validate(graph.output(art_depts.ANIMATIC))
     assert art_depts.ANIMATIC not in _FakeDepartments.kinds
+    board = next(t for t in edit.tracks if t.id == "picture").clips()[0]
+    assert Path(board.media_ref).is_file() and board.media_ref.endswith("boards/open.png")
+    assert [p.name for p in previews] == ["animatic.mp4"]
 
 
 def test_default_runner_routes_finishing_nodes_to_the_finishing_runner(

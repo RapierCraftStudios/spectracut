@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from math import ceil
 
@@ -19,6 +21,76 @@ class TempAudio:
     duration_s: float
 
 
+_TIMECODE = r"(\d+(?::\d+)+(?:\.\d+)?)"
+_RANGE = re.compile(rf"^\s*{_TIMECODE}(?:\s*[-\u2013\u2014]+\s*{_TIMECODE})?(?=\s|$)\s*")
+_LABEL_END = re.compile(r"[.|(,]")
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def _seconds(code: str) -> float:
+    total = 0.0
+    for part in code.split(":"):
+        total = total * 60 + float(part)
+    return total
+
+
+def _range(beat: str) -> tuple[float, float | None] | None:
+    """The leading ``start–end`` (or lone ``start``) timecode of ``beat``, in seconds."""
+    match = _RANGE.match(beat)
+    if match is None:
+        return None
+    end = match.group(2)
+    return _seconds(match.group(1)), _seconds(end) if end else None
+
+
+def _label(beat: str) -> str:
+    """``beat`` after its leading timecode (range), cut at the first ``. | ( ,``."""
+    match = _RANGE.match(beat)
+    rest = beat[match.end() :] if match else beat
+    return _norm(_LABEL_END.split(rest, maxsplit=1)[0])
+
+
+def _resolve(beat: str, beats: Sequence[str]) -> str:
+    if not beat.strip():
+        return ""
+    norm = _norm(beat)
+    for candidate in beats:
+        if _norm(candidate) == norm:
+            return candidate
+    label = _label(beat)
+    best = ""
+    best_len = 0
+    for candidate in beats:
+        prefix = _label(candidate)
+        if prefix and label.startswith(prefix) and len(prefix) > best_len:
+            best, best_len = candidate, len(prefix)
+    if best:
+        return best
+    span = _range(beat)
+    if span is not None:
+        for candidate in beats:
+            window = _range(candidate)
+            if window is not None and window[1] is not None and window[0] <= span[0] < window[1]:
+                return candidate
+    return ""
+
+
+def resolve_beats(storyboard: Storyboard, beats: Sequence[str]) -> Storyboard:
+    """``storyboard`` with each board's ``beat`` rewritten to the script beat it covers.
+
+    A board matches a script beat by normalised text (case and whitespace), else by
+    label (the text after a leading ``0:00–0:03.5`` range, cut at the first ``.``,
+    ``|``, ``(`` or ``,``) starting with the script beat's label (longest wins), else
+    by its start timecode falling in the script beat's range. Unmatched boards get
+    beat ``""``.
+    """
+    boards = [b.model_copy(update={"beat": _resolve(b.beat, beats)}) for b in storyboard.boards]
+    return storyboard.model_copy(update={"boards": boards})
+
+
 def build_animatic(
     edit_id: Slug,
     storyboard: Storyboard,
@@ -29,36 +101,55 @@ def build_animatic(
 ) -> Edit:
     """Cut the boards into an Edit.
 
-    ``vo`` maps a script beat to its temp VO. A board lasts as long as the longer of
-    its planned duration and its VO, so no line is cut short. Each VO clip starts on
-    its board's first frame and links to that picture clip. Music runs from frame 0
-    and is trimmed to the picture.
+    ``vo`` maps a script beat to its temp VO. A beat may span several consecutive
+    boards: its VO clip starts on the first board of the beat, links to that picture
+    clip and runs its full length across the beat's boards. When the VO is longer than
+    the beat's boards, the beat's last board holds for the difference, so no line is
+    cut short. Gaps fill the VO track so every track is as long as the picture. Music
+    runs from frame 0 and is trimmed to the picture.
     """
     rate = FrameRate.of(fps)
-    picture: list[Clip | Gap] = []
+    boards = storyboard.boards
+    frames = [max(1, ceil(b.duration_s * fps)) for b in boards]
+    runs: list[tuple[int, int, TempAudio | None]] = []
+    voiced: set[str] = set()
+    i = 0
+    while i < len(boards):
+        beat = boards[i].beat
+        j = i + 1
+        while beat and j < len(boards) and boards[j].beat == beat:
+            j += 1
+        line = vo.get(beat) if beat and beat not in voiced else None
+        if line is not None:
+            voiced.add(beat)
+            length = max(1, round(line.duration_s * fps))
+            short = length - sum(frames[i:j])
+            if short > 0:
+                frames[j - 1] += short
+        runs.append((i, j, line))
+        i = j
+    picture: list[Clip | Gap] = [
+        Clip(
+            id=f"pic-{board.shot_id}",
+            shot_id=board.shot_id,
+            media_ref=board.image or f"board:{board.shot_id}",
+            source_out=n,
+        )
+        for board, n in zip(boards, frames, strict=True)
+    ]
     voice: list[Clip | Gap] = []
-    for board in storyboard.boards:
-        line = vo.get(board.beat) if board.beat else None
-        seconds = max(board.duration_s, line.duration_s if line else 0.0)
-        frames = max(1, ceil(seconds * fps))
-        pic_id = f"pic-{board.shot_id}"
-        picture.append(
-            Clip(
-                id=pic_id,
-                shot_id=board.shot_id,
-                media_ref=board.image or f"board:{board.shot_id}",
-                source_out=frames,
-            )
-        )
+    for start, stop, line in runs:
+        span = sum(frames[start:stop])
         if line is None:
-            voice.append(Gap(duration=frames))
+            voice.append(Gap(duration=span))
             continue
-        used = min(frames, max(1, ceil(line.duration_s * fps)))
+        used = max(1, round(line.duration_s * fps))
+        first = boards[start].shot_id
         voice.append(
-            Clip(id=f"vo-{board.shot_id}", media_ref=line.media_ref, source_out=used, link=pic_id)
+            Clip(id=f"vo-{first}", media_ref=line.media_ref, source_out=used, link=f"pic-{first}")
         )
-        if used < frames:
-            voice.append(Gap(duration=frames - used))
+        if used < span:
+            voice.append(Gap(duration=span - used))
     tracks = [Track(id="picture", kind="video", items=picture)]
     tracks.append(Track(id="vo", kind="audio", items=voice))
     total = tracks[0].duration

@@ -79,9 +79,13 @@ def _rgb(hex_colour: str) -> list[JsonValue]:
 
 
 def style_frame_recipe(
-    frame: StyleFrame, art: ArtDirection, concept_relpath: str | None = None
+    frame: StyleFrame,
+    art: ArtDirection,
+    concept_relpath: str | None = None,
+    *,
+    tier: Tier = Tier.FINAL,
 ) -> Recipe:
-    """The final-tier PNG recipe for ``frame``.
+    """The PNG recipe for ``frame`` at ``tier`` (final for style frames).
 
     With ``concept_relpath`` (the concept's path in the staged assets dir) the
     backdrop shows ``frame.concept`` pinned by its sha256; without, the art
@@ -118,18 +122,32 @@ def style_frame_recipe(
         blender_version=ds.BLENDER_VERSION,
         steps=steps(calls),
     )
-    return tier_recipe(base, Tier.FINAL)
+    return tier_recipe(base, tier)
 
 
 class FarmStyleFrameRenderer:
-    """Renders style frames on the farm; ``deps`` is called once, on the first frame."""
+    """Renders style frames on the farm; ``deps`` is called once, on the first frame.
 
-    def __init__(self, deps: Callable[[], FarmDeps], production_id: str, workdir: Path) -> None:
+    ``tier`` and ``node_id`` default to final-tier style frames; the animatic's boards
+    use the same renderer at :attr:`Tier.PREVIEW` under the ``animatic`` node.
+    """
+
+    def __init__(
+        self,
+        deps: Callable[[], FarmDeps],
+        production_id: str,
+        workdir: Path,
+        *,
+        tier: Tier = Tier.FINAL,
+        node_id: str = STYLE_FRAMES,
+    ) -> None:
         self._factory = deps
         self._deps: FarmDeps | None = None
         self._lock = threading.Lock()
         self.production_id = production_id
         self.workdir = Path(workdir)
+        self.tier = tier
+        self.node_id = node_id
 
     def deps(self) -> FarmDeps:
         with self._lock:
@@ -154,15 +172,15 @@ class FarmStyleFrameRenderer:
         deps = self.deps()
         config, opts = deps.config, deps.options or ds.ExecutorOptions()
         source, concept = self._stage_source(frame)
-        recipe = style_frame_recipe(frame, art, concept)
+        recipe = style_frame_recipe(frame, art, concept, tier=self.tier)
         assets_dir, _sha = ds.stage_for(config, str(source), recipe)
-        base_id = f"{self.production_id}-{STYLE_FRAMES}-{frame.id}"[:96]
+        base_id = f"{self.production_id}-{self.node_id}-{frame.id}"[:96]
         job_id = ds.fresh_job_id(config, f"{base_id}-{recipe.content_hash[7:19]}")
         envelope = ds.envelope(job_id, recipe, config, opts.now())
         job_file = ds.sign_to_shared(envelope, deps.key, config.shared)
         out = config.out_dir(job_id)
-        job = ds.blender_job(envelope, job_file, out, config, Tier.FINAL, assets_dir)
-        job.node_id = STYLE_FRAMES
+        job = ds.blender_job(envelope, job_file, out, config, self.tier, assets_dir)
+        job.node_id = self.node_id
         queue = JobQueue([ds.executor(deps.client, out, config, opts, assets_dir)], now=opts.now)
         queue.submit(job)
         queue.run_until_idle(sleep=opts.sleep, jobs=[job.id])

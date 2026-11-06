@@ -153,7 +153,11 @@ def test_preproduction_edges_match_the_art_node_builder() -> None:
             "p", Producer().breakdown(_brief(), profile, duration_s=60, brand_kit=kit), profile
         )
         built_nodes = preproduction_nodes(
-            "brief", "script", concept_id="concept", brand_kit_id="brand_kit"
+            "brief",
+            "script",
+            concept_id="concept",
+            brand_kit_id="brand_kit",
+            voiceover_id="voiceover",
         )
         for built in built_nodes:
             spec = graph.spec(built.id)
@@ -285,11 +289,14 @@ def test_elevenlabs_cap_holds_the_node_and_asks_for_approval() -> None:
     assert "voiceover" not in runner.calls
     assert graph.status("voiceover") is NodeStatus.PENDING
     assert "edit" not in runner.calls and "edit" in last.run.blocked
-    assert "shots" in runner.calls and graph.status("shots") is NodeStatus.CLEAN
+    # The animatic cuts to the voiceover's audio, so it (and the shots after it) waits too.
+    assert "animatic" not in runner.calls and "animatic" in last.run.blocked
+    assert "storyboard" in runner.calls and graph.status("storyboard") is NodeStatus.CLEAN
     assert graph.ledger.totals().elevenlabs_characters <= cap
 
     _drive(producer, graph, runner, caps=caps, approved={"voiceover"})
     assert "voiceover" in runner.calls and "edit" in runner.calls
+    assert "shots" in runner.calls and graph.status("shots") is NodeStatus.CLEAN
     assert graph.status("voiceover") is NodeStatus.CLEAN
 
 
