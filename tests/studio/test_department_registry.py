@@ -15,8 +15,6 @@ UNIMPLEMENTED = frozenset(
         "audience_research",
         "previs",
         "assets",
-        "template_shots",
-        "shots",
         "animation_polish",
         "fx",
         "voiceover",
