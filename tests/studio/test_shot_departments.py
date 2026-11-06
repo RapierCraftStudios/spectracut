@@ -182,7 +182,7 @@ def test_departments_are_registered_with_their_stage() -> None:
     for stage in (sd.TEMPLATE_SHOTS, sd.SHOTS):
         dept = depts[STAGE_DEPARTMENTS[stage]]
         assert stage in dept.produces and dept.uses_gpu
-        assert dept.skill_pack.name == "motion-designer"
+        assert dept.skill_pack is not None and dept.skill_pack.name == "motion-designer"
     assert depts["template-shots"] is sd.TemplateShotsDepartment
     assert depts["shots"] is sd.ShotsDepartment
     assert set(sd.TemplateShotsDepartment.inputs) == {"storyboard", "animatic"}
@@ -297,7 +297,7 @@ def test_low_vision_score_fails_the_critic_and_the_graph_revises_then_rejects(
 
 
 def test_shot_critic_fails_on_render_qa_and_delegates_other_kinds() -> None:
-    shot = {
+    shot: dict[str, JsonValue] = {
         "shot_id": "open",
         "template": "typography",
         "recipe": {},

@@ -60,13 +60,13 @@ def test_classify_transient_and_permanent() -> None:
         ProviderError("claude", "provider busy"),
     ):
         assert classify(exc) is FailureClass.TRANSIENT
-    for exc in (
+    for err in (
         _validation_error(),
         ValueError("bad recipe"),
         ProviderError("claude", "policy"),
         KeyError(),
     ):
-        assert classify(exc) is FailureClass.PERMANENT
+        assert classify(err) is FailureClass.PERMANENT
 
 
 def test_transient_failures_retry_with_backoff_and_never_trip_the_breaker() -> None:

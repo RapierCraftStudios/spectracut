@@ -40,7 +40,7 @@ def contract() -> FilmContract:
 def review(contract: FilmContract, **status: str) -> ConformanceReview:
     return ConformanceReview(
         rows=[
-            RowJudgement(row_id=r, status=status.get(r, "met"), evidence=EV)  # type: ignore[arg-type]
+            RowJudgement(row_id=r, status=status.get(r, "met"), evidence=EV)
             for r in contract.row_ids()
         ]
     )

@@ -19,6 +19,7 @@ import pytest
 from typer.testing import CliRunner
 
 from spectracut.cli.app import app
+from spectracut.edit.timeline import Edit
 from spectracut.providers.local.registry import MockLocalProvider
 from spectracut.providers.mock_text import MockTextProvider
 from spectracut.spec.brief import AudienceProfile, Brief, ClaimSource, Persona, ProofPoint
@@ -117,6 +118,9 @@ def test_e2e_style_frame_renders_at_final_tier_on_the_farm_and_needs_approval(
         shutil.copyfile(rendered[0], path)
         return record_image(path, "blender-farm")
 
+    def no_animatic(edit: Edit, path: Path) -> Path:
+        raise AssertionError("this test stops at the style frames; no animatic")
+
     def respond(system: str, prompt: str, schema: dict) -> dict:  # type: ignore[type-arg]
         return ART if schema["title"] == "ArtDirection" else FRAMES
 
@@ -133,6 +137,8 @@ def test_e2e_style_frame_renders_at_final_tier_on_the_farm_and_needs_approval(
         {d.name: d for d in ART_DEPARTMENTS},
         explorer=MockLocalProvider("image"),
         renderer=farm_render,
+        board_renderer=farm_render,
+        preview=no_animatic,
         voice=lambda text, path: None,  # type: ignore[arg-type,return-value]
         workdir=tmp_path / "work",
     )

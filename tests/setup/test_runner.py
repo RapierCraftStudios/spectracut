@@ -333,7 +333,8 @@ def test_copies_run_before_the_worker_is_stopped() -> None:
 
 
 def test_stalled_copy_fails_bounded_and_never_stops_the_worker(tmp_path: Path) -> None:
-    runner, slept = FailsOn("copy"), []
+    runner = FailsOn("copy")
+    slept: list[float] = []
     with pytest.raises(StepTimeout, match="copy"):
         apply_plan(_windows_plan(), runner, SetupState(), tmp_path, sleep=slept.append)
     assert runner.attempts == 4 and slept == [2.0, 4.0, 8.0]

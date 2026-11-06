@@ -48,7 +48,7 @@ def kit() -> BrandKit:
 def _art(swatches: dict[str, str], look: str) -> JsonValue:
     return {
         "mood_board": [{"ref": "glass stack", "take": "light"}],
-        "palette": {"swatches": swatches},
+        "palette": {"swatches": dict[str, JsonValue](swatches)},
         "look": {"id": look},
     }
 

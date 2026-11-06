@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 
 import pytest
-import recorded
+import recorded  # type: ignore[import-not-found]
 from recorded import BRIEF, Film, external_ai_usage, invoke, run_film
 
 from spectracut.formats.cutdowns import CutDownSpec

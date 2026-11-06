@@ -974,7 +974,7 @@ def test_set_passes_refusals(blender: Path, tmp_path: Path, args: dict[str, Any]
 
 
 def test_set_output_accepts_multilayer_exr(blender: Path, tmp_path: Path) -> None:
-    steps = [
+    steps: list[tuple[str, dict[str, Any]]] = [
         ("render.set_passes", {"passes": ["combined", "z", "vector", "cryptomatte_object"]}),
         ("render.set_output", {"format": "OPEN_EXR_MULTILAYER", "color_depth": "32"}),
     ]

@@ -18,6 +18,7 @@ import pytest
 from pydantic import JsonValue
 
 from spectracut.audio.recipe import Provenance
+from spectracut.audio.vo import VoiceoverLine, VoiceoverTrack
 from spectracut.edit.otio_io import read_otio
 from spectracut.edit.timeline import Clip, Edit, Marker, Track
 from spectracut.formats.safe_areas import RESOLUTIONS
@@ -32,12 +33,7 @@ from spectracut.studio import device_shot as ds
 from spectracut.studio.departments import STAGE_DEPARTMENTS, all_departments
 from spectracut.studio.departments import finishing as fd
 from spectracut.studio.departments.shots import RenderedShots, SceneBuilderShot
-from spectracut.studio.departments.sound import (
-    Mix,
-    MusicBed,
-    VoiceoverLine,
-    VoiceoverTrack,
-)
+from spectracut.studio.departments.sound import Mix, MusicBed
 from spectracut.studio.estimate import BRIEF_PARAM
 from spectracut.studio.graph import RunContext, RunResult
 from spectracut.studio.node import NodeSpec, Tier

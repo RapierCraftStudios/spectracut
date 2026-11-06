@@ -260,11 +260,15 @@ def _sequence(tmp_path: Path, name: str, frames: Sequence[Gray]) -> list[str]:
     return [str(_png(tmp_path / name / f"{i:03d}.png", f)) for i, f in enumerate(frames)]
 
 
+def _js(paths: list[str]) -> list[JsonValue]:
+    return list[JsonValue](paths)
+
+
 def test_sequence_review_catches_flicker(tmp_path: Path) -> None:
     seq = _sequence(tmp_path, "flicker", [_bar(2 * i) if i % 2 else _flat(0.8) for i in range(8)])
     review = review_sequence([Path(p) for p in seq])
     assert "flicker" in review.faults
-    verdict = _critic(ScriptedVision())(SHOT, {"sequence": seq})
+    verdict = _critic(ScriptedVision())(SHOT, {"sequence": _js(seq)})
     assert not verdict.passed and "flickers" in verdict.comment
     assert verdict.scores["flicker"] > 0.02
 
@@ -273,14 +277,14 @@ def test_sequence_review_catches_a_static_ui(tmp_path: Path) -> None:
     seq = _sequence(tmp_path, "static", [_bar(8)] * 6)
     review = review_sequence([Path(p) for p in seq])
     assert review.faults == ("static_ui",)
-    verdict = _critic(ScriptedVision())(SHOT, {"frames": seq[:1], "sequence": seq})
+    verdict = _critic(ScriptedVision())(SHOT, {"frames": _js(seq[:1]), "sequence": _js(seq)})
     assert not verdict.passed and "static" in verdict.comment
 
 
 def test_smooth_motion_passes_sequence_review(tmp_path: Path) -> None:
     seq = _sequence(tmp_path, "smooth", [_bar(2 * i) for i in range(8)])
     assert review_sequence([Path(p) for p in seq]).ok
-    verdict = _critic(ScriptedVision())(SHOT, {"sequence": seq})
+    verdict = _critic(ScriptedVision())(SHOT, {"sequence": _js(seq)})
     assert verdict.passed, verdict.comment
 
 

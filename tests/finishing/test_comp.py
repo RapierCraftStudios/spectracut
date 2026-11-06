@@ -143,7 +143,7 @@ def test_comped_profile_stages() -> None:
 # ---- a comp change re-runs compositing only ---------------------------------------
 
 
-class MultilayerFlamenco(FakeFlamenco):
+class MultilayerFlamenco(FakeFlamenco):  # type: ignore[misc]
     """``FakeFlamenco`` that writes ``.exr`` frames for single-layer and multilayer EXR."""
 
     def submit(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -210,7 +210,8 @@ def test_a_comp_change_reruns_comp_and_finish_only(tmp_path: Path) -> None:
     assert first.executed == ["shot", "render_preview", "render_scene", "comp", "finish"], first
     assert len(fake.submitted) == 4
     scene = graph.output("render_scene")
-    assert isinstance(scene, dict) and list(scene["frames"]) == ["frame_0001.exr"]
+    assert isinstance(scene, dict) and isinstance(scene["frames"], dict | list)
+    assert list(scene["frames"]) == ["frame_0001.exr"]
     assert scene["render_passes"] == list(comp.RENDER_PASSES)
     render_recipe = fake.recipe(1)
     assert {"tool": "render.set_passes", "args": {"passes": list(comp.RENDER_PASSES)}} in [

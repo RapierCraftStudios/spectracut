@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from spectracut.audio.cues import PROCEDURAL
-from spectracut.audio.procedural import SurgeXTGenerator, build_surge_lua
-from spectracut.audio.procedural.surge import SURGE_KINDS
+from spectracut.audio.procedural import SurgeXTGenerator
+from spectracut.audio.procedural.surge import SURGE_KINDS, build_surge_lua
 from spectracut.audio.procedural.synth import PROCEDURAL_KINDS
 from spectracut.audio.recipe import SoundSpec
 
@@ -58,7 +58,7 @@ def test_surge_program_defaults_come_from_the_kind() -> None:
 )
 def test_surge_program_rejects_bad_params(params: dict[str, float | str], match: str) -> None:
     with pytest.raises(ValueError, match=match):
-        _lua(_spec(**params))
+        _lua(_spec("surge_pluck", **params))
 
 
 def test_surge_program_rejects_unknown_kind() -> None:
