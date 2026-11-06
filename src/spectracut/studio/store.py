@@ -25,6 +25,7 @@ from pydantic import AwareDatetime, ValidationError
 
 from spectracut.spec._base import ContentHash, Slug, StrictModel, canonical_json, content_hash
 from spectracut.spec.brief import Brief, CreativeBrief
+from spectracut.studio.contract import FilmContract
 from spectracut.studio.graph import GraphSnapshot, ProductionGraph
 from spectracut.studio.producer import BudgetCaps
 
@@ -121,6 +122,8 @@ class ProductionStore:
 
     def save(self, production_id: str, graph: ProductionGraph) -> None:
         write_atomic(self.path(production_id) / "graph.json", canonical_json(graph.snapshot()))
+        if graph.contract is not None:
+            self.save_contract(production_id, graph.contract)
 
     def update_meta(self, production_id: str, meta: ProductionMeta) -> None:
         """Replace ``production.json`` of an existing production."""
@@ -139,7 +142,32 @@ class ProductionStore:
             graph = ProductionGraph.from_snapshot(snap)
         except ValueError as exc:
             raise ProductionError(f"production {production_id!r}: {exc}") from exc
+        graph.contract = self.contract(production_id)
         return graph, meta
+
+    def save_contract(self, production_id: str, contract: FilmContract) -> None:
+        """Write ``contracts/v<N>.json`` once; a stored version is never overwritten."""
+        path = self.path(production_id) / "contracts" / f"v{contract.version}.json"
+        data = canonical_json(contract)
+        if path.is_file():
+            if path.read_bytes() != data:
+                raise ProductionError(
+                    f"contract v{contract.version} of {production_id!r} is frozen"
+                )
+            return
+        write_atomic(path, data)
+
+    def contract(self, production_id: str, version: int | None = None) -> FilmContract | None:
+        """A stored contract version, the latest by default; ``None`` when none is frozen."""
+        folder = self.path(production_id) / "contracts"
+        if version is None:
+            found = [int(p.stem[1:]) for p in folder.glob("v*.json")] if folder.is_dir() else []
+            if not found:
+                return None
+            version = max(found)
+        elif not (folder / f"v{version}.json").is_file():
+            return None
+        return self._read(production_id, f"contracts/v{version}.json", FilmContract)
 
     def brief(self, production_id: str) -> Brief | CreativeBrief:
         meta = self.meta(production_id)

@@ -30,6 +30,8 @@ from datetime import UTC, datetime
 from pydantic import AwareDatetime, Field, JsonValue
 
 from spectracut.spec._base import ContentHash, Slug, StrictModel, content_hash
+from spectracut.studio.conformance import CONFORMANCE_KINDS, Conformance, blockers
+from spectracut.studio.contract import FilmContract, freeze_contract
 from spectracut.studio.facts import (
     FactFinding,
     FactsDraft,
@@ -200,6 +202,9 @@ class ProductionGraph:
         self._notes: dict[str, tuple[RevisionNote, ...]] = {}
         self._lock = threading.RLock()
         self._escalate: Escalate | None = None
+        self.contract: FilmContract | None = None
+        """The latest film contract, frozen when the brief node is approved."""
+        self._conformance: Conformance | None = None
 
     # ---- persistence -------------------------------------------------------
 
@@ -421,8 +426,22 @@ class ProductionGraph:
         self._cache[key] = accepted
         self._notes.pop(node_id, None)
         self._decide(node_id, human="approved", comment=comment)
+        self._freeze_contract(self._specs[node_id])
         self._states[node_id] = self._states[node_id].model_copy(
             update={"status": NodeStatus.CLEAN, "output_hash": accepted.output_hash}
+        )
+
+    def _freeze_contract(self, spec: NodeSpec) -> None:
+        """Freeze the film contract from an approved brief node; a changed brief adds a version."""
+        brief = spec.params.get("brief")
+        if spec.kind != "brief" or not isinstance(brief, dict):
+            return
+        plan = spec.params.get("plan")
+        length = plan.get("duration_s") if isinstance(plan, dict) else None
+        self.contract = freeze_contract(
+            brief,
+            length_s=float(length) if isinstance(length, int | float) else None,
+            prior=self.contract,
         )
 
     def reject(self, node_id: str, comment: str = "") -> None:
@@ -452,6 +471,7 @@ class ProductionGraph:
         max_workers: int = 1,
         hold: Hold | None = None,
         escalate: Escalate | None = None,
+        conformance: Conformance | None = None,
     ) -> RunReport:
         """Build every pending or dirty node whose inputs are clean, in dependency order.
 
@@ -463,10 +483,13 @@ class ProductionGraph:
         a returned reason keeps that node unbuilt (listed in ``report.held``) and
         its dependants blocked. ``escalate`` may name a higher tier for a node the
         Critic rejected after its revision budget; it is rebuilt there once.
+        With a film contract frozen, ``conformance`` reviews each ``edit`` and
+        ``delivery`` output row by row; anything but a passed review rejects it.
         """
         if max_workers < 1:
             raise ValueError(f"max_workers must be at least 1, got {max_workers}")
         self._escalate = escalate
+        self._conformance = conformance
         if max_workers > 1:
             return self._run_parallel(runner, critic, max_workers, hold)
         report = RunReport()
@@ -655,6 +678,7 @@ class ProductionGraph:
             verdict = reviewed(spec, result.output) if reviewed is not None else None
             if verdict is not None and preserve:
                 verdict = _with_conformance(verdict, preserve, result.output)
+            verdict = self._conform(spec, result.output, verdict)
             with self._lock:
                 status = self._settle(
                     spec,
@@ -678,6 +702,27 @@ class ProductionGraph:
                 continue
             return status
         raise AssertionError("unreachable")  # pragma: no cover
+
+    def _conform(
+        self, spec: NodeSpec, output: JsonValue, verdict: CriticVerdict | None
+    ) -> CriticVerdict | None:
+        """Fold the conformance review of an edit or delivery output into ``verdict``."""
+        contract, review_of = self.contract, self._conformance
+        if contract is None or review_of is None or spec.kind not in CONFORMANCE_KINDS:
+            return verdict
+        reasons = blockers(contract, review_of(spec, output, contract))
+        if not reasons:
+            return verdict
+        finding = Finding(
+            reviewer="conformance",
+            severity=Severity.HIGH,
+            text=f"contract v{contract.version} not met: " + "; ".join(reasons),
+            confirmed=True,
+        )
+        prior = verdict.findings if verdict is not None else []
+        return (verdict or CriticVerdict(passed=False)).model_copy(
+            update={"passed": False, "findings": [*prior, finding]}
+        )
 
     def _settle(
         self,
@@ -731,6 +776,7 @@ class ProductionGraph:
             self._set(spec.id, NodeStatus.AWAITING_APPROVAL)
             return NodeStatus.AWAITING_APPROVAL
         self._record(spec, tier, key, attempt, started_at, start, usage, "accepted")
+        self._freeze_contract(spec)
         self._cache[key] = accepted
         self._set(spec.id, NodeStatus.CLEAN, output_hash=accepted.output_hash)
         return NodeStatus.CLEAN
