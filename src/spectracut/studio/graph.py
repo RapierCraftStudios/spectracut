@@ -79,6 +79,9 @@ class RunResult(StrictModel):
 
 Runner = Callable[[RunContext], RunResult]
 
+Escalate = Callable[[NodeSpec, Tier], Tier | None]
+"""``escalate(spec, tier) -> next tier``: one more build at that tier before a rejection stands."""
+
 Hold = Callable[[NodeSpec], str | None]
 """``hold(spec) -> reason``: a reason keeps a ready node from building this run."""
 
@@ -171,6 +174,7 @@ class ProductionGraph:
         self._decisions: dict[str, GateDecision] = {}
         self._notes: dict[str, tuple[RevisionNote, ...]] = {}
         self._lock = threading.RLock()
+        self._escalate: Escalate | None = None
 
     # ---- persistence -------------------------------------------------------
 
@@ -422,6 +426,7 @@ class ProductionGraph:
         critic: Critic | None = None,
         max_workers: int = 1,
         hold: Hold | None = None,
+        escalate: Escalate | None = None,
     ) -> RunReport:
         """Build every pending or dirty node whose inputs are clean, in dependency order.
 
@@ -431,10 +436,12 @@ class ProductionGraph:
 
         ``hold`` is asked about each ready node that is not reused from the cache;
         a returned reason keeps that node unbuilt (listed in ``report.held``) and
-        its dependants blocked.
+        its dependants blocked. ``escalate`` may name a higher tier for a node the
+        Critic rejected after its revision budget; it is rebuilt there once.
         """
         if max_workers < 1:
             raise ValueError(f"max_workers must be at least 1, got {max_workers}")
+        self._escalate = escalate
         if max_workers > 1:
             return self._run_parallel(runner, critic, max_workers, hold)
         report = RunReport()
@@ -553,7 +560,30 @@ class ProductionGraph:
         assert output_hash is not None, node_id
         return output_hash
 
+    def add_decisions(self, node_id: str, decisions: Iterable[str]) -> None:
+        """Append supervisor ``decisions`` to the node's state."""
+        extra = tuple(decisions)
+        with self._lock:
+            state = self._states[node_id]
+            self._states[node_id] = state.model_copy(
+                update={"decisions": (*state.decisions, *extra)}
+            )
+
     def _build(
+        self, spec: NodeSpec, tier: Tier, key: str, runner: Runner, critic: Critic | None
+    ) -> NodeStatus:
+        status = self._build_at(spec, tier, key, runner, critic)
+        escalate = self._escalate
+        if status is not NodeStatus.REJECTED or escalate is None:
+            return status
+        higher = escalate(spec, tier)
+        if higher is None:
+            return status
+        with self._lock:
+            hashes = {i: self._require_hash(i) for i in spec.inputs}
+        return self._build_at(spec, higher, node_key(spec, hashes, higher), runner, critic)
+
+    def _build_at(
         self, spec: NodeSpec, tier: Tier, key: str, runner: Runner, critic: Critic | None
     ) -> NodeStatus:
         mode = self.gate_for(spec)
