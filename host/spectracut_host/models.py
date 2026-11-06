@@ -11,11 +11,15 @@ host names its factory in ``SPECTRACUT_MODEL_ENTRY_<FAMILY>`` (family upper-case
 
 from __future__ import annotations
 
+import base64
 import importlib
+import json
 import os
 import re
+import tempfile
 from collections.abc import Callable
-from typing import Any
+from pathlib import Path
+from typing import Any, TextIO
 
 from spectracut.providers.base import ProviderError
 from spectracut.providers.local.runtime import ModelSession, ModelSpec
@@ -44,3 +48,74 @@ def load_model(spec: ModelSpec) -> ModelSession:
     except (ImportError, AttributeError) as exc:
         raise ProviderError("local", f"cannot load {entry} for {spec.id}: {exc}") from exc
     return factory(spec)  # type: ignore[no-any-return]
+
+
+def _reply(out: TextIO, message: dict[str, Any]) -> None:
+    out.write(json.dumps(message) + "\n")
+    out.flush()
+
+
+def serve(
+    inp: TextIO,
+    out: TextIO,
+    loader: Callable[[ModelSpec], ModelSession] = load_model,
+    *,
+    workdir: Path | None = None,
+) -> int:
+    """Serve one model session over JSON lines (``spectracut-host models-serve``).
+
+    Requests: ``{"op": "load", "model": id}`` (resolved by id from the model
+    registry only, never from spec fields on the wire), ``{"op": "generate",
+    "prompt": ..., "options": {...}}`` and ``{"op": "close"}``. Every request gets one
+    reply line, ``{"ok": true, ...}`` or ``{"ok": false, "error": ...}``; a generate
+    reply carries the output file as base64 ``data``. Returns on close or EOF, after
+    closing the loaded model.
+    """
+    from spectracut.providers.local.registry import MODELS
+
+    session: ModelSession | None = None
+    loaded: str | None = None
+    try:
+        with tempfile.TemporaryDirectory(dir=workdir, prefix="models-serve-") as tmp:
+            n = 0
+            for line in inp:
+                if not line.strip():
+                    continue
+                try:
+                    req = json.loads(line)
+                    if not isinstance(req, dict):
+                        raise ValueError("request must be a JSON object")
+                    op = req.get("op")
+                    if op == "close":
+                        _reply(out, {"ok": True})
+                        return 0
+                    if op == "load":
+                        spec = MODELS.get(str(req.get("model")))
+                        if spec is None:
+                            raise ValueError(f"unknown model {req.get('model')!r}")
+                        if loaded != spec.id:
+                            if session is not None:
+                                session.close()
+                                session, loaded = None, None
+                            session, loaded = loader(spec), spec.id
+                        _reply(out, {"ok": True, "model": spec.id})
+                    elif op == "generate":
+                        if session is None:
+                            raise ValueError("no model loaded")
+                        options = req.get("options") or {}
+                        if not isinstance(options, dict):
+                            raise ValueError("options must be an object")
+                        n += 1
+                        path = Path(tmp) / f"out-{n}"
+                        session.generate(str(req.get("prompt", "")), out_path=path, **options)
+                        data = base64.b64encode(path.read_bytes()).decode("ascii")
+                        path.unlink(missing_ok=True)
+                        _reply(out, {"ok": True, "data": data})
+                    else:
+                        raise ValueError(f"unknown op {op!r}")
+                except Exception as exc:  # noqa: BLE001 - every failure is a reply, never a crash
+                    _reply(out, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            return 0
+    finally:
+        if session is not None:
+            session.close()

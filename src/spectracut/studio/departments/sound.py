@@ -43,6 +43,7 @@ from spectracut.audio.recipe import AudioRecipe, Cue, Layer, Provenance, SoundSp
 from spectracut.audio.render import ArdourRunner, read_wav, render_mix, write_wav
 from spectracut.audio.vo import VoiceOver, VoiceoverLine, VoiceoverTrack, VoLine
 from spectracut.edit.timeline import Edit
+from spectracut.providers.base import ProviderError
 from spectracut.providers.elevenlabs import ENV_VAR as ELEVENLABS_ENV_VAR
 from spectracut.providers.local.registry import LocalProvider, mock_mode
 from spectracut.providers.local.runtime import ModelRuntime
@@ -226,6 +227,7 @@ class SoundRunner:
         voice_over: VoiceOver | None = None,
         elevenlabs_configured: Callable[[], bool] = elevenlabs_configured,
         runtime: ModelRuntime | None = None,
+        runtime_problem: str | None = None,
         providers: Mapping[str, LocalProvider] | None = None,
         ardour: ArdourRunner | None = None,
         stretcher: Stretcher | None = None,
@@ -237,6 +239,7 @@ class SoundRunner:
         self.voice_over = voice_over
         self.elevenlabs_configured = elevenlabs_configured
         self.runtime = runtime
+        self.runtime_problem = runtime_problem
         self.providers = providers
         self.ardour = ardour
         self.stretcher = stretcher
@@ -260,6 +263,16 @@ class SoundRunner:
     def _minutes(self, start: float) -> float:
         return max(0.0, self.clock() - start) / 60.0
 
+    def _need_models(self, ctx: RunContext) -> None:
+        """Fail before any local model runs when there is no way to reach one.
+
+        The error carries ``runtime_problem``, which names the model host and how to
+        register it, instead of the provider registry's generic one.
+        """
+        if self.runtime is None and self.providers is None and not mock_mode():
+            problem = self.runtime_problem or "no model runtime (no model host configured)"
+            raise ProviderError("local", f"{ctx.spec.kind}: {problem}")
+
     def _edit(self, ctx: RunContext) -> Edit:
         return Edit.model_validate(ctx.inputs[ctx.spec.inputs[0]])
 
@@ -270,6 +283,8 @@ class SoundRunner:
         voiced = [line for line in script.lines if line.vo.strip()]
         lines = [VoLine(id=f"line-{n}", text=line.vo) for n, line in enumerate(voiced)]
         final = self.elevenlabs_configured()
+        if not final and self.voice_over is None and lines:
+            self._need_models(ctx)
         vo = self.voice_over or VoiceOver(
             self.workdir / "vo",
             voice=DEFAULT_VOICE,
@@ -320,6 +335,8 @@ class SoundRunner:
                         seed=layer.sound.seed,
                     )
                 )
+        if requests:
+            self._need_models(ctx)
         start = self.clock()
         chosen = {
             s.cue_id: s
@@ -365,6 +382,7 @@ class SoundRunner:
             description=f"music bed for the product film {edit.name or edit.id}",
             duration_s=target,
         )
+        self._need_models(ctx)
         start = self.clock()
         (bed,) = generate_scene(
             [request], self.workdir / "music", runtime=self.runtime, providers=self.providers

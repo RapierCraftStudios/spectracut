@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import socket
 import threading
+import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +18,7 @@ from pydantic import JsonValue, ValidationError
 
 from spectracut.edit.preview import AnimaticPreview, FfmpegPreview
 from spectracut.providers.base import TextProvider, select_text_provider
+from spectracut.providers.config import config_path
 from spectracut.providers.local.runtime import ModelRuntime
 from spectracut.queue.executors.flamenco import FlamencoApi
 from spectracut.spec.brand import BrandKit, load_brand_kit
@@ -65,6 +68,18 @@ class Production:
     def __init__(self, production_id: str, store: ProductionStore) -> None:
         self.id = production_id
         self.store = store
+        self._models: ModelRuntimeResult | None = None
+        self._models_lock = threading.Lock()
+
+    def model_runtime(self) -> ModelRuntimeResult:
+        """The model runtime for this run, resolved once (:data:`model_runtime_factory`).
+
+        Sound and preproduction share it, so model jobs take leases from one pool.
+        """
+        with self._models_lock:
+            if self._models is None:
+                self._models = model_runtime_factory(self.store.home)
+            return self._models
 
     @property
     def brief(self) -> Brief | CreativeBrief:
@@ -103,24 +118,83 @@ SCREEN_ASSET = Path("ui") / "dashboard.png"
 """The UI screen image, relative to the brand kit's ``assets`` dir."""
 
 
-def _local_runtime(home: Path) -> ModelRuntime | None:
-    """A local model runtime when this machine is a registered render host with the
-    host model loaders installed (``spectracut_host``), else ``None``."""
-    try:
-        from spectracut_host.models import load_model  # type: ignore[import-not-found,unused-ignore]
-    except ImportError:
+MODEL_HOST_ENV = "SPECTRACUT_MODEL_HOST"
+"""Names the model host (a registered host alias); else ``[models] host`` in the config."""
+
+ModelRuntimeResult = tuple[ModelRuntime | None, str | None]
+"""A model runtime, or ``None`` and the problem that names the missing model host."""
+
+
+def _configured_model_host() -> str | None:
+    """The model host from ``SPECTRACUT_MODEL_HOST``, else ``[models] host`` in the config."""
+    wanted = os.environ.get(MODEL_HOST_ENV, "").strip()
+    if wanted:
+        return wanted
+    path = config_path()
+    if not path.is_file():
         return None
+    try:
+        table = tomllib.loads(path.read_text(encoding="utf-8")).get("models", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    host = table.get("host") if isinstance(table, dict) else None
+    return host.strip() if isinstance(host, str) and host.strip() else None
+
+
+def model_runtime(home: Path) -> ModelRuntimeResult:
+    """The model runtime on the model host from setup state, or the problem naming the host.
+
+    The model host is :data:`MODEL_HOST_ENV`, else ``[models] host``, else the single
+    registered host with GPUs (``legion``). On the model host itself with the host
+    loaders installed (``spectracut_host``) models load in-process; elsewhere they
+    run on the host over ssh (:class:`~spectracut.providers.local.remote.RemoteLoader`).
+    """
     from spectracut.cli.render import load_hosts
+    from spectracut.providers.local.remote import RemoteLoader
     from spectracut.queue.executors.base import LeasePool
 
-    name = socket.gethostname()
+    wanted = _configured_model_host()
     try:
-        slot = next((h for h in load_hosts(home) if h.name == name), None)
-    except (OSError, ValueError):
-        return None
-    if slot is None:
-        return None
-    return ModelRuntime(load_model, LeasePool(slot.cpus, slot.mem_gb, slot.gpus), host=slot.name)
+        hosts = load_hosts(home)
+    except (OSError, ValueError) as exc:
+        return None, f"cannot read the host registry for the model host: {exc}"
+    if wanted is not None:
+        slot = next((h for h in hosts if h.name == wanted), None)
+        if slot is None:
+            return None, (
+                f"model host {wanted!r} is not registered: run "
+                f"`spectracut hosts add {wanted} --gpu MODEL:VRAM_GB`"
+            )
+    else:
+        gpu_hosts = [h for h in hosts if h.gpus]
+        if not gpu_hosts:
+            return None, (
+                "no model host: register the GPU model host (legion) with "
+                "`spectracut hosts add legion --gpu MODEL:VRAM_GB`, or set "
+                f"{MODEL_HOST_ENV} or [models] host"
+            )
+        if len(gpu_hosts) > 1:
+            names = ", ".join(sorted(h.name for h in gpu_hosts))
+            return None, (
+                f"several GPU hosts ({names}): pick the model host with "
+                f"{MODEL_HOST_ENV} or [models] host"
+            )
+        slot = gpu_hosts[0]
+    pool = LeasePool(slot.cpus, slot.mem_gb, slot.gpus)
+    if slot.name == socket.gethostname():
+        try:
+            from spectracut_host.models import (  # type: ignore[import-not-found,unused-ignore]
+                load_model,
+            )
+        except ImportError:
+            pass
+        else:
+            return ModelRuntime(load_model, pool, host=slot.name), None
+    return ModelRuntime(RemoteLoader(slot.name, slot.profile.os), pool, host=slot.name), None
+
+
+model_runtime_factory: Callable[[Path], ModelRuntimeResult] = model_runtime
+"""Resolves the model runtime from a SpectraCut home; tests inject a fake runtime."""
 
 
 @dataclass
@@ -133,6 +207,8 @@ class SoundDeps:
     """
 
     runtime: ModelRuntime | None = None
+    runtime_problem: str | None = None
+    """Why there is no ``runtime`` (names the model host); raised when a local model is needed."""
     voice_over: VoiceOver | None = None
     elevenlabs_configured: Callable[[], bool] = sound_depts.elevenlabs_configured
     providers: Mapping[str, LocalProvider] | None = None
@@ -141,8 +217,9 @@ class SoundDeps:
 
 
 def default_sound(production: Production) -> SoundDeps:
-    """Real sound dependencies: the local model runtime when this is a render host."""
-    return SoundDeps(runtime=_local_runtime(production.store.home))
+    """Real sound dependencies: the model runtime on the model host from setup state."""
+    runtime, problem = production.model_runtime()
+    return SoundDeps(runtime=runtime, runtime_problem=problem)
 
 
 sound_factory: Callable[[Production], SoundDeps] = default_sound
@@ -225,7 +302,7 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
         with lock:
             if preproduction is None:
                 workdir = production.store.path(production.id) / "preproduction"
-                runtime = _local_runtime(production.store.home)
+                runtime, _problem = production.model_runtime()
                 preproduction = art_depts.PreproductionRunner(
                     text,
                     DEPARTMENTS,
@@ -278,6 +355,7 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                     voice_over=deps.voice_over,
                     elevenlabs_configured=deps.elevenlabs_configured,
                     runtime=deps.runtime,
+                    runtime_problem=deps.runtime_problem,
                     providers=deps.providers,
                     ardour=deps.ardour,
                     stretcher=deps.stretcher,

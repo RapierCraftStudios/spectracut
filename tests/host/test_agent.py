@@ -240,3 +240,20 @@ def test_run_assets_dir_flag_overrides_env(
     assert str((flag_dir / "devices" / "phone.glb").resolve()) in calls
     assert str(env_dir) not in calls
     assert json.loads((out / "result.json").read_text())["scene_graph_hash"]
+
+
+def test_models_serve_answers_json_lines_on_stdin(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``spectracut-host models-serve`` is what the control plane runs over ssh (#289)."""
+    import io
+
+    from spectracut_host.agent import EXIT_OK, main
+
+    monkeypatch.setattr(
+        sys, "stdin", io.StringIO('{"op": "load", "model": "nope"}\n{"op": "close"}\n')
+    )
+    assert main(["models-serve"]) == EXIT_OK
+    replies = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert replies[0]["ok"] is False and "unknown model 'nope'" in replies[0]["error"]
+    assert replies[1] == {"ok": True}
