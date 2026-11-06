@@ -30,6 +30,12 @@ from spectracut.queue.executors.base import ExecutorBusy, GpuCard, LeasePool, Re
 SFX = MODELS["ezaudio-xl"]
 
 
+@pytest.fixture(autouse=True)
+def _real_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run against the real runtime path even when the ambient env selects mock providers."""
+    monkeypatch.delenv("SPECTRACUT_PROVIDERS", raising=False)
+
+
 class FakeSession:
     def __init__(self, spec: ModelSpec, log: list[str]) -> None:
         self.spec, self.log = spec, log
