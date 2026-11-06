@@ -123,6 +123,82 @@ def srgb_decode(encoded: float) -> float:
     return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
 
 
+# ---- forward view transform and screen exposure ----------------------------------
+
+AGX_MIN_EV = -12.47393
+AGX_MAX_EV = 4.026069
+"""The AgX log2 encoding range (stops around scene-linear 1.0)."""
+SCREEN_WHITE_TARGET = 0.97
+"""Display code value UI white must reach to read as display white."""
+MAX_SCREEN_STRENGTH = 100.0
+"""``device.add``'s emission strength ceiling."""
+
+
+def agx_encode(linear: float) -> float:
+    """Achromatic AgX base: log2 encode then the AgX sigmoid, to a display code value.
+
+    The widely used polynomial fit of Blender's AgX base contrast curve. It is exact
+    enough for neutral values (UI white), which the inset/outset matrices leave
+    achromatic; it is not a full OCIO AgX for saturated colours.
+    """
+    v = max(linear, 1e-10)
+    x = (math.log2(v) - AGX_MIN_EV) / (AGX_MAX_EV - AGX_MIN_EV)
+    x = min(max(x, 0.0), 1.0)
+    x2 = x * x
+    x4 = x2 * x2
+    y = (
+        15.5 * x4 * x2
+        - 40.14 * x4 * x
+        + 31.96 * x4
+        - 6.868 * x2 * x
+        + 0.4298 * x2
+        + 0.1191 * x
+        - 0.00232
+    )
+    return float(min(max(y, 0.0), 1.0))
+
+
+def view_encode(linear: float, pipeline: ColorPipeline) -> float:
+    """Scene-linear neutral ``linear`` to the display code value under ``pipeline``.
+
+    ``Standard`` is the display's inverse EOTF with a clip at 1.0; ``AgX`` is
+    :func:`agx_encode`. ``ACES 2.0`` has no model here and is refused rather than
+    guessed.
+    """
+    if pipeline.view_transform == "Standard":
+        return rec709_encode(linear) if pipeline.display == "Rec.1886" else srgb_encode(linear)
+    if pipeline.view_transform == "AgX":
+        return agx_encode(linear)
+    raise ValueError(f"no forward model for the {pipeline.view_transform!r} view transform")
+
+
+def screen_white_strength(
+    pipeline: ColorPipeline, target: float = SCREEN_WHITE_TARGET, ui_white: float = 1.0
+) -> float:
+    """The lowest emission strength at which a UI white texel encodes to ``target``.
+
+    An emissive screen with a (decoded) white texel of ``ui_white`` emits
+    ``strength * ui_white`` scene-linear; the view transform then maps it to a
+    display code value. Under ``Standard`` that is 1.0 (white is already white);
+    under ``AgX`` the highlight roll-off needs several stops more.
+    """
+    if not 0.0 < target <= 1.0 or ui_white <= 0.0:
+        raise ValueError("target must be in (0, 1] and ui_white positive")
+    if view_encode(MAX_SCREEN_STRENGTH * ui_white, pipeline) < target:
+        raise ValueError(
+            f"{pipeline.view_transform} cannot reach display value {target} "
+            f"within emission strength {MAX_SCREEN_STRENGTH}"
+        )
+    lo, hi = 0.0, MAX_SCREEN_STRENGTH
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if view_encode(mid * ui_white, pipeline) >= target:
+            hi = mid
+        else:
+            lo = mid
+    return math.ceil(hi * 10_000) / 10_000
+
+
 # ---- grades ---------------------------------------------------------------------
 
 
