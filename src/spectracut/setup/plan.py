@@ -808,9 +808,11 @@ def _run_steps(
             except SetupError as again:
                 failed.append(str(again))
         if failed:
-            raise SetupError(
-                f"{exc}; and restarting the worker failed: {'; '.join(failed)}"
-            ) from exc
+            message = f"{exc}; and restarting the worker failed: {'; '.join(failed)}"
+            combined = SetupError(message)
+            if isinstance(exc, SetupError):
+                combined.host, combined.summary = exc.host, exc.summary
+            raise combined from exc
         raise
 
 
@@ -832,7 +834,11 @@ def _run_each(
             start = starts.get(START_PREFIX + step.id.removeprefix(STOP_PREFIX))
             if start is not None:
                 pending[start.id] = start
-        out = run_with_retry(partial(runner.run, step), step.kind, sleep)
+        try:
+            out = run_with_retry(partial(runner.run, step), step.kind, sleep)
+        except SetupError as exc:
+            exc.host, exc.summary = step.host, step.summary
+            raise
         pending.pop(step.id, None)
         if step.artifact and out:
             write_atomic(
@@ -919,7 +925,10 @@ def bootstrap_host(
 
 
 class SetupError(RuntimeError):
-    pass
+    """A setup failure; ``host``/``summary`` name the step that failed once a run attributes it."""
+
+    host: str | None = None
+    summary: str | None = None
 
 
 class StepTimeout(SetupError):
@@ -988,6 +997,12 @@ class CommandRunner:
     def timeout_for(self, kind: StepKind) -> float:
         return self.timeout if self.timeout is not None else STEP_TIMEOUTS[kind]
 
+    def step_timeout(self, step: Step) -> float:
+        """The step's own timeout (scaled to its size) unless the runner overrides all."""
+        if self.timeout is None and step.timeout is not None:
+            return step.timeout
+        return self.timeout_for(step.kind)
+
     def _exec(
         self, host: str, cmd: str, shell: str, stdin: str | None
     ) -> subprocess.CompletedProcess[str]:
@@ -1046,7 +1061,7 @@ class CommandRunner:
             step.command,
             step.shell,
             step.stdin,
-            self.timeout_for(step.kind),
+            self.step_timeout(step),
             step.summary,
         )
         if proc.returncode != 0:

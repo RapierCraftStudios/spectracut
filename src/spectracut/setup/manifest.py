@@ -124,6 +124,7 @@ class Step:
     version: str | None = None
     artifact: str | None = None  # file under <home>/profiles that receives the step's stdout
     kind: StepKind = "run"
+    timeout: float | None = None  # seconds; overrides the kind's default when set
 
 
 class StepRunner(Protocol):
