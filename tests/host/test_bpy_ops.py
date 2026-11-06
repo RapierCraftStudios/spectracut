@@ -364,6 +364,11 @@ NEW_TOOLS = {
     "world.set_hdri",
     "world.set_gradient",
     "world.set_haze",
+    "curve.add",
+    "object.add_slab",
+    "object.array",
+    "object.boolean",
+    "object.parent",
 }
 
 
@@ -375,7 +380,7 @@ def test_registry_literal_matches_tools() -> None:
     names, same = got
     assert same is True
     assert set(names) == runtime_tool_names(RUNTIME / "tools.py")
-    assert NEW_TOOLS <= set(names) and len(names) == 31
+    assert NEW_TOOLS <= set(names) and len(names) == 36
 
 
 def test_error_codes_are_stable() -> None:

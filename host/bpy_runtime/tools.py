@@ -33,6 +33,13 @@ from bpy_runtime.ops.camera import (
 from bpy_runtime.ops.compositor import comp_apply_graph
 from bpy_runtime.ops.device import device_add
 from bpy_runtime.ops.finish import finish_apply_look
+from bpy_runtime.ops.geometry import (
+    curve_add,
+    object_add_slab,
+    object_array,
+    object_boolean,
+    object_parent,
+)
 from bpy_runtime.ops.inspect import inspect_bounds, inspect_framing
 from bpy_runtime.ops.look import look_set_view
 from bpy_runtime.ops.material import material_apply_preset, material_apply_screen
@@ -77,6 +84,11 @@ TOOL_NAMES = frozenset(
         "world.set_hdri",
         "world.set_gradient",
         "world.set_haze",
+        "curve.add",
+        "object.add_slab",
+        "object.array",
+        "object.boolean",
+        "object.parent",
     }
 )
 
@@ -230,6 +242,11 @@ TOOLS: dict[str, Callable[[Any, dict[str, Any]], Report]] = {
     "world.set_hdri": world_set_hdri,
     "world.set_gradient": world_set_gradient,
     "world.set_haze": world_set_haze,
+    "curve.add": curve_add,
+    "object.add_slab": object_add_slab,
+    "object.array": object_array,
+    "object.boolean": object_boolean,
+    "object.parent": object_parent,
 }
 
 assert frozenset(TOOLS) == TOOL_NAMES, "TOOLS and TOOL_NAMES must list the same tools"
