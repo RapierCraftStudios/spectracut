@@ -39,6 +39,7 @@ from spectracut.setup.plan import (
     gpu_script_source,
     load_state,
     parse_probe,
+    probe_hosts,
     task_script_command,
     task_script_content,
     task_script_sha256,
@@ -924,3 +925,92 @@ def test_copy_timeout_scales_to_chunk_size_for_a_slow_link() -> None:
         # a 2 MB/s link moves the chunk far inside its timeout
         assert len(step.stdin or "") / (2 * 1024 * 1024) < step.timeout
     assert copy_timeout(10 * COPY_MIN_RATE) == copy_timeout(0) + 10
+
+
+class OfflineRunner(FakeRunner):
+    """A farm where some hosts time out on the probe (asleep or unplugged)."""
+
+    def __init__(self, *offline: str) -> None:
+        super().__init__()
+        self.offline = set(offline)
+
+    def probe(self, host: str) -> HostFacts:
+        if host in self.offline:
+            raise StepTimeout(f"{host}: uname -s timed out after 120 s (ssh client killed)")
+        return super().probe(host)
+
+
+def _two_host_farm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: FakeRunner) -> Path:
+    home, _ = _cli_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(setup_cli, "CommandRunner", lambda: runner)
+    from spectracut.queue.profile import RenderProfile
+
+    profile = RenderProfile(blender_version="4.5.15", gpu_model="RTX", vram_gb=8).model_dump()
+    hosts = [{"name": n, "cpus": 8, "mem_gb": 32, "profile": profile} for n in WORKERS]
+    (home / "hosts.json").write_text(json.dumps({"hosts": hosts}), encoding="utf-8")
+    return home
+
+
+def test_probe_hosts_skips_unreachable_unless_required() -> None:
+    runner = OfflineRunner("legion")
+    facts, skipped = probe_hosts(runner, [CONTROL, *WORKERS], required={CONTROL})
+    assert set(facts) == {CONTROL, "rig"}
+    assert list(skipped) == ["legion"] and "timed out" in skipped["legion"]
+    with pytest.raises(StepTimeout):
+        probe_hosts(runner, [CONTROL, *WORKERS], required={CONTROL, "legion"})
+
+
+def test_cli_setup_skips_an_offline_render_host_and_names_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = OfflineRunner("legion")
+    home = _two_host_farm(tmp_path, monkeypatch, runner)
+    res = CliRunner().invoke(app, ["setup", "--storage-host", "rig"])
+    assert res.exit_code == 0, res.output
+    assert "warning: skipped legion (unreachable)" in res.output
+    assert "skipped (unreachable): legion" in res.output.splitlines()[-1]
+    assert runner.ran and all(s.host != "legion" for s in runner.ran)
+    assert {"storage:attach:control", "storage:restart-worker:rig"} <= {s.id for s in runner.ran}
+    assert "legion" not in load_state(home).hosts
+
+
+def test_cli_setup_require_all_fails_on_an_offline_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = OfflineRunner("legion")
+    _two_host_farm(tmp_path, monkeypatch, runner)
+    res = CliRunner().invoke(app, ["setup", "--storage-host", "rig", "--require-all"])
+    assert res.exit_code == 2, res.output
+    assert "error: legion: uname -s timed out" in res.output
+    assert runner.ran == []
+
+
+def test_cli_setup_offline_storage_host_is_still_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = OfflineRunner("rig")
+    _two_host_farm(tmp_path, monkeypatch, runner)
+    res = CliRunner().invoke(app, ["setup", "--storage-host", "rig"])
+    assert res.exit_code == 2, res.output
+    assert "error: rig:" in res.output
+    assert runner.ran == []
+
+
+def test_cli_setup_offline_rerun_converges_once_the_host_is_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    offline = OfflineRunner("legion")
+    home = _two_host_farm(tmp_path, monkeypatch, offline)
+    assert CliRunner().invoke(app, ["setup", "--storage-host", "rig"]).exit_code == 0
+    back = FakeRunner()
+    monkeypatch.setattr(setup_cli, "CommandRunner", lambda: back)
+    again = CliRunner().invoke(app, ["setup"])
+    assert again.exit_code == 0, again.output
+    assert "skipped" not in again.output
+    assert any(s.host == "legion" for s in back.ran)
+    assert "legion" in load_state(home).hosts
+    done = FakeRunner()
+    monkeypatch.setattr(setup_cli, "CommandRunner", lambda: done)
+    last = CliRunner().invoke(app, ["setup"])
+    assert last.exit_code == 0, last.output
+    assert done.ran == [] and "nothing to do" in last.output

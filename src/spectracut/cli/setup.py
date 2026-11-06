@@ -28,9 +28,11 @@ from spectracut.setup.manifest import HostFacts, StepRunner, load_manifest
 from spectracut.setup.plan import (
     CommandRunner,
     SetupError,
+    SetupState,
     apply_plan,
     build_plan,
     load_state,
+    probe_hosts,
     save_state,
     worker_credentials_reset_step,
 )
@@ -129,6 +131,16 @@ def setup_cmd(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print the plan; change nothing.")
     ] = False,
+    require_all: Annotated[
+        bool,
+        typer.Option(
+            "--require-all",
+            help=(
+                "Fail when any registered host is unreachable (default: skip it with a "
+                "warning; the control plane and the storage host must always be reachable)."
+            ),
+        ),
+    ] = False,
     home: HomeOpt = None,
 ) -> None:
     """Install and configure every bundled component on the control plane and render hosts."""
@@ -154,7 +166,14 @@ def setup_cmd(
         if settings:
             state = state.model_copy(update=settings)
         runner: StepRunner = CommandRunner()
-        facts: dict[str, HostFacts] = {n: runner.probe(n) for n in (CONTROL, *workers)}
+        names = [CONTROL, *workers]
+        facts, skipped = probe_hosts(
+            runner, names, required=names if require_all else _required_hosts(target, state)
+        )
+        for name, reason in skipped.items():
+            typer.echo(redact(f"warning: skipped {name} (unreachable): {reason}"))
+        workers = [w for w in workers if w in facts]
+        registered = tuple(h for h in registered if h.name in facts)
         cred = share_credential(root, target or state.storage)
         wheels = build_wheels(root / "wheels")
         # The control plane's job-signing key: created once (0600), never printed.
@@ -189,6 +208,7 @@ def setup_cmd(
         # Likewise the job types: the Manager must list every packaged one after setup.
         _check_job_types(url, dry_run)
         if dry_run or not plan.steps:
+            _skipped_summary(skipped)
             return
     except (StorageError, SetupError, ValueError, OSError) as exc:
         failure = _fail(str(exc))
@@ -196,6 +216,25 @@ def setup_cmd(
             typer.echo(redact(f"failed steps:\n  {exc.host}: {exc.summary}"), err=True)
         raise failure from exc
     typer.echo(f"set {set_id} applied; storage on {plan.storage.host}")
+    _skipped_summary(skipped)
+
+
+def _required_hosts(target: StorageTarget | None, state: SetupState) -> set[str]:
+    """Hosts setup cannot skip: the control plane and the storage host it sets up or keeps."""
+    required = {CONTROL}
+    storage = target or state.storage
+    if storage is not None and storage.kind == "host":
+        required.add(storage.host)
+    return required
+
+
+def _skipped_summary(skipped: Mapping[str, str]) -> None:
+    """Name the unreachable hosts setup left as they were (re-run setup once they are up)."""
+    if skipped:
+        typer.echo(
+            f"skipped (unreachable): {', '.join(skipped)}; run `spectracut setup` again "
+            "once they are online"
+        )
 
 
 def _check_job_types(

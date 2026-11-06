@@ -426,6 +426,23 @@ def storage_notes(target: StorageTarget, facts: Mapping[str, HostFacts]) -> list
     return []
 
 
+# Seconds a mount check or a read of the old share may take: a dead CIFS server hangs both.
+MOUNT_CHECK_TIMEOUT = 20
+
+
+def _release_mount(path: str) -> str:
+    """Unmount ``path`` if something is mounted there; a dead or busy mount is detached lazily.
+
+    The check is time-bounded (a dead CIFS mount hangs ``mountpoint``); a timeout counts as
+    mounted, so a stale mount point never blocks or fails the step.
+    """
+    return (
+        f"{{ timeout {MOUNT_CHECK_TIMEOUT} mountpoint -q {path}; rc=$?; }}; "
+        f"if [ $rc -eq 0 ] || [ $rc -eq 124 ]; then "
+        f"sudo umount {path} 2>/dev/null || sudo umount -l {path}; fi"
+    )
+
+
 def _serve_steps(
     target: StorageTarget,
     facts: Mapping[str, HostFacts],
@@ -474,8 +491,7 @@ def _serve_steps(
                 target.host,
                 "storage:bind",
                 f"bind {folder} at {LINUX_PATH}",
-                f"sudo mkdir -p {LINUX_PATH}; "
-                f"mountpoint -q {LINUX_PATH} && sudo umount {LINUX_PATH}; "
+                f"sudo mkdir -p {LINUX_PATH}; {_release_mount(LINUX_PATH)}; "
                 f"sudo mount --bind {qfolder} {LINUX_PATH}",
             )
         )
@@ -504,7 +520,7 @@ def _attach_steps(name: str, server: str, share: str, cred: Credential) -> list[
             name,
             f"storage:attach:{name}",
             f"mount the share at {LINUX_PATH}",
-            f"sudo mkdir -p {LINUX_PATH}; mountpoint -q {LINUX_PATH} && sudo umount {LINUX_PATH}; "
+            f"sudo mkdir -p {LINUX_PATH}; {_release_mount(LINUX_PATH)}; "
             f"sudo mount -t cifs {shlex.quote(f'//{server}/{share}')} {LINUX_PATH} "
             f"-o credentials={CRED_FILE},vers=3.0,uid=$(id -u),gid=$(id -g)",
         ),
@@ -573,7 +589,13 @@ def plan_storage(
     control_is_storage = target.kind == "host" and target.host == CONTROL
     if previous is not None and not control_is_storage:
         steps += _attach_steps(CONTROL, server, target.share, cred)[:1]
-        steps += _migrate_steps(server, target.share, cred)
+        if not _previous_unreachable(previous, facts):
+            steps += _migrate_steps(
+                server,
+                target.share,
+                cred,
+                old_location=old_storage_location(previous, facts, previous_layout),
+            )
     machines = [CONTROL, *[w for w in workers if w != CONTROL]]
     for name in machines:
         if name == CONTROL and control_is_storage:
@@ -603,14 +625,71 @@ def plan_storage(
     return list(unique.values())
 
 
-def _migrate_steps(server: str, share: str, cred: Credential) -> list[Step]:
-    """Copy the control plane's current share contents into the new share before re-pointing."""
+def _previous_unreachable(previous: StorageTarget | None, facts: Mapping[str, HostFacts]) -> bool:
+    """Whether the old storage host was not probed (offline or no longer registered)."""
+    return previous is not None and previous.kind == "host" and previous.host not in facts
+
+
+def old_storage_location(
+    previous: StorageTarget,
+    facts: Mapping[str, HostFacts],
+    previous_layout: StorageLayout | None = None,
+) -> str:
+    """Where the previous storage's files live, for a message: ``host at folder`` or the NAS UNC."""
+    if previous.kind == "nas":
+        return f"//{previous.host}/{previous.share}"
+    path = (previous_layout or StorageLayout()).path
+    if path is not None:
+        folder = normalize_storage_path(path)
+    elif previous.host in facts:
+        folder = WINDOWS_LOCAL_PATH if facts[previous.host].os == "windows" else LINUX_PATH
+    else:
+        folder = f"its storage folder ({LINUX_PATH} on Linux, {WINDOWS_LOCAL_PATH} on Windows)"
+    return f"{previous.host} at {folder}"
+
+
+def migration_notes(
+    target: StorageTarget,
+    previous: StorageTarget | None,
+    facts: Mapping[str, HostFacts],
+    previous_layout: StorageLayout | None = None,
+) -> list[str]:
+    """A warning when a storage move skips the copy because the old storage host is unreachable."""
+    if previous is None or previous == target or not _previous_unreachable(previous, facts):
+        return []
+    return [
+        f"old storage host {previous.host} is unreachable; its files were not copied and "
+        f"remain on {old_storage_location(previous, facts, previous_layout)}"
+    ]
+
+
+def _migrate_steps(
+    server: str,
+    share: str,
+    cred: Credential,
+    *,
+    old_location: str = "the old storage host",
+) -> list[Step]:
+    """Copy the control plane's current share contents into the new share before re-pointing.
+
+    The copy runs only when the old share at ``LINUX_PATH`` can be read and listed within
+    :data:`MOUNT_CHECK_TIMEOUT` s; a dead, stale or root-owned mount point skips it with a
+    warning naming ``old_location`` instead of failing the storage move.
+    """
+    warning = shlex.quote(
+        f"warning: cannot read the old share at {LINUX_PATH}; files were not copied and "
+        f"remain on {old_location}"
+    )
+    readable = shlex.quote(f"test -r {LINUX_PATH} && test -x {LINUX_PATH} && ls {LINUX_PATH}")
     return [
         Step(
             CONTROL,
             "storage:migrate",
             "copy existing files to the new storage",
-            f"sudo mkdir -p {MIGRATE_MOUNT} && sudo mount -t cifs "
+            f"if ! timeout {MOUNT_CHECK_TIMEOUT} sh -c {readable} >/dev/null 2>&1; then "
+            f"echo {warning} >&2; exit 0; fi; "
+            f"sudo mkdir -p {MIGRATE_MOUNT}; {_release_mount(MIGRATE_MOUNT)}; "
+            f"sudo mount -t cifs "
             f"{shlex.quote(f'//{server}/{share}')} "
             f"{MIGRATE_MOUNT} -o credentials={CRED_FILE},vers=3.0,uid=$(id -u),gid=$(id -g) "
             f"&& rsync -a {LINUX_PATH}/ {MIGRATE_MOUNT}/; rc=$?; "
