@@ -3,10 +3,11 @@
 
 Discovery (intake, product understanding, brief) lives in ``.discovery``,
 Development (concepts, script) in ``.writer``, Art in ``.art`` and Shots (template
-shots and shots rendered on the farm) in ``.shots``; import from those modules. :func:`all_departments` lists every department ``studio run``
-can use, and :data:`STAGE_DEPARTMENTS` says which one builds each profile stage
-(node kind). A stage with no entry keeps its own name as the department name, so
-it shows up as unregistered in the estimate until a department is written.
+shots and shots rendered on the farm) in ``.shots``; import from those modules.
+:func:`all_departments` lists every department ``studio run`` can use, and
+:data:`STAGE_DEPARTMENTS` says which one builds each profile stage (node kind). A
+stage with no entry keeps its own name as the department name, so it shows up as
+unregistered in the estimate until a department is written.
 """
 
 from __future__ import annotations

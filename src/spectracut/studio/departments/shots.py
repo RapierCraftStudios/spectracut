@@ -422,13 +422,20 @@ def _add(a: Usage, b: Usage) -> Usage:
 def shot_critic(pass_score: float, inner: Critic | None = None) -> Critic:
     """The vision-QA gate for shot nodes: fail any shot whose QA failed or scored low.
 
-    Other kinds go to ``inner``, or pass when there is none.
+    Other kinds, and shot nodes whose output is not a rendered-shots record (a custom
+    runner built them, so there are no frames to review), go to ``inner``, or pass
+    when there is none.
     """
 
     def review(spec: NodeSpec, output: JsonValue) -> CriticVerdict:
-        if spec.kind not in (TEMPLATE_SHOTS, SHOTS):
+        shots: list[RenderedShot] | None = None
+        if spec.kind in (TEMPLATE_SHOTS, SHOTS):
+            try:
+                shots = RenderedShots.model_validate(output).shots
+            except ValidationError:
+                shots = None
+        if shots is None:
             return inner(spec, output) if inner is not None else CriticVerdict(passed=True)
-        shots = RenderedShots.model_validate(output).shots
         findings: list[Finding] = []
         for shot in shots:
             problems: list[str] = []
