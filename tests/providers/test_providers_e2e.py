@@ -15,9 +15,15 @@ from pathlib import Path
 
 import pytest
 
-from spectracut.providers.claude_code import ClaudeCodeVisionJudge, claude_status, context_tokens
+from spectracut.providers.claude_code import (
+    ClaudeCodeTextProvider,
+    ClaudeCodeVisionJudge,
+    claude_status,
+    context_tokens,
+)
 from spectracut.providers.codex_cli import CodexCliImageProvider, codex_status
 from spectracut.providers.mock_image import MockImageProvider
+from spectracut.studio.departments.art import ArtDirector
 
 pytestmark = [
     pytest.mark.e2e,
@@ -59,3 +65,19 @@ def test_claude_sign_in_scores_frame(tmp_path: Path) -> None:
     assert verdict.score >= 0.5, verdict
     tokens = context_tokens(judge.last_usage)
     assert 0 < tokens < MAX_CONTEXT_TOKENS, f"per-call context {tokens} tokens"
+
+
+def test_claude_sign_in_builds_art_direction() -> None:
+    """Live: the Art Director's tuple-bearing output schema is accepted by the CLI (#265)."""
+    state = claude_status()
+    assert state.installed and state.signed_in, f"claude not signed in: {state}"
+    prompt = (
+        "Write the art direction for AlterLab's launch film: a short product film for a "
+        "web-scraping API. Calm, precise, dark UI with one accent colour. Give a mood board "
+        "of three entries, a palette and a Look with a CDL grade."
+    )
+    completion = ClaudeCodeTextProvider().complete(
+        ArtDirector.pack().prompt, prompt, schema=ArtDirector.output_schema()
+    )
+    output = ArtDirector.validate_output("art_direction", completion.output)
+    assert isinstance(output, dict) and output["mood_board"]
