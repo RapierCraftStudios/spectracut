@@ -22,7 +22,7 @@ from pydantic import Field, JsonValue
 
 from spectracut.queue.profile import RenderProfile
 from spectracut.spec._base import NonEmptyStr, StrictModel
-from spectracut.studio.ledger import Usage
+from spectracut.studio.ledger import Usage, usage_of
 
 if TYPE_CHECKING:
     from spectracut.queue.queue import Job
@@ -178,12 +178,27 @@ def metered_run(
     host: str,
     clock: Callable[[], float],
 ) -> JobResult:
-    """Lease ``job.resources`` on ``pool``, run ``body``, release, and add GPU minutes."""
+    """Lease ``job.resources`` on ``pool``, run ``body``, release, and add GPU minutes.
+
+    The leased cards are billed whether ``body`` returns or raises: on failure
+    the minutes are added to the exception's ``usage`` (see
+    :func:`~spectracut.studio.ledger.usage_of`) and the same exception re-raised.
+    """
     lease = pool.acquire(job.resources, executor=executor, host=host, now=clock())
     try:
         result = body()
-    finally:
+    except Exception as exc:
         pool.release(lease)
+        carried = usage_of(exc)
+        minutes = len(lease.cards) * max(0.0, clock() - lease.started_at) / 60.0
+        exc.usage = carried.model_copy(  # type: ignore[attr-defined]
+            update={"gpu_minutes": carried.gpu_minutes + minutes}
+        )
+        raise
+    except BaseException:
+        pool.release(lease)
+        raise
+    pool.release(lease)
     minutes = len(lease.cards) * max(0.0, clock() - lease.started_at) / 60.0
     usage = result.usage.model_copy(update={"gpu_minutes": result.usage.gpu_minutes + minutes})
     return result.model_copy(update={"usage": usage})

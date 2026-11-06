@@ -301,6 +301,28 @@ def test_department_failure_is_recorded_and_blocks_dependants() -> None:
     assert [e.outcome for e in g.ledger.entries()] == ["failed"]
 
 
+class _UsageError(RuntimeError):
+    def __init__(self, msg: str, usage: Usage) -> None:
+        super().__init__(msg)
+        self.usage = usage
+
+
+def test_failed_department_records_usage_carried_by_exception() -> None:
+    def runner(ctx: RunContext) -> RunResult:
+        if ctx.spec.id == "brief":
+            raise _UsageError("gpu job failed", Usage(gpu_minutes=80.0))
+        raise RuntimeError("no usage")
+
+    g = ProductionGraph("p")
+    g.add_nodes([node("brief"), node("other")])
+    g.run(runner)
+    assert g.state("brief").error == "_UsageError: gpu job failed"
+    by_node = {e.node_id: e for e in g.ledger.entries()}
+    assert by_node["brief"].outcome == "failed" and by_node["brief"].gpu_minutes == 80.0
+    assert by_node["other"].outcome == "failed" and by_node["other"].gpu_minutes == 0.0
+    assert g.ledger.totals().gpu_minutes == 80.0
+
+
 # ---- graph structure -------------------------------------------------------
 
 

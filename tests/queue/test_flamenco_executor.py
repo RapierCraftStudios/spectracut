@@ -11,7 +11,13 @@ import pytest
 
 from spectracut.queue.cache import FrameCache
 from spectracut.queue.executors.base import JobResult, JobStatus, Resources
-from spectracut.queue.executors.flamenco import TIER_PRIORITY, FlamencoExecutor, map_status
+from spectracut.queue.executors.flamenco import (
+    TIER_PRIORITY,
+    FlamencoExecutor,
+    FlamencoJobFailed,
+    FlamencoTimeout,
+    map_status,
+)
 from spectracut.queue.flamenco import JOB_TYPE, WorkerTag
 from spectracut.queue.profile import RenderProfile
 from spectracut.queue.queue import Job, JobQueue
@@ -242,3 +248,56 @@ def test_assets_dir_reaches_the_flamenco_job() -> None:
     plain = FakeFlamenco(["completed"])
     FlamencoExecutor(plain, output_dir="/o", sleep=lambda _s: None).run(_blender_job())
     assert "assets_dir" not in plain.submitted[0]["settings"]
+
+
+class _Ticker:
+    """Monotonic clock that advances only when the executor sleeps."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def mono(self) -> float:
+        return self.t
+
+    def sleep(self, seconds: float) -> None:
+        self.t += seconds
+
+
+@pytest.mark.parametrize("final", ["failed", "canceled"])
+def test_failed_flamenco_job_reports_gpu_minutes(final: str) -> None:
+    ticker = _Ticker()
+    client = FakeFlamenco(["active", "active", final])
+    executor = FlamencoExecutor(
+        client,
+        output_dir="/shared/frames",
+        sleep=ticker.sleep,
+        poll_interval=60.0,
+        clock=ticker.mono,
+    )
+    with pytest.raises(FlamencoJobFailed, match=f"flamenco job fl-1 ended {final}") as info:
+        executor.run(_blender_job())
+    assert info.value.usage.gpu_minutes == pytest.approx(2.0)
+
+    graph = _graph_with_shot()
+    client = FakeFlamenco(["active", "active", final])
+    executor.client = client
+    q = JobQueue([executor], now=lambda: T0)
+    graph.run(q.as_runner(_make_job, sleep=lambda _s: None))
+    (entry,) = graph.ledger.entries()
+    assert entry.outcome == "failed" and entry.gpu_minutes == pytest.approx(2.0)
+
+
+def test_flamenco_timeout_reports_gpu_minutes() -> None:
+    ticker = _Ticker()
+    client = FakeFlamenco(["active"])
+    executor = FlamencoExecutor(
+        client,
+        output_dir="/shared/frames",
+        sleep=ticker.sleep,
+        poll_interval=60.0,
+        timeout_s=180.0,
+        clock=ticker.mono,
+    )
+    with pytest.raises(FlamencoTimeout, match="still active after 180.0s") as info:
+        executor.run(_blender_job())
+    assert info.value.usage.gpu_minutes == pytest.approx(3.0)
