@@ -165,6 +165,17 @@ def test_gpu_jobs_are_never_offered_and_cap_is_respected() -> None:
     assert ex.can_run_now(Resources(cpus=1))
 
 
+def test_gpu_gate_holds_for_can_run_now_and_leaves_the_router_untouched() -> None:
+    # GPU placement waits on computeshare#2, #3, #5 and #6 (docs/setup/computeshare.md).
+    router = FakeRouter()
+    ex = make(router, Clock())
+    for gpus in (1, 2):
+        req = Resources(cpus=1, mem_gb=1, gpus=gpus, vram_gb=24)
+        assert not ex.can_ever_run(req)
+        assert not ex.can_run_now(req)
+    assert not router.calls
+
+
 # ---- lease renewal and cleanup (R2) ----------------------------------------
 
 
