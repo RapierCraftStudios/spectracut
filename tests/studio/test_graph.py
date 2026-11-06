@@ -10,9 +10,9 @@ from typing import Any
 import pytest
 from pydantic import JsonValue, ValidationError
 
+from spectracut.studio.gates import Finding, Severity
 from spectracut.studio import (
     CriticVerdict,
-    Finding,
     GateMode,
     GatePolicy,
     Ledger,
@@ -23,7 +23,6 @@ from spectracut.studio import (
     QualityProfile,
     RunContext,
     RunResult,
-    Severity,
     Tier,
     Usage,
     available_profiles,

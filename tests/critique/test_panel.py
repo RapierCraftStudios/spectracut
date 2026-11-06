@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from spectracut.critique.panel import Reviewer, ReviewerPanel, dedupe, default_reviewers
-from spectracut.studio import Finding, NodeSpec, Severity
+from spectracut.studio import NodeSpec
+from spectracut.studio.gates import Finding, Severity
 
 
 def _spec() -> NodeSpec:
