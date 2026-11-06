@@ -31,12 +31,26 @@ KINDS = ("sfx", "foley", "music", "tts", "critic", "image", "asr", "clap")
 MODELS: dict[str, ModelSpec] = {
     m.id: m
     for m in (
-        ModelSpec("ezaudio-xl", "sfx", "ezaudio", 8, source="OpenSound/EzAudio"),
-        ModelSpec("moss-sfx-8b-nf4", "sfx", "moss-sfx", 8, source="OpenMOSS-Team/MOSS-SoundEffect"),
+        ModelSpec("ezaudio-xl", "sfx", "ezaudio", 8, source="OpenSound/EzAudio", version="xl"),
         ModelSpec(
-            "hunyuan-foley-xl", "foley", "hunyuan-foley", 8, source="tencent/HunyuanVideo-Foley"
+            "moss-sfx-8b-nf4",
+            "sfx",
+            "moss-sfx",
+            8,
+            source="OpenMOSS-Team/MOSS-SoundEffect",
+            version="8b-nf4",
         ),
-        ModelSpec("ace-step-1.5", "music", "ace-step", 8, source="ACE-Step/Ace-Step1.5"),
+        ModelSpec(
+            "hunyuan-foley-xl",
+            "foley",
+            "hunyuan-foley",
+            8,
+            source="tencent/HunyuanVideo-Foley",
+            version="xl",
+        ),
+        ModelSpec(
+            "ace-step-1.5", "music", "ace-step", 8, source="ACE-Step/Ace-Step1.5", version="1.5"
+        ),
         ModelSpec("kokoro-82m", "tts", "kokoro", 2, source="hexgrad/Kokoro-82M"),
         ModelSpec(
             "qwen2.5-omni-7b-q4", "critic", "llama-cpp", 8, source="ggml-org/Qwen2.5-Omni-7B-GGUF"
