@@ -55,7 +55,10 @@ def test_m2_departments_are_listed() -> None:
     assert M2_DEPARTMENTS == EXPECTED
     assert SKILLS_DIR == SKILLS_ROOT
     assert sorted(
-        p.name for p in SKILLS_DIR.iterdir() if p.is_dir() and p.name != "__pycache__"
+        p.name
+        for p in SKILLS_DIR.iterdir()
+        # story/ holds the story departments' nested packs (tests/studio/test_discovery.py).
+        if p.is_dir() and p.name not in ("__pycache__", "story")
     ) == sorted(EXPECTED)
 
 

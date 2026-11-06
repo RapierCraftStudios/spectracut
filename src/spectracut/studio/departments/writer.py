@@ -42,6 +42,8 @@ class Concept(StrictModel):
     structure: list[NonEmptyStr] = Field(min_length=1)
     fit: NonEmptyStr
     """Why this concept fits the brief's audience."""
+    visuals: list[NonEmptyStr] = Field(default_factory=list)
+    """The concept's signature visuals; every style frame shows one of them or a beat."""
 
 
 class Claim(StrictModel):

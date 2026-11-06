@@ -12,7 +12,8 @@ each node it:
 4. calls the provider with the skill pack's ``prompt.md`` as the system prompt,
    holding a GPU lease (GPU departments) and an AI slot (always), each bounded by
    :class:`CapacityLimits`;
-5. validates the output against the department's output model, raising
+5. validates the output against the department's output model, then checks it
+   against the node's inputs (``Department.check_output``), raising
    :class:`~spectracut.studio.department.DepartmentOutputError` on failure so the
    graph records the node ``failed``;
 6. reports usage, including ``prompt_context_bytes``, for the ledger.
@@ -161,6 +162,7 @@ class DepartmentRunner:
             with self._ai:
                 completion = self.provider.complete(system, prompt, schema=schema)
         output = dept.validate_output(spec.id, completion.output)
+        dept.check_output(spec.id, output, ctx.inputs, kinds)
         usage = {**completion.usage, CONTEXT_METRIC: len(context)}
         return RunResult(output=output, usage=Usage(ai_usage=usage))
 

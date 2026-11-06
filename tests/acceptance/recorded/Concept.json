@@ -8,5 +8,9 @@
     "Keeps working",
     "Try AlterLab"
   ],
-  "fit": "Answers the integration and maintenance objections with the product as the hero."
+  "fit": "Answers the integration and maintenance objections with the product as the hero.",
+  "visuals": [
+    "Structured data panel",
+    "AlterLab end card"
+  ]
 }

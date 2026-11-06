@@ -16,7 +16,7 @@ along the critical path and the human gates.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from pydantic import Field, JsonValue
@@ -157,7 +157,12 @@ def _cost_text(c: CostEstimate) -> str:
     )
 
 
-def breakdown(brief: Brief | CreativeBrief, profile: QualityProfile) -> list[NodeSpec]:
+def breakdown(
+    brief: Brief | CreativeBrief,
+    profile: QualityProfile,
+    *,
+    seeds: Sequence[NodeSpec] = (),
+) -> list[NodeSpec]:
     """One node per profile stage (id = kind = stage), wired as the departments declare.
 
     The department is :func:`~spectracut.studio.departments.department_for` the stage.
@@ -166,6 +171,12 @@ def breakdown(brief: Brief | CreativeBrief, profile: QualityProfile) -> list[Nod
     departments' node builders (``discovery_nodes``, ``pick_concept``,
     ``preproduction_nodes``) wire. A stage with no registered department yet reads
     the stage before it. The first node carries the brief.
+
+    ``seeds`` are extra nodes outside the profile (id = kind, e.g. the ``brand_kit``
+    node from :func:`~spectracut.studio.departments.art.brand_kit_node`). Each goes
+    right after the first profile stage, and its kind counts as an earlier kind for
+    every later stage, so departments that declare it read it. With no seeds the
+    nodes are exactly the profile's.
     """
     from spectracut.studio.departments import all_departments
 
@@ -184,6 +195,10 @@ def breakdown(brief: Brief | CreativeBrief, profile: QualityProfile) -> list[Nod
         specs.append(
             NodeSpec(id=stage, kind=stage, department=name, inputs=tuple(reads), params=params)
         )
+        if previous is None:
+            for seed in seeds:
+                specs.append(seed)
+                earlier.add(seed.kind)
         previous = stage
         earlier.add(stage)
     return specs

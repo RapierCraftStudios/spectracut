@@ -3,12 +3,14 @@
     {
       "id": "hero",
       "description": "Structured data panel as the hero",
-      "prompt": "clean data panel on dark ink, accent blue highlights"
+      "prompt": "clean data panel on dark ink, accent blue highlights",
+      "concept_ref": "Structured results"
     },
     {
       "id": "end-card",
       "description": "End card with the CTA",
-      "prompt": "AlterLab end card on dark ink"
+      "prompt": "AlterLab end card on dark ink",
+      "concept_ref": "Try AlterLab"
     }
   ]
 }

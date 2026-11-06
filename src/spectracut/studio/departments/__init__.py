@@ -5,7 +5,9 @@ Discovery (intake, product understanding, brief) lives in ``.discovery``,
 Development (concepts, script) in ``.writer``, Art in ``.art``, Shots (template
 shots and shots rendered on the farm) in ``.shots``, Sound (voiceover, sound
 design, music, mix) in ``.sound`` and Finishing (edit, graded master, delivery) in
-``.finishing``; import from those modules.
+``.finishing``; import from those modules. The ``brand_kit`` node (department
+``brand-kit``, in ``.art``) carries the production's brand kit, built in code, so
+the art departments read it as a declared input.
 :func:`all_departments` lists every department ``studio run`` can use, and
 :data:`STAGE_DEPARTMENTS` says which one builds each profile stage (node kind). A
 stage with no entry keeps its own name as the department name, so it shows up as
@@ -24,6 +26,7 @@ STAGE_DEPARTMENTS: dict[str, str] = {
     "brief": "strategist",
     "concept": "concept-writer",
     "script": "script-writer",
+    "brand_kit": "brand-kit",
     "art_direction": "art-director",
     "style_frames": "style-frame-artist",
     "storyboard": "storyboard",

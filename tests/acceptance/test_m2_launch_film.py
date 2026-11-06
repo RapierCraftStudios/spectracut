@@ -29,6 +29,7 @@ import recorded
 from recorded import BRIEF, Film, external_ai_usage, invoke, run_film
 
 from spectracut.formats.cutdowns import CutDownSpec
+from spectracut.studio.departments import art as art_depts
 from spectracut.studio.departments.finishing import DeliveryReport
 from spectracut.studio.gates import GateMode
 from spectracut.studio.graph import ProductionGraph
@@ -98,7 +99,8 @@ def test_cutdowns_are_15s_and_30s_in_every_aspect_from_the_films_shots() -> None
 def test_standard_film_runs_every_node_with_the_real_departments(launch_film: Film) -> None:
     graph = launch_film.graph
     standard = load_profile("standard")
-    assert {graph.spec(n).kind for n in graph.order()} == set(standard.stages)
+    # ``--brand-kit`` adds a brand_kit node (#270) the art nodes read, beside the stages.
+    assert {graph.spec(n).kind for n in graph.order()} == {*standard.stages, art_depts.BRAND_KIT}
     assert {n: graph.status(n) for n in graph.order()} == {
         n: NodeStatus.CLEAN for n in graph.order()
     }

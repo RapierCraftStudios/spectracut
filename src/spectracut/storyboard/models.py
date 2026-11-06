@@ -44,6 +44,8 @@ class StyleFrame(StrictModel):
     id: Slug
     description: NonEmptyStr
     prompt: NonEmptyStr
+    concept_ref: str = ""
+    """The approved concept's beat or signature visual this frame shows, copied verbatim."""
     concept: ImageRecord | None = None
     """Image-exploration concept the Blender frame starts from."""
     render: ImageRecord | None = None
