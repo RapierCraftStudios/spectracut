@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 from pydantic import JsonValue
 
 from spectracut.canon.schema import Canon
-from spectracut.providers.base import VisionJudge
+from spectracut.providers.base import VisionJudge, judge_usage
 from spectracut.qa.common import Gray, downscale, load_gray, mean
 from spectracut.qa.look import FLICKER_MAX, flicker
 from spectracut.spec._base import StrictModel, canonical_json, content_hash
@@ -53,6 +53,11 @@ STATIC_UI_MAX = 0.002
 
 OVERALL = "overall"
 """Score key of the aggregate score in every verdict."""
+
+CRITIC_REQUESTS = "critic_requests"
+CRITIC_INPUT_TOKENS = "critic_input_tokens"
+CRITIC_OUTPUT_TOKENS = "critic_output_tokens"
+"""Ledger metrics for the Critic's own judge calls (the department's are separate)."""
 
 TextJudge = Callable[[NodeSpec, str, JsonValue], CriticVerdict]
 """``text_judge(spec, prompt, output) -> CriticVerdict`` for outputs with no frames."""
@@ -227,6 +232,18 @@ def critique_prompt(
     return "\n".join(parts)
 
 
+def _add_usage(total: dict[str, int], tokens: Mapping[str, int]) -> None:
+    """Add one judge call's ``judge_usage`` to ``total`` under the ``critic_*`` metrics."""
+    if not tokens:
+        return
+    for metric, amount in (
+        (CRITIC_REQUESTS, 1),
+        (CRITIC_INPUT_TOKENS, tokens["input_tokens"]),
+        (CRITIC_OUTPUT_TOKENS, tokens["output_tokens"]),
+    ):
+        total[metric] = total.get(metric, 0) + amount
+
+
 def _normalise(verdict: CriticVerdict) -> CriticVerdict:
     """Ensure a verdict carries an overall score and notes."""
     scores = dict(verdict.scores)
@@ -235,7 +252,9 @@ def _normalise(verdict: CriticVerdict) -> CriticVerdict:
     comment = verdict.comment.strip() or (
         "passes the rubric" if verdict.passed else "fails the rubric; revise against it"
     )
-    return CriticVerdict(passed=verdict.passed, scores=scores, comment=comment)
+    return CriticVerdict(
+        passed=verdict.passed, scores=scores, comment=comment, usage=dict(verdict.usage)
+    )
 
 
 class StudioCritic:
@@ -293,7 +312,8 @@ class StudioCritic:
         with self._lock:
             hit = self._cache.get(key)
         if hit is not None:
-            return hit
+            # The judge's tokens were charged when the verdict was first made.
+            return hit.model_copy(update={"usage": {}}) if hit.usage else hit
         artifact = self.extract(output)
         prompt = self.prompt(spec)
         if artifact.visual:
@@ -311,11 +331,14 @@ class StudioCritic:
             self._cache[key] = verdict
         return verdict
 
-    def _score(self, path: Path, prompt: str, samples: int) -> tuple[float, str]:
+    def _score(
+        self, path: Path, prompt: str, samples: int, usage: dict[str, int]
+    ) -> tuple[float, str]:
         values: list[float] = []
         notes: list[str] = []
         for _ in range(samples):
             vs = self.vision.score(path, prompt)
+            _add_usage(usage, judge_usage(self.vision))
             values.append(min(1.0, max(0.0, float(vs.score))))
             if vs.notes and vs.notes not in notes:
                 notes.append(vs.notes)
@@ -327,6 +350,7 @@ class StudioCritic:
         samples = self.verify_samples(spec)
         scores: dict[str, float] = {}
         lines: list[str] = []
+        usage: dict[str, int] = {}
         images: list[tuple[str, Path]] = [
             (f"frame-{i}", p) for i, p in enumerate(artifact.frames, start=1)
         ]
@@ -335,7 +359,7 @@ class StudioCritic:
         if not images and artifact.sequence:
             images.append(("sequence-mid", artifact.sequence[len(artifact.sequence) // 2]))
         for label, path in images:
-            value, note = self._score(path, prompt, samples)
+            value, note = self._score(path, prompt, samples, usage)
             scores[label] = value
             lines.append(f"{label} {value:.2f}: {note or 'no notes'}")
         overall = round(mean(list(scores.values())), 4) if scores else 1.0
@@ -354,7 +378,9 @@ class StudioCritic:
                 f"{self.settings.pass_score:.2f}; address the frame notes against the rubric",
             )
         head = "pass" if passed else "revise"
-        return CriticVerdict(passed=passed, scores=scores, comment=f"{head}: " + " | ".join(lines))
+        return CriticVerdict(
+            passed=passed, scores=scores, comment=f"{head}: " + " | ".join(lines), usage=usage
+        )
 
     # ---- choosing --------------------------------------------------------------
 

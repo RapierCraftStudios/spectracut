@@ -624,10 +624,11 @@ class ProductionGraph:
         verdict: CriticVerdict | None,
     ) -> NodeStatus | None:
         """Record one attempt's gate outcome; ``None`` means revise and try again."""
+        usage = _with_critic_usage(result.usage, verdict)
         if verdict is not None and not verdict.passed:
             last = attempt == max_attempts
             outcome: Outcome = "rejected" if last else "revise"
-            self._record(spec, tier, key, attempt, started_at, start, result.usage, outcome)
+            self._record(spec, tier, key, attempt, started_at, start, usage, outcome)
             if not last:
                 return None
             self._decisions[spec.id] = GateDecision(mode=mode, critic=verdict)
@@ -635,13 +636,11 @@ class ProductionGraph:
             return NodeStatus.REJECTED
         self._decisions[spec.id] = GateDecision(mode=mode, critic=verdict)
         if mode is GateMode.HUMAN:
-            self._record(
-                spec, tier, key, attempt, started_at, start, result.usage, "awaiting_approval"
-            )
+            self._record(spec, tier, key, attempt, started_at, start, usage, "awaiting_approval")
             self._pending[spec.id] = (key, accepted)
             self._set(spec.id, NodeStatus.AWAITING_APPROVAL)
             return NodeStatus.AWAITING_APPROVAL
-        self._record(spec, tier, key, attempt, started_at, start, result.usage, "accepted")
+        self._record(spec, tier, key, attempt, started_at, start, usage, "accepted")
         self._cache[key] = accepted
         self._set(spec.id, NodeStatus.CLEAN, output_hash=accepted.output_hash)
         return NodeStatus.CLEAN
@@ -686,6 +685,16 @@ class ProductionGraph:
                 outcome=outcome,
             )
         )
+
+
+def _with_critic_usage(usage: Usage, verdict: CriticVerdict | None) -> Usage:
+    """``usage`` plus the Critic's judge tokens, so the ledger sees the whole attempt."""
+    if verdict is None or not verdict.usage:
+        return usage
+    ai = dict(usage.ai_usage)
+    for metric, amount in verdict.usage.items():
+        ai[metric] = ai.get(metric, 0) + amount
+    return usage.model_copy(update={"ai_usage": ai})
 
 
 def _toposort(specs: Mapping[str, NodeSpec], dependants: Mapping[str, list[str]]) -> list[str]:
