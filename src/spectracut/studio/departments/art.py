@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import wave
-
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
@@ -28,11 +27,11 @@ from typing import Any, ClassVar
 from pydantic import BaseModel
 
 from spectracut.edit.timeline import Edit
-from spectracut.spec.brief import CreativeBrief
-from spectracut.storyboard.animatic import TempAudio, build_animatic, check_locked_timing
 from spectracut.providers.local.registry import get_provider, mock_mode
 from spectracut.providers.local.runtime import ModelRuntime
 from spectracut.providers.local.tts import LocalTts
+from spectracut.spec.brief import CreativeBrief
+from spectracut.storyboard.animatic import TempAudio, build_animatic, check_locked_timing
 from spectracut.storyboard.explore import ExploreProvider, choose_exploration_provider, explore
 from spectracut.storyboard.models import (
     ArtDirection,
@@ -131,7 +130,7 @@ VoiceFn = Callable[[str, Path], TempAudio]
 
 
 def default_explorer(
-    runtime: ModelRuntime | None = None, config: Mapping[str, Any] | None = None
+    config: Mapping[str, Any] | None = None, *, runtime: ModelRuntime | None = None
 ) -> ExploreProvider | None:
     """The concept-image provider: the mock in mock mode, else the local ``image`` model.
 
@@ -152,7 +151,7 @@ def _wav_seconds(path: Path) -> float:
         return wav.getnframes() / rate if rate else 0.0
 
 
-def default_voice(runtime: ModelRuntime | None = None) -> VoiceFn | None:
+def default_voice(*, runtime: ModelRuntime | None = None) -> VoiceFn | None:
     """Local temp VO through :class:`LocalTts` (the mock in mock mode), else ``None``."""
     if not mock_mode() and runtime is None:
         return None

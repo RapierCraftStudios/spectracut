@@ -178,9 +178,9 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                 preproduction = art_depts.PreproductionRunner(
                     text,
                     DEPARTMENTS,
-                    explorer=art_depts.default_explorer(runtime),
+                    explorer=art_depts.default_explorer(runtime=runtime),
                     renderer=FarmStyleFrameRenderer(farm_deps, graph.production_id, workdir),
-                    voice=art_depts.default_voice(runtime),
+                    voice=art_depts.default_voice(runtime=runtime),
                     workdir=workdir,
                 )
             runner = preproduction

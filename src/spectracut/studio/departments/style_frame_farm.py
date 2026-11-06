@@ -33,7 +33,7 @@ from spectracut.studio.departments.art import STYLE_FRAMES
 from spectracut.studio.departments.shots import tier_recipe
 from spectracut.studio.ledger import Usage
 from spectracut.studio.node import Tier
-from spectracut.templates.base import BLENDER_VERSION, CameraVariant, Call, camera_calls, steps
+from spectracut.templates.base import Call, CameraVariant, camera_calls, steps
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -115,7 +115,7 @@ def style_frame_recipe(
     base = Recipe(
         id=f"style-frame-{frame.id}"[:63],
         shot_id=f"style-frame-{frame.id}"[:63],
-        blender_version=BLENDER_VERSION,
+        blender_version=ds.BLENDER_VERSION,
         steps=steps(calls),
     )
     return tier_recipe(base, Tier.FINAL)
@@ -124,9 +124,7 @@ def style_frame_recipe(
 class FarmStyleFrameRenderer:
     """Renders style frames on the farm; ``deps`` is called once, on the first frame."""
 
-    def __init__(
-        self, deps: Callable[[], FarmDeps], production_id: str, workdir: Path
-    ) -> None:
+    def __init__(self, deps: Callable[[], FarmDeps], production_id: str, workdir: Path) -> None:
         self._factory = deps
         self._deps: FarmDeps | None = None
         self._lock = threading.Lock()
