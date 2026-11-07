@@ -45,6 +45,10 @@ class CritiqueSettings(StrictModel):
     """Aggregate Critic score an artifact needs to pass."""
     window: PosInt = 3
     """Recent iterations the revise loop keeps (plans, diffs, renders, verdicts)."""
+    scene_iterations: PosInt = 5
+    """Render iterations per scene-builder frame when the profile has no ``scene_build``
+    stage (the builder's sub-loop is not a production stage): one candidate each, the
+    best kept, stopping at the first pass."""
     best_of_n: dict[Slug, PosInt] = Field(default_factory=dict)
     """Candidates per attempt, by stage."""
     verify_samples: dict[Slug, PosInt] = Field(default_factory=dict)
