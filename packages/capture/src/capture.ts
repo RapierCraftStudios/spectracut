@@ -24,6 +24,7 @@ import { navigationEvent, runScript, type Action, type CaptureEvent, type InputP
 import {
   assertLegible,
   DEFAULT_MIN_TEXT_HEIGHT_PX,
+  LegibilityError,
   MEASURE_TEXT_SRC,
   subjectFill,
   type Rect,
@@ -72,6 +73,17 @@ export interface LegibilityConfig {
   /** Height in px the captured region occupies in the 1080p output (default 1080: full frame). */
   screenHeightPx?: number;
   minTextHeightPx?: number;
+  /**
+   * Per-selector checks (each with its own minimum) instead of the subject or
+   * whole-page check. A selector that matches nothing has no text to check.
+   */
+  checks?: readonly LegibilityCheck[];
+}
+
+/** One legibility check: the text under `selector` must reach `minTextHeightPx` at 1080p. */
+export interface LegibilityCheck {
+  selector: string;
+  minTextHeightPx: number;
 }
 
 export interface CaptureOptions {
@@ -175,13 +187,24 @@ export async function capture(page: CapturePage, options: CaptureOptions): Promi
       reframe = false;
     }
     if (legibility) {
-      const boxes = await page.measureText(options.subject?.selector ?? null);
-      assertLegible(boxes, {
+      const base = {
         captureCssHeight: clip ? clip.height : page.viewport().height,
         screenHeightPx: legibility.screenHeightPx ?? 1080,
-        minTextHeightPx: legibility.minTextHeightPx ?? DEFAULT_MIN_TEXT_HEIGHT_PX,
         deviceScaleFactor: page.deviceScaleFactor(),
-      });
+      };
+      if (legibility.checks !== undefined) {
+        for (const check of legibility.checks) {
+          try {
+            assertLegible(await page.measureText(check.selector), { ...base, minTextHeightPx: check.minTextHeightPx });
+          } catch (err) {
+            if (err instanceof LegibilityError) err.message = `${check.selector}: ${err.message}`;
+            throw err;
+          }
+        }
+      } else {
+        const boxes = await page.measureText(options.subject?.selector ?? null);
+        assertLegible(boxes, { ...base, minTextHeightPx: legibility.minTextHeightPx ?? DEFAULT_MIN_TEXT_HEIGHT_PX });
+      }
     }
     const png = await page.screenshot({ clip: clip ?? undefined });
     await recorder.write(clock.frame, clock.timeMs, png, cursor);
@@ -278,6 +301,21 @@ export const WHEEL_SRC = `(w) => {
   (document.scrollingElement || document.documentElement).scrollBy({ left: w.dx, top: w.dy, behavior: "instant" });
 }`;
 
+/** In-page source: put an element's top `margin` px under a fixed or sticky header. */
+const REVEAL_SRC = `(q) => {
+  const el = document.querySelector(q.selector);
+  if (!el) return false;
+  let top = 0;
+  const header = q.below ? document.querySelector(q.below) : null;
+  if (header) {
+    const pos = getComputedStyle(header).position;
+    if (pos === "fixed" || pos === "sticky") top = Math.max(0, header.getBoundingClientRect().bottom);
+  }
+  const y = el.getBoundingClientRect().top + window.scrollY - top - q.margin;
+  window.scrollTo({ left: window.scrollX, top: Math.max(0, Math.round(y)), behavior: "instant" });
+  return true;
+}`;
+
 function inPage<R>(page: Page, src: string, arg: unknown): Promise<R> {
   return page.evaluate(`(${src})(${JSON.stringify(arg)})`) as Promise<R>;
 }
@@ -328,6 +366,7 @@ export function playwrightPage(page: Page, deviceScaleFactor = 1): CapturePage {
         await handle.dispose();
       }
     },
+    reveal: (selector, below, margin) => inPage<boolean>(page, REVEAL_SRC, { selector, below, margin }),
     describeElements: (query) => inPage(page, DESCRIBE_SRC, query),
     async hideElements(hits) {
       await inPage(page, HIDE_SRC, hits);

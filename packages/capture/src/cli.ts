@@ -32,6 +32,36 @@ function checkActions(value: unknown, field: string): void {
     if (a.do === "type" && (a.text === undefined) === (a.textEnv === undefined)) {
       throw new TypeError(`capture spec ${field}[${i}] type needs exactly one of text and textEnv`);
     }
+    if (a.do === "reveal") {
+      if (typeof a.selector !== "string" || a.selector === "") {
+        throw new TypeError(`capture spec ${field}[${i}] reveal needs a selector`);
+      }
+      if (a.below !== undefined && typeof a.below !== "string") {
+        throw new TypeError(`capture spec ${field}[${i}] reveal below must be a string`);
+      }
+      if (a.margin !== undefined && (typeof a.margin !== "number" || !Number.isFinite(a.margin) || a.margin < 0)) {
+        throw new RangeError(`capture spec ${field}[${i}] reveal margin must be a finite number >= 0`);
+      }
+    }
+  }
+}
+
+function checkLegibilityChecks(legibility: unknown): void {
+  if (typeof legibility !== "object" || legibility === null) return;
+  const checks = (legibility as Record<string, unknown>).checks;
+  if (checks === undefined) return;
+  if (!Array.isArray(checks)) throw new TypeError("capture spec legibility.checks must be an array");
+  for (const [i, check] of checks.entries()) {
+    if (typeof check !== "object" || check === null || Array.isArray(check)) {
+      throw new TypeError(`capture spec legibility.checks[${i}] must be an object`);
+    }
+    const c = check as Record<string, unknown>;
+    if (typeof c.selector !== "string" || c.selector === "") {
+      throw new TypeError(`capture spec legibility.checks[${i}] needs a selector`);
+    }
+    if (typeof c.minTextHeightPx !== "number" || !Number.isFinite(c.minTextHeightPx) || c.minTextHeightPx <= 0) {
+      throw new RangeError(`capture spec legibility.checks[${i}] minTextHeightPx must be a positive number`);
+    }
   }
 }
 
@@ -74,6 +104,7 @@ export function parseSpec(raw: unknown): LaunchOptions {
       throw new TypeError("capture spec textSelectors must be an array of strings");
     }
   }
+  checkLegibilityChecks(spec.legibility);
   if (spec.url !== undefined && typeof spec.url !== "string") throw new TypeError("capture spec url must be a string");
   if (spec.colorScheme !== undefined && spec.colorScheme !== "light" && spec.colorScheme !== "dark") {
     throw new TypeError(`capture spec colorScheme must be "light" or "dark", got ${String(spec.colorScheme)}`);
