@@ -169,28 +169,110 @@ class FarmStyleFrameRenderer:
     def __call__(
         self, frame: StyleFrame, art: ArtDirection, path: Path
     ) -> tuple[ImageRecord, Usage]:
-        deps = self.deps()
-        config, opts = deps.config, deps.options or ds.ExecutorOptions()
         source, concept = self._stage_source(frame)
         recipe = style_frame_recipe(frame, art, concept, tier=self.tier)
-        assets_dir, _sha = ds.stage_for(config, str(source), recipe)
         base_id = f"{self.production_id}-{self.node_id}-{frame.id}"[:96]
-        job_id = ds.fresh_job_id(config, f"{base_id}-{recipe.content_hash[7:19]}")
-        envelope = ds.envelope(job_id, recipe, config, opts.now())
-        job_file = ds.sign_to_shared(envelope, deps.key, config.shared)
-        out = config.out_dir(job_id)
-        job = ds.blender_job(envelope, job_file, out, config, self.tier, assets_dir)
-        job.node_id = self.node_id
-        queue = JobQueue([ds.executor(deps.client, out, config, opts, assets_dir)], now=opts.now)
-        queue.submit(job)
-        queue.run_until_idle(sleep=opts.sleep, jobs=[job.id])
-        if job.status is not JobStatus.SUCCEEDED or job.result is None:
-            raise JobFailed(
-                f"style frame {frame.id!r}: job {job.id} {job.status.value}: {job.error}",
-                usage=job.failed_usage or Usage(),
-            )
-        _scene, frames = ds.render_record(out)
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(out / sorted(frames)[0], path)
-        return record_image(path, PROVIDER), Usage(gpu_minutes=job.result.usage.gpu_minutes)
+        return render_recipe(
+            self.deps(),
+            recipe,
+            source,
+            base_id,
+            path,
+            tier=self.tier,
+            node_id=self.node_id,
+            label=f"style frame {frame.id!r}",
+        )
+
+
+def render_recipe(
+    deps: FarmDeps,
+    recipe: Recipe,
+    source: Path,
+    base_id: str,
+    path: Path,
+    *,
+    tier: Tier,
+    node_id: str,
+    label: str = "recipe",
+) -> tuple[ImageRecord, Usage]:
+    """Render ``recipe`` (tier steps already applied) as one signed farm job.
+
+    ``source`` is the assets dir to stage (may be empty); the first rendered frame is
+    copied to ``path``. Returns its :class:`ImageRecord` and the GPU minutes used.
+    """
+    config, opts = deps.config, deps.options or ds.ExecutorOptions()
+    assets_dir, _sha = ds.stage_for(config, str(source), recipe)
+    job_id = ds.fresh_job_id(config, f"{base_id}-{recipe.content_hash[7:19]}")
+    envelope = ds.envelope(job_id, recipe, config, opts.now())
+    job_file = ds.sign_to_shared(envelope, deps.key, config.shared)
+    out = config.out_dir(job_id)
+    job = ds.blender_job(envelope, job_file, out, config, tier, assets_dir)
+    job.node_id = node_id
+    queue = JobQueue([ds.executor(deps.client, out, config, opts, assets_dir)], now=opts.now)
+    queue.submit(job)
+    queue.run_until_idle(sleep=opts.sleep, jobs=[job.id])
+    if job.status is not JobStatus.SUCCEEDED or job.result is None:
+        raise JobFailed(
+            f"{label}: job {job.id} {job.status.value}: {job.error}",
+            usage=job.failed_usage or Usage(),
+        )
+    _scene, frames = ds.render_record(out)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(out / sorted(frames)[0], path)
+    return record_image(path, PROVIDER), Usage(gpu_minutes=job.result.usage.gpu_minutes)
+
+
+SCENE_BUILD = "scene_build"
+"""Default node id of scene-builder preview renders."""
+
+
+class FarmRecipeRenderer:
+    """Renders any declarative recipe (a scene builder candidate) on the farm.
+
+    The recipe gets :func:`~spectracut.studio.departments.shots.tier_recipe` steps at
+    ``tier`` (preview by default) and renders as one signed job with an empty assets
+    dir; ``deps`` is called once, on the first render. It is the scene builder's
+    ``RecipeRenderer``: ``(recipe, path) -> (ImageRecord, Usage)``.
+    """
+
+    def __init__(
+        self,
+        deps: Callable[[], FarmDeps],
+        production_id: str,
+        workdir: Path,
+        *,
+        tier: Tier = Tier.PREVIEW,
+        node_id: str = SCENE_BUILD,
+    ) -> None:
+        self._factory = deps
+        self._deps: FarmDeps | None = None
+        self._lock = threading.Lock()
+        self.production_id = production_id
+        self.workdir = Path(workdir)
+        self.tier = tier
+        self.node_id = node_id
+
+    def deps(self) -> FarmDeps:
+        with self._lock:
+            if self._deps is None:
+                self._deps = self._factory()
+            return self._deps
+
+    def __call__(self, recipe: Recipe, path: Path) -> tuple[ImageRecord, Usage]:
+        source = self.workdir / "stage" / recipe.id
+        if source.exists():
+            shutil.rmtree(source)
+        source.mkdir(parents=True)
+        tiered = tier_recipe(recipe, self.tier)
+        base_id = f"{self.production_id}-{self.node_id}-{recipe.id}"[:96]
+        return render_recipe(
+            self.deps(),
+            tiered,
+            source,
+            base_id,
+            path,
+            tier=self.tier,
+            node_id=self.node_id,
+            label=f"scene recipe {recipe.id!r}",
+        )

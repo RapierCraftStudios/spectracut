@@ -69,6 +69,17 @@
       "tolerance": 0.05
     },
     {
+      "id": "scene-builder",
+      "capability": "department-scene-builder",
+      "rubric": "scene-builder",
+      "outputs": "outputs/scene-builder",
+      "pattern": "*.png",
+      "reference": "references/scene-builder.png",
+      "fixture": true,
+      "target": 0.5,
+      "tolerance": 0.05
+    },
+    {
       "id": "compositor",
       "capability": "department-compositor",
       "rubric": "compositor",
