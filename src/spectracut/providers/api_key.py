@@ -131,33 +131,46 @@ class AnthropicKeyVisionJudge:
         self.last_usage: dict[str, Any] = {}
 
     def score(self, frame_path: Path, rubric: str) -> VisionScore:
+        return self._judge([Path(frame_path)], f"Rubric: {rubric}")
+
+    def compare(self, frame_path: Path, reference_path: Path, rubric: str) -> VisionScore:
+        """Score the first image against the bar the second (a reference keyframe) sets."""
+        return self._judge(
+            [Path(frame_path), Path(reference_path)],
+            "The first image is a frame from our film; the second is a reference keyframe "
+            "that sets the quality bar. Score how well the frame meets that bar on the rubric "
+            f"(craft, not similarity of content).\nRubric: {rubric}",
+        )
+
+    def _judge(self, frames: list[Path], text: str) -> VisionScore:
         self.last_usage = {}
-        frame_path = Path(frame_path)
-        if not frame_path.is_file():
-            raise ProviderError("anthropic", f"frame not found: {frame_path}")
+        for frame_path in frames:
+            if not frame_path.is_file():
+                raise ProviderError("anthropic", f"frame not found: {frame_path}")
         key = _key("ANTHROPIC_API_KEY", "anthropic")
-        image = base64.b64encode(frame_path.read_bytes()).decode()
-        media_type = _MEDIA_TYPES.get(frame_path.suffix.lower(), "image/png")
+        content: list[dict[str, Any]] = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": _MEDIA_TYPES.get(f.suffix.lower(), "image/png"),
+                    "data": base64.b64encode(f.read_bytes()).decode(),
+                },
+            }
+            for f in frames
+        ]
+        content.append(
+            {
+                "type": "text",
+                "text": f"{text}\n"
+                'Answer only with JSON: {"score": <0..1>, "notes": "<short>"}',
+            }
+        )
         body = {
             "model": self.model,
             "max_tokens": 400,
             "system": JUDGE_SYSTEM_PROMPT,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {"type": "base64", "media_type": media_type, "data": image},
-                        },
-                        {
-                            "type": "text",
-                            "text": f"Rubric: {rubric}\n"
-                            'Answer only with JSON: {"score": <0..1>, "notes": "<short>"}',
-                        },
-                    ],
-                }
-            ],
+            "messages": [{"role": "user", "content": content}],
         }
         data = _post_json(
             self.opener,

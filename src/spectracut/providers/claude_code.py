@@ -157,6 +157,35 @@ class ClaudeCodeVisionJudge:
         verdict, self.last_usage = parse_judge_output(stdout)
         return verdict
 
+    def compare(self, frame_path: Path, reference_path: Path, rubric: str) -> VisionScore:
+        """Score ``frame_path`` against the bar the reference keyframe sets on ``rubric``."""
+        self.last_usage = {}
+        frame_path, reference_path = Path(frame_path), Path(reference_path)
+        for path in (frame_path, reference_path):
+            if not path.is_file():
+                raise ProviderError(CLI, f"frame not found: {path}")
+        with tempfile.TemporaryDirectory(prefix="spectracut-claude-") as tmp:
+            workdir = Path(tmp)
+            local = workdir / f"frame{frame_path.suffix or '.png'}"
+            ref = workdir / f"reference{reference_path.suffix or '.png'}"
+            shutil.copyfile(frame_path, local)
+            shutil.copyfile(reference_path, ref)
+            prompt = (
+                f"Read the image ./{local.name} (a frame from our film) and the image "
+                f"./{ref.name} (a reference keyframe that sets the quality bar). Score how well "
+                "the frame meets that bar on this rubric, judging craft, not similarity of "
+                f"content.\nRubric: {rubric}"
+            )
+            stdout = run_cli(
+                claude_judge_argv(self.claude_bin, prompt),
+                cli=CLI,
+                cwd=workdir,
+                env=subscription_env(),
+                timeout=self.timeout,
+            )
+        verdict, self.last_usage = parse_judge_output(stdout)
+        return verdict
+
 
 #: Flags for text calls: the judge's isolation, but no tools at all.
 TEXT_ISOLATION_FLAGS = [

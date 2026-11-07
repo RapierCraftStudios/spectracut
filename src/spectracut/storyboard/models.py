@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import Field, JsonValue, field_validator
 
+from spectracut.critique.references import ReferenceComparison
 from spectracut.spec._base import ContentHash, NonEmptyStr, Slug, StrictModel, ensure_unique_ids
 from spectracut.spec.brand import Look, Palette
 from spectracut.spec.spec import CameraMove
@@ -27,6 +28,8 @@ class ArtDirection(StrictModel):
     palette: Palette
     materials: list[NonEmptyStr] = Field(default_factory=list)
     look: Look
+    craft_refs: list[str] = Field(default_factory=list)
+    """Ids of the reference craft points this applies (``<reference>:<point>``)."""
 
 
 class ImageRecord(StrictModel):
@@ -57,6 +60,8 @@ class StyleFrames(StrictModel):
     frames: list[StyleFrame] = Field(min_length=1)
     review_media: dict[str, JsonValue] | None = None
     """The review page's player descriptor for the gate (every rendered frame)."""
+    reference_comparison: ReferenceComparison | None = None
+    """The frames scored against the cited references' keyframes."""
 
     @field_validator("frames")
     @classmethod
@@ -87,6 +92,8 @@ class Board(StrictModel):
 
 class Storyboard(StrictModel):
     boards: list[Board] = Field(min_length=1)
+    craft_refs: list[str] = Field(default_factory=list)
+    """Ids of the reference craft points this applies (``<reference>:<point>``)."""
 
     @field_validator("boards")
     @classmethod
