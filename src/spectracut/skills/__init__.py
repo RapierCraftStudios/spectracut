@@ -21,6 +21,7 @@ M2_DEPARTMENTS: tuple[str, ...] = (
     "storyboard",
     "editor",
     "lighter",
+    "scene-builder",
     "compositor",
     "motion-designer",
     "sound-designer",

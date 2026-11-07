@@ -20,6 +20,7 @@ from spectracut.studio import device_shot as ds
 from spectracut.studio.departments.style_frame_farm import (
     CONCEPT_FILE,
     PROVIDER,
+    FarmRecipeRenderer,
     FarmStyleFrameRenderer,
     style_frame_recipe,
 )
@@ -150,3 +151,44 @@ def test_renderer_runs_one_farm_job_per_frame_and_reports_gpu_minutes(tmp_path: 
     assert [hashlib.sha256(p.read_bytes()).hexdigest() for p in staged] == [
         frames[0].concept.sha256.removeprefix("sha256:")  # type: ignore[union-attr]
     ]
+
+
+def test_recipe_renderer_runs_any_recipe_as_one_preview_farm_job(tmp_path: Path) -> None:
+    from spectracut.spec.recipe import Recipe, RecipeStep
+    from spectracut.studio.departments.shots import tier_recipe
+    from spectracut.studio.node import Tier
+
+    fake = FakeFlamenco()
+    private, _public = generate_keypair()
+    built: list[int] = []
+
+    def deps() -> Deps:
+        built.append(1)
+        config = ds.DeviceShotConfig(
+            flamenco_url="http://fake", shared=tmp_path / "shared", worker_tag=TAG
+        )
+        opts = ds.ExecutorOptions(clock=Ticks(), sleep=lambda _s: None, poll_interval=0.0)
+        return Deps(config, fake, load_private_key(private), opts)
+
+    recipe = Recipe(
+        id="one-beam",
+        shot_id="one-beam",
+        blender_version="4.5",
+        steps=[
+            RecipeStep(index=0, tool="scene.clear", args={}),
+            RecipeStep(index=1, tool="light.add", args={"kind": "area"}),
+        ],
+    )
+    render = FarmRecipeRenderer(deps, "film", tmp_path / "work")
+    out = tmp_path / "out" / "frame.png"
+    record, usage = render(recipe, out)
+    assert record.path == str(out) and record.provider == PROVIDER
+    assert record.sha256 == f"sha256:{hashlib.sha256(out.read_bytes()).hexdigest()}"
+    assert usage.gpu_minutes > 0
+    assert built == [1] and len(fake.submitted) == 1
+    signed = json.loads(Path(fake.submitted[0]["settings"]["job_file"]).read_text("utf-8"))
+    sent = signed["envelope"]["recipe"]
+    expected = tier_recipe(recipe, Tier.PREVIEW)
+    assert [s["tool"] for s in sent["steps"]] == _tools(expected)
+    assert signed["envelope"]["recipe_hash"] == expected.content_hash
+    assert fake.submitted[0]["worker_tag"] == "tag-1"

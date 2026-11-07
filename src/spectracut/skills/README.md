@@ -21,7 +21,7 @@ either file is missing.
 
 `spectracut.skills.M2_DEPARTMENTS` lists the departments that ship a pack:
 `writer`, `director`, `art-director`, `storyboard`, `editor`, `lighter`,
-`compositor`, `motion-designer`, `sound-designer`, `mixer` and `critic`.
+`scene-builder`, `compositor`, `motion-designer`, `sound-designer`, `mixer` and `critic`.
 `spectracut.skills.pack_dir(name)` is a pack's folder.
 
 ## Rubrics and the benchmark runner

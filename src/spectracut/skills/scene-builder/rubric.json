@@ -1,0 +1,36 @@
+{
+  "id": "scene-builder",
+  "title": "Scene builder",
+  "criteria": [
+    {
+      "id": "adherence",
+      "prompt": "Is every object, material, light and camera the description names present and recognisable?",
+      "weight": 2.0
+    },
+    {
+      "id": "composition",
+      "prompt": "Is there one clear subject, deliberately framed, with nothing important cut by the edge?",
+      "weight": 1.5
+    },
+    {
+      "id": "lighting",
+      "prompt": "Does key, fill and rim light shape the subject, with no haze over it and no flat or blown areas?",
+      "weight": 1.5
+    },
+    {
+      "id": "materials",
+      "prompt": "Do surfaces read as physical materials (glass, metal, plastic) with macro detail the light reveals?",
+      "weight": 1.0
+    },
+    {
+      "id": "legibility",
+      "prompt": "Is all on-screen text readable at delivery size, and only the brief's copy?",
+      "weight": 1.0
+    },
+    {
+      "id": "palette",
+      "prompt": "Do the colours stay in the art direction's palette and the Look's thresholds?",
+      "weight": 1.0
+    }
+  ]
+}

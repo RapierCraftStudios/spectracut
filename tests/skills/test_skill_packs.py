@@ -27,6 +27,7 @@ EXPECTED = (
     "storyboard",
     "editor",
     "lighter",
+    "scene-builder",
     "compositor",
     "motion-designer",
     "sound-designer",
