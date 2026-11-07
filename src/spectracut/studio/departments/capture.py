@@ -33,9 +33,9 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Final, Literal
+from typing import Any, ClassVar, Final, Literal
 
-from pydantic import Field, JsonValue, StringConstraints
+from pydantic import Field, JsonValue
 
 from spectracut.queue.executors.capture import CaptureExecutor
 from spectracut.queue.queue import Job
@@ -53,6 +53,7 @@ from spectracut.studio.departments.discovery import (
     ScreenMapping,
     ScreenStep,
 )
+from spectracut.studio.departments.screens import CaptureFrame, DeviceId, ScreenState, Sha256
 from spectracut.studio.graph import RunContext, Runner, RunResult
 from spectracut.studio.ledger import Usage
 from spectracut.studio.node import NodeSpec
@@ -91,8 +92,6 @@ END_HOLD_MS: Final = 500
 LOGIN_SETTLE_MS: Final = 1000
 READY_TIMEOUT_S: Final = 120.0
 
-DeviceId = Literal["laptop", "phone"]
-Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
 class DeviceProfile(StrictModel):
@@ -113,13 +112,6 @@ aspect (1179x2556 px), the device kit's screens (#362)."""
 COLOR_SCHEME: Final = "dark"
 """Captures run in the product's dark scheme (#362); cookie banners stay hidden by the
 capture package's default clean rules."""
-
-
-class CaptureFrame(StrictModel):
-    """One PNG and its sha256."""
-
-    path: NonEmptyStr
-    sha256: Sha256
 
 
 class CaptureProvenance(StrictModel):
@@ -162,6 +154,8 @@ class ScreenCapture(StrictModel):
     events: NonEmptyStr
     text: NonEmptyStr
     provenance: CaptureProvenance
+    screen: ScreenState | None = Field(default=None, exclude_if=lambda v: v is None)
+    """The capture composited into device chrome (absent on older outputs)."""
 
 
 class UICaptures(StrictModel):
