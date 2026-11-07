@@ -134,6 +134,17 @@ class VisionJudge(Protocol):
         ...
 
 
+@runtime_checkable
+class ReferenceJudge(Protocol):
+    """A vision judge that compares a frame with a reference keyframe (craft, not content)."""
+
+    name: str
+
+    def compare(self, frame_path: Path, reference_path: Path, rubric: str) -> VisionScore:
+        """Score how well ``frame_path`` meets the bar ``reference_path`` sets on ``rubric``."""
+        ...
+
+
 def context_tokens(usage: Mapping[str, Any]) -> int:
     """Input-side tokens of one call (fresh + cache read + cache creation)."""
     keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")

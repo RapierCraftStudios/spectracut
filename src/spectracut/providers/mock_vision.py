@@ -21,3 +21,14 @@ class MockVisionJudge:
         digest = hashlib.sha256(frame_path.read_bytes() + rubric.encode()).digest()
         value = round(int.from_bytes(digest[:2], "big") / 0xFFFF, 3)
         return VisionScore(score=value, notes="mock vision judge")
+
+    def compare(self, frame_path: Path, reference_path: Path, rubric: str) -> VisionScore:
+        frame_path, reference_path = Path(frame_path), Path(reference_path)
+        for path in (frame_path, reference_path):
+            if not path.is_file():
+                raise ProviderError("mock-vision", f"frame not found: {path}")
+        digest = hashlib.sha256(
+            frame_path.read_bytes() + reference_path.read_bytes() + rubric.encode()
+        ).digest()
+        value = round(int.from_bytes(digest[:2], "big") / 0xFFFF, 3)
+        return VisionScore(score=value, notes="mock reference comparison")

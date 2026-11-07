@@ -19,5 +19,9 @@
   ],
   "look": {
     "id": "clean"
-  }
+  },
+  "craft_refs": [
+    "base44-launch:rhythm-of-light-and-dark",
+    "base44-launch:real-ui-as-the-hero"
+  ]
 }

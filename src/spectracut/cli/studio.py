@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import socket
 import threading
@@ -20,8 +21,11 @@ from pydantic import JsonValue, ValidationError
 from spectracut.critique.scene_verifier import scene_critic, style_frames_critic
 from spectracut.edit.preview import AnimaticPreview, FfmpegPreview
 from spectracut.providers.base import (
+    ProviderError,
+    ReferenceJudge,
     TextProvider,
     VisionJudge,
+    VisionScore,
     select_text_provider,
     select_vision_judge,
 )
@@ -38,6 +42,12 @@ from spectracut.spec.product import (
     load_product_source,
     product_routes,
 )
+from spectracut.spec.references import (
+    DEFAULT_REFERENCE_SET,
+    ReferenceError,
+    ReferenceSet,
+    load_reference_set,
+)
 from spectracut.storyboard.models import ArtDirection
 from spectracut.studio import device_shot as ds
 from spectracut.studio import intake
@@ -47,6 +57,7 @@ from spectracut.studio.departments import all_departments
 from spectracut.studio.departments import art as art_depts
 from spectracut.studio.departments import discovery as discovery_depts
 from spectracut.studio.departments import finishing as finishing_depts
+from spectracut.studio.departments import references as reference_depts
 from spectracut.studio.departments import shots as shot_depts
 from spectracut.studio.departments import sound as sound_depts
 from spectracut.studio.departments.capture import UI_CAPTURE, CaptureRunner
@@ -92,6 +103,8 @@ studio_app = typer.Typer(
 
 DEPARTMENTS: dict[str, type[Department]] = all_departments()
 """Departments available to ``studio run``, by name (the registry in ``studio.departments``)."""
+
+log = logging.getLogger(__name__)
 
 text_provider_factory: Callable[[], TextProvider] | None = select_text_provider
 """Builds the text provider departments run through: Claude sign-in, else Codex sign-in."""
@@ -438,6 +451,7 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                     media_root=production_dir,
                     concept_note=art_depts.concept_skip_reason(runtime=runtime),
                     note=lambda node_id, text: _note_once(graph, node_id, text),
+                    reference_judge=LazyReferenceJudge(builder_judge),
                 )
             runner = preproduction
         return runner(ctx)
@@ -459,6 +473,7 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                     workdir=production.store.path(production.id) / "finishing",
                     options=deps.options,
                     brief=brief if isinstance(brief, Brief) else None,
+                    reference_judge=LazyReferenceJudge(builder_judge),
                 )
             runner = finishing
         return runner(ctx)
@@ -503,6 +518,8 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
             return ui_capture(ctx)
         if ctx.spec.kind == art_depts.BRAND_KIT:
             return art_depts.build_brand_kit(ctx)
+        if ctx.spec.kind == reference_depts.REFERENCES:
+            return reference_depts.build_references(ctx)
         if ctx.spec.kind in SOUND_KINDS:
             return audio(ctx)
         if ctx.spec.kind in FINISHING_KINDS:
@@ -718,6 +735,35 @@ def new(
         typer.echo("no department registered yet for: " + ", ".join(est.unknown_departments))
 
 
+class LazyReferenceJudge:
+    """The run's vision judge as a :class:`ReferenceJudge`, selected on first comparison.
+
+    A judge that cannot compare two images raises :class:`ProviderError`, which the
+    reference comparison records as a note (it never fails the node).
+    """
+
+    name = "vision-judge"
+
+    def __init__(self, judge: Callable[[], VisionJudge]) -> None:
+        self._judge = judge
+
+    def compare(self, frame_path: Path, reference_path: Path, rubric: str) -> VisionScore:
+        found = self._judge()
+        self.name = getattr(found, "name", self.name)
+        if not isinstance(found, ReferenceJudge):
+            raise ProviderError(self.name, "this vision judge cannot compare with a reference")
+        return found.compare(frame_path, reference_path, rubric)
+
+
+def _references() -> ReferenceSet | None:
+    """The default reference set (craft notes, local keyframes); ``None`` when unreadable."""
+    try:
+        return load_reference_set(DEFAULT_REFERENCE_SET)
+    except ReferenceError as exc:
+        log.warning("no reference set for this production: %s", exc)
+        return None
+
+
 def create_production(
     store: ProductionStore,
     brief: Brief | CreativeBrief,
@@ -773,6 +819,7 @@ def create_production(
             quality,
             duration_s=duration,
             brand_kit=kit,
+            references=_references(),
             product=source
             if source is not None and _has_script(breakdown(brief, quality))
             else None,

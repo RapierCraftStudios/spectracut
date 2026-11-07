@@ -40,6 +40,7 @@ from spectracut.critique.revise import ReviseLoop, RevisionRequest
 from spectracut.finishing.color import hex_to_linear
 from spectracut.harness.dispatch import PreviewDispatcher
 from spectracut.harness.errors import HarnessError
+from spectracut.harness.kit import Kit, kit_from
 from spectracut.harness.recorder import Recorder
 from spectracut.harness.tools import Session, build_tools, get_tool
 from spectracut.providers.base import TextProvider
@@ -77,8 +78,12 @@ CALLS_SCHEMA: dict[str, Any] = {
             "type": "array",
             "items": {
                 "type": "object",
-                "properties": {"tool": {"type": "string"}, "args": {"type": "object"}},
-                "required": ["tool", "args"],
+                "properties": {
+                    "tool": {"type": "string"},
+                    "kit": {"type": "string"},
+                    "args": {"type": "object"},
+                },
+                "required": ["args"],
             },
         },
     },
@@ -108,7 +113,9 @@ class _NoDispatcher:
         raise HarnessError("host.refused", f"scene builder compiles build tools only ({name})")
 
 
-def compile_calls(calls: JsonValue, *, recipe_id: str, shot_id: str) -> Recipe:
+def compile_calls(
+    calls: JsonValue, *, recipe_id: str, shot_id: str, kit: Kit | None = None
+) -> Recipe:
     """Compile harness ``[{tool, args}]`` calls into a declarative :class:`Recipe`.
 
     Only ``build`` tools are accepted; their typed arguments are validated by
@@ -117,6 +124,10 @@ def compile_calls(calls: JsonValue, *, recipe_id: str, shot_id: str) -> Recipe:
     call or bad arguments in *any* call raise one :class:`HarnessError` whose message
     lists each problem as ``calls[i] <tool>: <message>`` and whose ``details`` carry
     ``problems=[{index, tool, message}]``.
+
+    With a ``kit``, a ``{"kit": <entry>, "args"}`` call expands into the entry's build
+    calls (:meth:`Kit.expand`) before validation; its problems carry ``tool``
+    ``kit:<entry>`` and the original index. Without a kit such a call is refused.
     """
     if not isinstance(calls, list) or not calls:
         raise HarnessError("recipe.empty", "calls must be a non-empty list of {tool, args}")
@@ -127,31 +138,50 @@ def compile_calls(calls: JsonValue, *, recipe_id: str, shot_id: str) -> Recipe:
     for i, call in enumerate(calls):
         name: str | None = None
         try:
+            if isinstance(call, Mapping) and "kit" in call:
+                entry = call.get("kit")
+                name = f"kit:{entry}" if isinstance(entry, str) else None
+                if kit is None:
+                    raise HarnessError("args.invalid", "kit entries need a kit")
+                expanded = kit.expand_calls([call])
+                for sub in expanded:
+                    assert isinstance(sub, Mapping)
+                    sub_tool = str(sub["tool"])
+                    try:
+                        _compile_one(session, sub_tool, sub.get("args"))
+                    except HarnessError as exc:
+                        message = exc.message.removeprefix(f"{sub_tool}: ")
+                        raise HarnessError(exc.code, f"{sub_tool}: {message}") from None
+                continue
             if not isinstance(call, Mapping) or set(call) - {"tool", "args"}:
                 raise HarnessError("args.invalid", "expected exactly {tool, args}")
             tool_name, args = call.get("tool"), call.get("args", {})
             if not isinstance(tool_name, str):
                 raise HarnessError("args.invalid", "tool must be a string")
             name = tool_name
-            if args is None:
-                args = {}
-            if not isinstance(args, Mapping):
-                raise HarnessError("args.invalid", "args must be an object")
-            tool = get_tool(name)
-            if tool.kind != "build":
-                raise HarnessError(
-                    "host.refused", f"{name} is a {tool.kind} tool; only build tools"
-                )
-            tool.handler(session, tool.parse(args))
+            _compile_one(session, name, args)
         except HarnessError as exc:
             message = exc.message
-            if name is not None and message.startswith(f"{name}: "):
-                message = message[len(name) + 2 :]
+            for prefix in (f"calls[0] {name}: ", f"{name}: "):
+                if name is not None and message.startswith(prefix):
+                    message = message[len(prefix) :]
             problems.append({"index": i, "tool": name, "message": message})
             codes.append(exc.code)
     if problems:
         raise HarnessError(codes[0], "; ".join(problem_lines(problems)), problems=problems)
     return recorder.recipe()
+
+
+def _compile_one(session: Session, name: str, args: JsonValue) -> None:
+    """Validate and record one build-tool call; :class:`HarnessError` on any problem."""
+    if args is None:
+        args = {}
+    if not isinstance(args, Mapping):
+        raise HarnessError("args.invalid", "args must be an object")
+    tool = get_tool(name)
+    if tool.kind != "build":
+        raise HarnessError("host.refused", f"{name} is a {tool.kind} tool; only build tools")
+    tool.handler(session, tool.parse(args))
 
 
 def problem_lines(problems: Sequence[Mapping[str, JsonValue]]) -> list[str]:
@@ -391,6 +421,8 @@ class SceneBrief(StrictModel):
     """On-screen strings sourced from the brief; ``None`` takes the description's quotes."""
     elements: tuple[NonEmptyStr, ...] = ()
     """Elements the frame must contain, each matched against the recipe's object names."""
+    kit: Kit | None = None
+    """A lookdev kit whose assets and lighting presets the builder places by name."""
 
     def copy_lines(self) -> tuple[str, ...]:
         if self.allowed_copy is not None:
@@ -401,7 +433,7 @@ class SceneBrief(StrictModel):
     def required_copy(self) -> tuple[str, ...]:
         """The description's quoted strings that are allowed copy: each must be on screen."""
         allowed = {c.strip() for c in self.copy_lines()}
-        quoted = (a or b for a, b in _QUOTED.findall(self.description))
+        quoted = (next(g for g in groups if g) for groups in _QUOTED.findall(self.description))
         return tuple(q for q in dict.fromkeys(quoted) if q.strip() in allowed)
 
     def palette(self) -> dict[str, str]:
@@ -626,6 +658,19 @@ class SceneBuilder:
         ]
         if brief.brand_kit is not None and brief.brand_kit.forbidden_words:
             parts += ["", "Forbidden words:", _dumps(brief.brand_kit.forbidden_words)]
+        if brief.kit is not None:
+            parts += [
+                "",
+                (
+                    f"Kit assets and lighting presets ({brief.kit.id}: {brief.kit.title}). Place "
+                    'them with {"kit": "<name>", "args": {...}} calls instead of building those '
+                    "objects or lights from primitives; every entry takes location [x, y, z] "
+                    "and a uniform scale, colour params take '#rrggbb' palette swatches, and "
+                    "object names derive from the name param. Plain build-tool calls (camera, "
+                    "world, extra lights or objects) go alongside them:"
+                ),
+                _dumps(brief.kit.prompt_summary()),
+            ]
         parts += ["", "Build tool cheat sheet (which arguments go together):", tool_cheat_sheet()]
         parts += ["", "Build tools (name: summary and JSON args schema):", _dumps(tools)]
         if state is not None:
@@ -791,6 +836,7 @@ class SceneBuilder:
                         cand.calls,
                         recipe_id=f"{brief.id}-a{cand.attempt}-c{cand.candidate}"[:128],
                         shot_id=brief.id,
+                        kit=brief.kit,
                     )
                     check_recipe_copy(recipe, brief.copy_lines(), brief.brand_kit)
                     lint = lint_recipe(recipe, brief)
@@ -952,6 +998,7 @@ def scene_build_runner(builder: SceneBuilder) -> Runner:
         kit = params.get("brand_kit")
         copy = params.get("copy")
         elements = params.get("elements")
+        lookdev = params.get("kit")
         brief = SceneBrief(
             id=ctx.spec.id,
             description=str(params.get("description") or ""),
@@ -959,6 +1006,7 @@ def scene_build_runner(builder: SceneBuilder) -> Runner:
             brand_kit=BrandKit.model_validate(kit) if kit is not None else None,
             allowed_copy=tuple(str(c) for c in copy) if isinstance(copy, list) else None,
             elements=tuple(str(e) for e in elements) if isinstance(elements, list) else (),
+            kit=kit_from(lookdev),
         )
         build = builder.build(brief)
         output: JsonValue = build.model_dump(mode="json")

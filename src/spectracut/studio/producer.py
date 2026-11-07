@@ -44,6 +44,7 @@ from spectracut.spec._base import Slug, StrictModel
 from spectracut.spec.brand import BrandKit
 from spectracut.spec.brief import Brief, CreativeBrief
 from spectracut.spec.product import ProductSource
+from spectracut.spec.references import ReferenceSet
 from spectracut.spec.spec import Spec
 from spectracut.studio.autonomy import AutonomyPolicy, BudgetApproval
 from spectracut.studio.conformance import Conformance
@@ -195,6 +196,7 @@ class Producer:
         duration_s: float | None = None,
         script: Spec | None = None,
         brand_kit: BrandKit | None = None,
+        references: ReferenceSet | None = None,
         product: ProductSource | None = None,
     ) -> ProductionPlan:
         """Shot list, asset list and one task per profile stage for ``brief``.
@@ -203,7 +205,10 @@ class Producer:
         required); the shot list from the script's shots, or evenly split
         :data:`AVG_SHOT_S` shots. With ``brand_kit`` (any profile) a ``brand_kit``
         node carrying it follows the first stage, and the departments that declare
-        it (art direction, style frames, storyboard) read it. With ``product`` the
+        it (art direction, style frames, storyboard) read it. With ``references`` a
+        ``references`` node carrying the reference set follows it, and the departments
+        that declare it (concept, art direction, storyboard, edit) read it. With
+        neither the nodes are exactly the profile's. With ``product`` the
         ``product-ui`` asset is built by the ``ui_capture`` node from that source
         (the caller adds the node with :func:`product_capture_nodes`).
         """
@@ -237,8 +242,11 @@ class Producer:
         )
         # Imported here: art -> device_shot -> store imports this module.
         from spectracut.studio.departments.art import brand_kit_node
+        from spectracut.studio.departments.references import references_node
 
         seeds = (brand_kit_node(brand_kit),) if brand_kit is not None else ()
+        if references is not None:
+            seeds = (*seeds, references_node(references))
         nodes = breakdown(brief, profile, seeds=seeds)
         nodes[0] = nodes[0].model_copy(
             update={"params": {**nodes[0].params, PLAN_PARAM: plan.figures()}}

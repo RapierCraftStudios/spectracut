@@ -8,7 +8,10 @@ design, music, mix) in ``.sound`` and Finishing (edit, graded master, delivery) 
 ``.finishing`` and UI capture (the product's real screens, kind ``ui_capture``) in
 ``.capture``; import from those modules. The ``brand_kit`` node (department
 ``brand-kit``, in ``.art``) carries the production's brand kit, built in code, so
-the art departments read it as a declared input.
+the art departments read it as a declared input. The ``references`` node (department
+``references``, in ``.references``) carries the production's reference films (craft
+notes and local keyframe paths), so concept, art direction, storyboard and edit
+cite the craft points they apply.
 :func:`all_departments` lists every department ``studio run`` can use, and
 :data:`STAGE_DEPARTMENTS` says which one builds each profile stage (node kind). A
 stage with no entry keeps its own name as the department name, so it shows up as
@@ -28,6 +31,7 @@ STAGE_DEPARTMENTS: dict[str, str] = {
     "concept": "concept-writer",
     "script": "script-writer",
     "brand_kit": "brand-kit",
+    "references": "references",
     "ui_capture": "ui-capture",
     "art_direction": "art-director",
     "style_frames": "style-frame-artist",
@@ -57,6 +61,7 @@ def all_departments() -> dict[str, type[Department]]:
     from spectracut.studio.departments.capture import CAPTURE_DEPARTMENTS
     from spectracut.studio.departments.discovery import DISCOVERY_DEPARTMENTS
     from spectracut.studio.departments.finishing import FINISHING_DEPARTMENTS
+    from spectracut.studio.departments.references import REFERENCE_DEPARTMENTS
     from spectracut.studio.departments.shots import SHOT_DEPARTMENTS
     from spectracut.studio.departments.sound import SOUND_DEPARTMENTS
     from spectracut.studio.departments.writer import DEVELOPMENT_DEPARTMENTS
@@ -65,6 +70,7 @@ def all_departments() -> dict[str, type[Department]]:
         d.name: d
         for d in (
             *DISCOVERY_DEPARTMENTS,
+            *REFERENCE_DEPARTMENTS,
             *DEVELOPMENT_DEPARTMENTS,
             *ART_DEPARTMENTS,
             *CAPTURE_DEPARTMENTS,
