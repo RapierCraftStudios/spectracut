@@ -141,7 +141,7 @@ class Splines:
 
 class CurveData:
     def __init__(self, name, type):
-        self.name, self.splines, self.materials = name, Splines(), []
+        self.name, self.type, self.splines, self.materials = name, type, Splines(), []
 
 
 def _new_object(name, data=None):
@@ -151,7 +151,7 @@ def _new_object(name, data=None):
     if isinstance(data, Light):
         o.type = "LIGHT"
     elif isinstance(data, CurveData):
-        o.type = "CURVE"
+        o.type = "FONT" if data.type == "FONT" else "CURVE"
     o.data = data if data is not None else MagicMock(name="meshdata_" + name)
     o.location, o.rotation_euler, o.scale = (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
     _objects.append(o)
@@ -359,6 +359,25 @@ def test_emissive_preset_applies_to_a_curve_object(blender: Path, tmp_path: Path
     run = ok(run_steps(blender, tmp_path, [beam, ("material.apply_preset", step)]))
     assert run.report("material.apply_preset")["material"] == "emissive.Beam"
     assert run.state["materials"]["emissive.Beam"]["Emission Color"] == [0.1, 0.4, 1.0, 1.0]
+
+
+def test_apply_preset_on_a_text_object_succeeds(blender: Path, tmp_path: Path) -> None:
+    # #330: text.add makes a FONT object; the runtime refused it as "not a mesh or curve".
+    text = ("text.add", {"body": "ONE BEAM", "name": "Tok_url"})
+    step = {"object": "Tok_url", "preset": "emissive", "color": [1.0, 0.5, 0.1]}
+    run = ok(run_steps(blender, tmp_path, [text, ("material.apply_preset", step)]))
+    assert run.report("material.apply_preset")["material"] == "emissive.Tok_url"
+    assert run.state["materials"]["emissive.Tok_url"]["Emission Color"] == [1.0, 0.5, 0.1, 1.0]
+
+
+def test_apply_preset_refuses_an_object_without_material_slots(
+    blender: Path, tmp_path: Path
+) -> None:
+    light = ("light.add", {"kind": "point", "name": "P"})
+    run = run_steps(
+        blender, tmp_path, [light, ("material.apply_preset", {"object": "P", "preset": "emissive"})]
+    )
+    assert "'P' has no material slots (type LIGHT)" in refused(run)
 
 
 def test_emissive_glows_in_its_base_colour(blender: Path, tmp_path: Path) -> None:

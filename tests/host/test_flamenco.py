@@ -121,6 +121,15 @@ class _Manager(BaseHTTPRequestHandler):
             self._send(200, {"tags": [{"id": "uuid-4070", "name": "4070ti"}]})
         elif self.path == "/api/v3/jobs/j-1":
             self._send(200, {"id": "j-1", "status": "completed"})
+        elif self.path == "/api/v3/jobs/j-1/tasks":
+            self._send(200, {"tasks": [{"id": "t-1", "name": "render", "status": "soft-failed"}]})
+        elif self.path == "/api/v3/tasks/t-1/logtail":
+            raw = b"spectracut runner: refused: step 18 [args.invalid]\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
         else:
             self._send(404, {"message": "no"})
 
@@ -155,6 +164,16 @@ def test_client_lists_tags_and_submits(
     assert client.submit(job)["id"] == "j-1"
     assert _Manager.posted == [job]
     assert client.job_status("j-1") == "completed"
+
+
+def test_client_lists_tasks_reads_the_log_tail_and_cancels(manager: str) -> None:
+    client = FlamencoClient(manager)
+    assert client.job_tasks("j-1") == [{"id": "t-1", "name": "render", "status": "soft-failed"}]
+    assert client.task_log_tail("t-1") == "spectracut runner: refused: step 18 [args.invalid]\n"
+    client.cancel_job("j-1", "soft-failed task t-1")
+    assert _Manager.posted == [{"status": "cancel-requested", "reason": "soft-failed task t-1"}]
+    with pytest.raises(FlamencoError, match="HTTP 404"):
+        client.task_log_tail("missing")
 
 
 def test_client_errors(manager: str) -> None:

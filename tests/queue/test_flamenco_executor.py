@@ -342,3 +342,101 @@ def test_results_without_a_device_keep_wall_time(tmp_path: Path) -> None:
     result = _timed_executor(tmp_path / "legacy").run(_blender_job())
     assert result.usage.gpu_minutes == pytest.approx(2.0)
     assert isinstance(result.output, dict) and "render_device" not in result.output
+
+
+# ---- #330: a soft-failed task must not hang the wait -------------------------------------
+
+REFUSAL = (
+    "spectracut runner: refused: step 18 (material.apply_preset) [args.invalid]: "
+    "material.apply_preset: 'Tok_url' is not a mesh or curve object"
+)
+
+
+class FakeTaskFlamenco(FakeFlamenco):
+    """Adds the task calls; ``tasks`` replays a scripted task-status sequence."""
+
+    def __init__(self, statuses: list[str], tasks: list[str]) -> None:
+        super().__init__(statuses)
+        self.tasks = list(tasks)
+        self.cancelled: list[tuple[str, str]] = []
+        self.tails: list[str] = []
+
+    def job_tasks(self, job_id: str) -> list[dict[str, Any]]:
+        status = self.tasks.pop(0) if len(self.tasks) > 1 else self.tasks[0]
+        return [{"id": "t-1", "name": "render-1-1", "status": status}]
+
+    def task_log_tail(self, task_id: str) -> str:
+        self.tails.append(task_id)
+        return "\n".join(f"line {i}" for i in range(100)) + "\n" + REFUSAL + "\n"
+
+    def cancel_job(self, job_id: str, reason: str) -> None:
+        self.cancelled.append((job_id, reason))
+
+
+def _task_executor(client: FakeFlamenco, ticker: _Ticker) -> FlamencoExecutor:
+    # The device-shot defaults: 5 s polls and an hour's timeout.
+    return FlamencoExecutor(
+        client,
+        output_dir="/shared/frames",
+        sleep=ticker.sleep,
+        poll_interval=5.0,
+        timeout_s=3600.0,
+        clock=ticker.mono,
+    )
+
+
+def test_soft_failed_task_with_one_worker_ends_the_wait_with_the_log_tail() -> None:
+    ticker = _Ticker()
+    client = FakeTaskFlamenco(["active"], ["active", "soft-failed"])
+    with pytest.raises(FlamencoJobFailed) as info:
+        _task_executor(client, ticker).run(_blender_job())
+    assert ticker.t <= 120.0
+    err = info.value
+    assert err.flamenco_id == "fl-1" and "soft-failed" in err.status
+    assert REFUSAL in err.log_tail and REFUSAL in str(err)
+    assert len(err.log_tail.splitlines()) == 40
+    assert client.cancelled and client.cancelled[0][0] == "fl-1"
+    assert "render-1-1 soft-failed" in client.cancelled[0][1]
+    assert err.usage.gpu_minutes == pytest.approx(ticker.t / 60.0)
+
+
+def test_soft_failed_job_error_reaches_the_queue_job() -> None:
+    ticker = _Ticker()
+    client = FakeTaskFlamenco(["queued"], ["soft-failed"])
+    q = JobQueue([_task_executor(client, ticker)], now=lambda: T0)
+    job = _blender_job()
+    q.submit(job)
+    q.run_until_idle(sleep=lambda _s: None, jobs=[job.id])
+    assert job.status is JobStatus.FAILED
+    assert job.error is not None and REFUSAL in job.error
+    assert ticker.t <= 120.0
+
+
+def test_soft_failed_task_another_worker_retries_does_not_fail() -> None:
+    ticker = _Ticker()
+    client = FakeTaskFlamenco(
+        ["active"] * 6 + ["completed"], ["soft-failed", "soft-failed", "active"]
+    )
+    result = _task_executor(client, ticker).run(_blender_job())
+    assert result.output["status"] == "completed"
+    assert client.cancelled == [] and client.tails == []
+
+
+def test_failed_job_carries_the_failed_task_log_tail() -> None:
+    client = FakeTaskFlamenco(["active", "failed"], ["failed"])
+    with pytest.raises(FlamencoJobFailed, match="ended failed; task log tail") as info:
+        _task_executor(client, _Ticker()).run(_blender_job())
+    assert REFUSAL in info.value.log_tail and client.cancelled == []
+
+
+def test_task_call_errors_never_mask_the_failure() -> None:
+    class Broken(FakeTaskFlamenco):
+        def task_log_tail(self, task_id: str) -> str:
+            raise RuntimeError("logtail down")
+
+        def cancel_job(self, job_id: str, reason: str) -> None:
+            raise RuntimeError("setstatus down")
+
+    with pytest.raises(FlamencoJobFailed) as info:
+        _task_executor(Broken(["active"], ["soft-failed"]), _Ticker()).run(_blender_job())
+    assert info.value.log_tail == "" and "soft-failed" in info.value.status
