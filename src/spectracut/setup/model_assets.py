@@ -117,8 +117,20 @@ ASSETS: dict[str, ModelAsset] = {
                         "*.json",
                     ),
                 ),
+                # Encoders the pinned source loads by hub id (model_utils.py); the loader
+                # points those ids at these copies, so nothing is fetched at runtime.
+                WeightsSource(
+                    "google/siglip2-base-patch16-512",
+                    "a89f5c5093f902bf39d3cd4d81d2c09867f0724b",
+                    ("*.json", "*.txt", "*.model", "*.safetensors"),
+                ),
+                WeightsSource(
+                    "laion/larger_clap_general",
+                    "ada0c23a36c4e8582805bb38fec3905903f18b41",
+                    ("*.json", "*.txt", "*.safetensors"),
+                ),
             ),
-            8.3,
+            10.6,
             "https://github.com/Tencent-Hunyuan/HunyuanVideo-Foley.git",
             "df7b005b5023df2a9b73e1d66dd51d452799884e",
         ),
