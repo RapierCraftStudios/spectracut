@@ -158,6 +158,9 @@ On the dev box, with legion registered:
    `SPECTRACUT_MODEL_HOST_OS`.
 3. The full AlterLab run is `m2-launch-film-farm-e2e` (`tests/acceptance/test_m2_launch_film.py`).
 
+Both checks run the stage through a `ProductionGraph` and assert the ledger entry (`gpu_minutes > 0`, outcome
+accepted); the AlterLab run also asserts the `sound-design` cues carry real, non-mock model provenance.
+
 | Stage | Model | Cues | Wall seconds | GPU minutes | Result |
 |---|---|---|---|---|---|
 | sound_design | ezaudio-xl | - | - | - | pending first live run (check `studio-sound-design-legion-e2e`) |
