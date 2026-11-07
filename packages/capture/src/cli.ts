@@ -32,6 +32,9 @@ function checkActions(value: unknown, field: string): void {
     if (a.do === "type" && (a.text === undefined) === (a.textEnv === undefined)) {
       throw new TypeError(`capture spec ${field}[${i}] type needs exactly one of text and textEnv`);
     }
+    if (a.do === "paste" && (typeof a.text !== "string" || a.text === "")) {
+      throw new TypeError(`capture spec ${field}[${i}] paste needs a non-empty text`);
+    }
     if (a.do === "click" && a.optional !== undefined && typeof a.optional !== "boolean") {
       throw new TypeError(`capture spec ${field}[${i}] click optional must be a boolean`);
     }
@@ -105,6 +108,11 @@ export function parseSpec(raw: unknown): LaunchOptions {
   if (spec.textSelectors !== undefined) {
     if (!Array.isArray(spec.textSelectors) || !spec.textSelectors.every((s) => typeof s === "string")) {
       throw new TypeError("capture spec textSelectors must be an array of strings");
+    }
+  }
+  if (spec.anchors !== undefined) {
+    if (!Array.isArray(spec.anchors) || !spec.anchors.every((s) => typeof s === "string")) {
+      throw new TypeError("capture spec anchors must be an array of strings");
     }
   }
   checkLegibilityChecks(spec.legibility);

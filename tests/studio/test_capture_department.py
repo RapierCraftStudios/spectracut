@@ -31,10 +31,12 @@ from spectracut.studio.departments.capture import (
     DEVICES,
     UI_CAPTURE,
     CaptureRunner,
+    ScreenCapture,
     UICaptureDepartment,
     UICaptures,
     capture_node,
     check_demo_data,
+    login_actions,
     steps_to_actions,
 )
 from spectracut.studio.departments.discovery import PRODUCT, ScreenStep
@@ -553,3 +555,98 @@ def test_capture_records_screen_state(tmp_path: Path) -> None:
     assert laptop.screen.values == ["Demo Person"]
     assert "screen" in laptop.model_dump(mode="json")
     assert "screen" not in laptop.model_copy(update={"screen": None}).model_dump(mode="json")
+
+
+# ---- UI anchors, pasted URLs and transient frames (#367) ---------------------------
+
+
+def test_url_type_steps_paste_and_other_values_type() -> None:
+    steps = [
+        ScreenStep(action="type", target="#url", value="https://example.com/pricing"),
+        ScreenStep(action="type", target="input[name=q]", value="max_credits"),
+    ]
+    actions = steps_to_actions(steps, "http://localhost:3000/")
+    assert actions[2] == {"do": "paste", "text": "https://example.com/pricing"}
+    assert actions[5] == {"do": "type", "text": "max_credits", "bpm": 120, "subdivision": 4}
+    assert not any(a.get("do") == "type" and "example.com" in str(a) for a in actions)
+
+
+def test_login_actions_keep_typing_credentials() -> None:
+    setup = login_actions(_source(), "http://127.0.0.1:9")
+    typed = [a for a in setup if a["do"] in ("type", "paste")]
+    assert [a["do"] for a in typed] == ["type", "type"]
+    assert [a["textEnv"] for a in typed] == [EMAIL_ENV, PASSWORD_ENV]
+    assert all(a["secret"] is True for a in typed)
+
+
+class AnchorCli(FakeCli):
+    """Also writes anchors.json; raw frame 1 shows a transient layout shift."""
+
+    def __call__(self, argv: Sequence[str], timeout: float | None) -> CaptureRun:
+        run = super().__call__(argv, timeout)
+        spec = self.specs[-1]
+        if spec.get("anchors"):
+            out = Path(spec["outDir"])
+            records = []
+            for i in range(3):
+                shift = 40 if i == 1 else 0
+                boxes: dict[str, dict[str, int] | None] = {
+                    sel: {"x": 100, "y": 200 + shift, "width": 200, "height": 40}
+                    for sel in spec["anchors"]
+                }
+                boxes[spec["anchors"][-1]] = None if i == 2 else boxes[spec["anchors"][-1]]
+                records.append({"frame": i, "boxes": boxes})
+            (out / "anchors.json").write_text(json.dumps(records))
+        return run
+
+
+def test_runner_records_dom_anchors_as_uv_and_holds_transient_frames(tmp_path: Path) -> None:
+    cli = AnchorCli()
+    result = _run(tmp_path, cli, _source(), _anchored(anchor="#result"))
+    raw_specs = [s for s in cli.specs if not s["url"].startswith("file://")]
+    assert raw_specs and all(s["anchors"] == ["#upgrade", "#result"] for s in raw_specs)
+    caps = UICaptures.model_validate(result.output).captures
+    laptop = next(c for c in caps if c.device == "laptop")
+    view = DEVICES["laptop"]
+    # #upgrade: last box (frame 2) centre over the viewport; #result: last present box (frame 1).
+    assert laptop.anchors["#upgrade"] == pytest.approx((200 / view.width, 220 / view.height))
+    assert laptop.anchors["#result"] == pytest.approx((200 / view.width, 260 / view.height))
+    assert laptop.anchors["SC"] == (0.5, 0.5)
+    # Frame 2 lost #result, so frame 1's neighbours disagree: no frame is held.
+    assert len({f.sha256 for f in laptop.clip}) == 3
+
+
+def test_runner_holds_a_transient_layout_frame_on_its_predecessor(tmp_path: Path) -> None:
+    class BlipCli(FakeCli):
+        def __call__(self, argv: Sequence[str], timeout: float | None) -> CaptureRun:
+            run = super().__call__(argv, timeout)
+            spec = self.specs[-1]
+            if spec.get("anchors"):
+                records = [
+                    {
+                        "frame": i,
+                        "boxes": {
+                            sel: {"x": 10, "y": 50 if i == 1 else 10, "width": 20, "height": 20}
+                            for sel in spec["anchors"]
+                        },
+                    }
+                    for i in range(3)
+                ]
+                (Path(spec["outDir"]) / "anchors.json").write_text(json.dumps(records))
+            return run
+
+    result = _run(tmp_path, BlipCli(), _source(), _notes())
+    caps = UICaptures.model_validate(result.output).captures
+    for cap in caps:
+        assert cap.clip[1] == cap.clip[0] and cap.clip[2] != cap.clip[0]
+        assert cap.provenance.frames_sha256  # raw hashes still cover all three raw frames
+        assert cap.anchors["SC"] == (0.5, 0.5)
+
+
+def test_screen_capture_rejects_bad_anchors() -> None:
+    assert ScreenCapture.model_fields["anchors"].default_factory is not None
+    with pytest.raises(ValueError, match="reserved"):
+        ScreenCapture._check_anchors({"SC": (0.2, 0.2)})
+    with pytest.raises(ValueError, match="outside"):
+        ScreenCapture._check_anchors({"#run": (1.5, 0.2)})
+    assert ScreenCapture._check_anchors({"#run": (0.25, 0.75), "SC": (0.5, 0.5)})

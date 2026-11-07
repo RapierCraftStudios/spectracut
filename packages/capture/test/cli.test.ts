@@ -131,4 +131,19 @@ describe("capture cli spec", () => {
   ])("rejects malformed legibility checks %#", (legibility, error) => {
     expect(() => parseSpec({ ...SPEC, legibility })).toThrow(error);
   });
+
+  it.each([["#url"], [["#url", 3]], [[{ selector: "#url" }]]])("rejects malformed anchors %#", (anchors) => {
+    expect(() => parseSpec({ ...SPEC, anchors })).toThrow(/anchors must be an array of strings/);
+  });
+
+  it("accepts string anchors", () => {
+    expect(parseSpec({ ...SPEC, anchors: ["#url", "text=Run"] }).anchors).toEqual(["#url", "text=Run"]);
+  });
+
+  it.each([[{ do: "paste" }], [{ do: "paste", text: "" }], [{ do: "paste", text: 3 }]])(
+    "rejects a paste without text %#",
+    (action) => {
+      expect(() => parseSpec({ ...SPEC, script: [action] })).toThrow(/paste needs a non-empty text/);
+    },
+  );
 });

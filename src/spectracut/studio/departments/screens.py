@@ -15,7 +15,7 @@ import json
 import math
 import struct
 import zlib
-from collections.abc import Mapping
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 from urllib.parse import quote, urlsplit
@@ -35,11 +35,16 @@ __all__ = [
     "CHROME_SIZES",
     "ScreenFrame",
     "Chrome",
+    "PRESS_FRAMES",
+    "PRESS_SCALE",
     "ScreenState",
+    "box_uv",
     "check_state",
     "compose",
     "compose_spec",
     "frame_at",
+    "pointer_track",
+    "transient_frames",
 ]
 
 DeviceId = Literal["laptop", "phone"]
@@ -57,6 +62,10 @@ CHROME_PAGES: Final[dict[str, Path]] = {
 _PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
 NOTCH_BAND_PX: Final = 37
 """Logical height of the black notch safe-area band (full screen MacBook)."""
+PRESS_SCALE: Final = 0.85
+"""Pointer scale while a click presses."""
+PRESS_FRAMES: Final = 3
+"""Frames the pointer stays pressed from a click's frame."""
 
 
 class ScreenFrame(StrictModel):
@@ -125,8 +134,101 @@ CONTENT_RECTS: Final[dict[str, Rect]] = {
 """Where the live page sits in each chrome page (logical px); matches the HTML."""
 
 
-def compose_spec(raw: ScreenCapture, chrome: Chrome) -> dict[str, JsonValue]:
-    """The capture-CLI spec that composites ``raw``'s clip into ``chrome``."""
+PointerKey = tuple[float, float, float] | None
+"""Per-frame pointer: ``(u, v, scale)`` over the content rect, or ``None`` (hidden)."""
+
+
+def box_uv(box: Mapping[str, float], width: float, height: float) -> tuple[float, float]:
+    """Centre of a CSS-px ``box`` (x, y, width, height) as UV over a ``width`` x ``height`` area.
+
+    The live page fills the chrome's content rect, so viewport UV is content-rect UV.
+    Values are clamped to [0, 1]. Raises :class:`ValueError` for a non-positive area.
+    """
+    if not (width > 0 and height > 0):
+        raise ValueError(f"area must be positive, got {width}x{height}")
+    u = (float(box["x"]) + float(box["width"]) / 2) / width
+    v = (float(box["y"]) + float(box["height"]) / 2) / height
+    return (min(1.0, max(0.0, u)), min(1.0, max(0.0, v)))
+
+
+def transient_frames(layouts: Sequence[Hashable], max_run: int = 3) -> set[int]:
+    """Indices of transient layout frames: runs of 1..``max_run`` frames whose layout
+    differs from both bracketing neighbours while those neighbours agree.
+
+    Continuous change (a scroll, an eased move) is never transient because its
+    neighbours differ from each other; the first and last frames are never rejected.
+    """
+    found: set[int] = set()
+    n = len(layouts)
+    i = 1
+    while i < n - 1:
+        before = layouts[i - 1]
+        if layouts[i] == before:
+            i += 1
+            continue
+        end = i  # first frame after the run that matches ``before`` again
+        while end < n and end - i <= max_run and layouts[end] != before:
+            end += 1
+        if end < n and end - i <= max_run and layouts[end] == before:
+            found.update(range(i, end))
+            i = end
+        else:
+            i += 1
+    return found
+
+
+def pointer_track(
+    cursors: Sequence[tuple[float, float]],
+    click_frames: Iterable[int],
+    width: float,
+    height: float,
+) -> list[PointerKey]:
+    """Per-frame pointer from the recorded cursor (CSS px over a ``width`` x ``height`` page).
+
+    Hidden until the cursor first leaves the origin; then at the recorded position
+    (parked between moves) with scale :data:`PRESS_SCALE` on each click frame and the
+    :data:`PRESS_FRAMES` - 1 frames after it, else 1.
+    """
+    if not (width > 0 and height > 0):
+        raise ValueError(f"area must be positive, got {width}x{height}")
+    pressed: set[int] = set()
+    for frame in click_frames:
+        pressed.update(range(frame, frame + PRESS_FRAMES))
+    track: list[PointerKey] = []
+    shown = False
+    for index, (x, y) in enumerate(cursors):
+        shown = shown or (x, y) != (0, 0)
+        if not shown:
+            track.append(None)
+            continue
+        scale = PRESS_SCALE if index in pressed else 1.0
+        track.append((round(x / width, 5), round(y / height, 5), scale))
+    return track
+
+
+def _pointer(raw: ScreenCapture, viewport: tuple[int, int]) -> list[PointerKey] | None:
+    """The pointer track of ``raw`` from its manifest cursors and click events, if readable."""
+    try:
+        manifest = json.loads(Path(raw.manifest).read_text(encoding="utf-8"))
+        events = json.loads(Path(raw.events).read_text(encoding="utf-8"))
+        cursors = [(float(f["cursor"]["x"]), float(f["cursor"]["y"])) for f in manifest["frames"]]
+        clicks = [
+            int(e["frame"]) for e in events if isinstance(e, dict) and e.get("type") == "click"
+        ]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if len(cursors) != len(raw.clip):
+        return None
+    return pointer_track(cursors, clicks, *viewport)
+
+
+def compose_spec(
+    raw: ScreenCapture, chrome: Chrome, pointer: Sequence[PointerKey] | None = None
+) -> dict[str, JsonValue]:
+    """The capture-CLI spec that composites ``raw``'s clip into ``chrome``.
+
+    ``pointer`` (one entry per clip frame) draws the pointer over the chrome.
+    """
     size = CHROME_SIZES[chrome]
     frames = [Path(f.path).resolve().as_uri() for f in raw.clip]
     frames_json = quote(json.dumps(frames, separators=(",", ":")), safe="")
@@ -134,6 +236,9 @@ def compose_spec(raw: ScreenCapture, chrome: Chrome) -> dict[str, JsonValue]:
         f"{CHROME_PAGES[chrome].resolve().as_uri()}?s={quote(raw.key, safe='')}"
         f"&frames={frames_json}&fps={raw.fps}&host={quote(urlsplit(raw.url).netloc, safe='')}"
     )
+    if pointer is not None:
+        keys = [list(k) if k is not None else None for k in pointer]
+        url += f"&pointer={quote(json.dumps(keys, separators=(',', ':')), safe='')}"
     return {
         "url": url,
         "viewport": {"width": size.width, "height": size.height},
@@ -164,13 +269,21 @@ def _values(text_path: Path) -> list[str]:
 
 
 def compose(
-    executor: CaptureExecutor, raw: ScreenCapture, chrome: Chrome, out: Path
+    executor: CaptureExecutor,
+    raw: ScreenCapture,
+    chrome: Chrome,
+    out: Path,
+    viewport: tuple[int, int] | None = None,
 ) -> ScreenState:
-    """Render ``raw`` into ``chrome`` through the capture CLI and check the result."""
+    """Render ``raw`` into ``chrome`` through the capture CLI and check the result.
+
+    With the capture ``viewport`` (CSS px), the recorded cursor is drawn as the pointer.
+    """
+    pointer = _pointer(raw, viewport) if viewport is not None else None
     job = Job(
         id=f"screen-{out.parent.name}-{out.name}",
         kind="capture",
-        payload={"spec": compose_spec(raw, chrome), "out_dir": str(out)},
+        payload={"spec": compose_spec(raw, chrome, pointer), "out_dir": str(out)},
     )
     result = executor.run(job)
     if not result.frames:

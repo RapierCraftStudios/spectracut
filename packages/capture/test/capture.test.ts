@@ -419,6 +419,31 @@ describe("timed interaction events", () => {
     expect(page.typed).toBe("sk");
   });
 
+  it("pastes text as one input with a single keystroke event", async () => {
+    const page = new FakePage();
+    const inserted: string[] = [];
+    const pasting = Object.assign(page, {
+      insertText: async (text: string) => {
+        inserted.push(text);
+      },
+    });
+    const dir = await outDir();
+    const url = "https://example.com/page";
+    const r = await capture(pasting, { script: [{ do: "paste", text: url }], fps: 25, outDir: dir });
+    expect(inserted).toEqual([url]);
+    expect(page.typed).toBe("");
+    const keys = r.events.filter((e) => e.type === "keystroke");
+    expect(keys.map((k) => k.key)).toEqual(["⌘V"]);
+    expect(r.manifest.frames).toHaveLength(1);
+  });
+
+  it("refuses to paste on a page without insertText", async () => {
+    const dir = await outDir();
+    await expect(capture(new FakePage(), { script: [{ do: "paste", text: "x" }], fps: 25, outDir: dir })).rejects.toThrow(
+      /cannot run paste/,
+    );
+  });
+
   it("scrolls with inertia that decays to rest", async () => {
     const deltas = inertialDeltas(1200, 25);
     expect(deltas.length).toBeGreaterThan(3);
@@ -428,6 +453,31 @@ describe("timed interaction events", () => {
     expect(scroll.map((e) => e.deltaY)).toEqual(deltas);
     expect(scroll[0]?.phase).toBe("start");
     expect(scroll.at(-1)?.phase).toBe("end");
+  });
+});
+
+describe("UI anchors", () => {
+  it("records each anchor's box per frame in anchors.json, null when absent", async () => {
+    const dir = await outDir();
+    const r = await capture(new FakePage(), {
+      script: [{ do: "wait", frames: 2 }],
+      fps: 25,
+      outDir: dir,
+      anchors: ["#card", "#missing"],
+    });
+    const saved = JSON.parse(await readFile(join(dir, "anchors.json"), "utf8"));
+    expect(saved).toEqual(r.anchors);
+    expect(saved).toEqual([
+      { frame: 0, boxes: { "#card": { x: 100, y: 100, width: 400, height: 225 }, "#missing": null } },
+      { frame: 1, boxes: { "#card": { x: 100, y: 100, width: 400, height: 225 }, "#missing": null } },
+    ]);
+  });
+
+  it("writes no anchors.json without anchors", async () => {
+    const dir = await outDir();
+    const r = await capture(new FakePage(), { script: [{ do: "wait", frames: 1 }], fps: 25, outDir: dir });
+    expect(r.anchors).toEqual([]);
+    expect(await readdir(dir)).not.toContain("anchors.json");
   });
 });
 
