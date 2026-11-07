@@ -3,13 +3,18 @@
 
 A ``brand_color`` (a brand-kit ``#rrggbb`` swatch) is turned into a numeric
 ``color`` here, so the recorded runtime step only ever carries ``color``.
+
+Surface detail (#335): ``bump_*`` (noise or voronoi micro-texture), ``brushing`` and
+``brushing_angle`` (anisotropic streaks), ``scratches`` and ``edge_wear`` (a Bevel edge
+highlight) build a procedural node graph on the host; ``seed`` picks the pattern
+deterministically.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, StrictInt, model_validator
 
 from spectracut.harness.tools import HarnessTool, Output, Session, ToolArgs, dump
 from spectracut.spec._base import HexColor
@@ -54,6 +59,22 @@ class ApplyPreset(ToolArgs):
     emission_strength: Annotated[float, Field(ge=0, le=1000)] | None = None
     anisotropy: Unit | None = None
     metallic: Unit | None = None
+    bump_kind: Literal["noise", "voronoi"] | None = Field(
+        default=None, description="micro-texture pattern for bump_strength (default noise)"
+    )
+    bump_strength: Unit | None = Field(default=None, description="micro-texture bump amount")
+    bump_scale: Annotated[float, Field(gt=0, le=1000)] | None = Field(
+        default=None, description="micro-texture frequency per object unit (default 150)"
+    )
+    brushing: Unit | None = Field(default=None, description="brushed streaks + anisotropy")
+    brushing_angle: Annotated[float, Field(ge=0, lt=360)] | None = Field(
+        default=None, description="streak direction in degrees"
+    )
+    scratches: Unit | None = Field(default=None, description="fine scratch lines")
+    edge_wear: Unit | None = Field(default=None, description="bevel edge highlight (Cycles)")
+    seed: Annotated[StrictInt, Field(ge=0, le=2**31 - 1)] | None = Field(
+        default=None, description="pattern seed; same seed, same surface"
+    )
 
     @model_validator(mode="after")
     def _one_colour(self) -> ApplyPreset:
@@ -77,7 +98,8 @@ TOOLS = [
         "material.apply_preset",
         "Give a mesh a material preset (plastics, metals, glass incl. clear/frosted/smoked, "
         "emissive, anodised metal) with a colour or brand colour and optional roughness, ior, "
-        "transmission, emission, anisotropy and metallic overrides.",
+        "transmission, emission, anisotropy and metallic overrides, plus seeded surface detail "
+        "(noise/voronoi bump, brushing, scratches, edge wear).",
         ApplyPreset,
         "build",
         apply_preset,
