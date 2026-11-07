@@ -15,7 +15,7 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from bpy_runtime.ops import ENGINES, Report, ToolError, engine_id
+from bpy_runtime.ops import ENGINES, Report, ToolError, as_bool, engine_id
 from bpy_runtime.ops import active_camera as _active_camera
 from bpy_runtime.ops import as_choice as _choice
 from bpy_runtime.ops import as_int as _int
@@ -164,6 +164,7 @@ _LIGHTS = {"point": "POINT", "sun": "SUN", "area": "AREA", "spot": "SPOT"}
 
 def light_add(bpy: Any, args: dict[str, Any]) -> None:
     allowed = {"kind", "name", "energy", "location", "rotation", "size", "color", "spot_angle"}
+    allowed |= {"size_y", "camera_visible"}
     _only(args, allowed, "light.add")
     kind = _choice(args.get("kind", "point"), "kind", _LIGHTS)
     name = _name(args.get("name", "Light"), "name")
@@ -177,6 +178,17 @@ def light_add(bpy: Any, args: dict[str, Any]) -> None:
         size = _num(args["size"], "size", 0, 100)
         if size <= 0:
             raise ToolError("size must be within (0, 100]")
+    size_y = None
+    if "size_y" in args:
+        # A rectangular area light: size (x) by size_y.
+        if kind != "AREA":
+            raise ToolError("light.add: size_y applies only to area lights")
+        size_y = _num(args["size_y"], "size_y", 0, 100)
+        if size_y <= 0:
+            raise ToolError("size_y must be within (0, 100]")
+    camera_visible = None
+    if "camera_visible" in args:
+        camera_visible = as_bool(args["camera_visible"], "camera_visible")
     color = None
     if "color" in args:
         color = _vec3(args["color"], "color")
@@ -191,6 +203,9 @@ def light_add(bpy: Any, args: dict[str, Any]) -> None:
     data.energy = energy
     if size is not None:
         data.size = size
+    if size_y is not None:
+        data.shape = "RECTANGLE"
+        data.size_y = size_y
     if color is not None:
         data.color = color
     if spot is not None:
@@ -198,6 +213,8 @@ def light_add(bpy: Any, args: dict[str, Any]) -> None:
     obj = bpy.data.objects.new(name, data)
     obj.location = location
     obj.rotation_euler = rotation
+    if camera_visible is not None:
+        obj.visible_camera = camera_visible
     _link(bpy, obj)
 
 

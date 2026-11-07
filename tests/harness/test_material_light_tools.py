@@ -195,6 +195,12 @@ def test_single_light_size_colour_spot_angle(session: Session) -> None:
     ]
 
 
+def test_single_light_rectangle_hidden_from_camera(session: Session) -> None:
+    rim = {"kind": "area", "name": "Rim", "size": 0.06, "size_y": 1.2, "camera_visible": False}
+    call(session, "light.add", rim)
+    assert steps_of(session) == [("light.add", rim)]
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -204,6 +210,8 @@ def test_single_light_size_colour_spot_angle(session: Session) -> None:
         {"kind": "area", "spot_angle": 30},
         {"kind": "spot", "spot_angle": 0},
         {"kind": "area", "size": 0},
+        {"kind": "point", "size_y": 1},
+        {"rig": "rim_area", "camera_visible": False},
     ],
 )
 def test_light_refusals(session: Session, args: dict[str, Any]) -> None:

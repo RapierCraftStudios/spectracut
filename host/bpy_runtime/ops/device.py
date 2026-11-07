@@ -12,6 +12,14 @@ multiplied by :func:`grid_fade` of its screen-space footprint, estimated as a bo
 filter from the camera's view distance, so the grid fades to flat before it can
 alias (moire). Every argument is checked, and every asset resolved and hashed,
 before ``bpy`` is touched.
+
+With ``model`` (#362) the device is a sha256-pinned glTF kit model instead: the glb
+is imported, its animation cleared, scaled uniformly so its world-bounds width is
+``model.real_width`` and lifted so its lowest point is on the floor. The display
+faces (``model.screen``: the faces of a node that use a material) get a planar UV
+layer along the face plane, upright and unmirrored seen from the front, and a screen
+material: the sRGB capture, cover-cropped from the top, as emission mixed by fresnel
+with a glossy coat. ``finish`` (space-black, silver) dresses ``model.body_material``.
 """
 
 from __future__ import annotations
@@ -184,9 +192,12 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
             "grid",
             "bevel",
             "finish",
+            "model",
         },
         TOOL,
     )
+    if "model" in args:
+        return _parse_model(args)
     kind = args.get("kind")
     if not isinstance(kind, str) or kind not in _DIMS:
         raise ToolError(f"{TOOL}: kind must be one of {sorted(_DIMS)}")
@@ -352,6 +363,31 @@ def screen_node_group(bpy: Any) -> Any:
     return group
 
 
+def _screen_image(bpy: Any, screen: dict[str, Any]) -> Any:
+    """The screen capture image (sequence, still or movie), set up on ``texture``."""
+    image = bpy.data.images.load(str(screen["paths"][0]), check_existing=True)
+    # UI captures are display-referred sRGB: read them as such so the emissive screen
+    # keeps the product's gamma under the scene view transform.
+    image.colorspace_settings.name = "sRGB"
+    if "movie" in screen:
+        image.source = "MOVIE"
+    else:
+        image.source = "SEQUENCE" if len(screen["paths"]) > 1 else "FILE"
+    return image
+
+
+def _image_user(texture: Any, screen: dict[str, Any]) -> None:
+    user = texture.image_user
+    if "movie" in screen:
+        user.frame_duration = int(texture.image.frame_duration or 1)
+        user.frame_offset = 0
+    else:
+        user.frame_duration = len(screen["paths"])
+        user.frame_offset = screen["frame_offset"]
+    user.frame_start = 1
+    user.use_auto_refresh = True
+
+
 def _screen_material(bpy: Any, p: dict[str, Any], screen_w: float) -> Any:
     screen = p["screen"]
     mat = bpy.data.materials.new(f"screen.{p['name']}")
@@ -360,22 +396,8 @@ def _screen_material(bpy: Any, p: dict[str, Any], screen_w: float) -> Any:
     tree.nodes.clear()
     output = tree.nodes.new("ShaderNodeOutputMaterial")
     texture = tree.nodes.new("ShaderNodeTexImage")
-    image = bpy.data.images.load(str(screen["paths"][0]), check_existing=True)
-    # UI captures are display-referred sRGB: read them as such so the emissive screen
-    # keeps the product's gamma under the scene view transform.
-    image.colorspace_settings.name = "sRGB"
-    user = texture.image_user
-    if "movie" in screen:
-        image.source = "MOVIE"
-        user.frame_duration = int(image.frame_duration or 1)
-        user.frame_offset = 0
-    else:
-        image.source = "SEQUENCE" if len(screen["paths"]) > 1 else "FILE"
-        user.frame_duration = len(screen["paths"])
-        user.frame_offset = screen["frame_offset"]
-    user.frame_start = 1
-    user.use_auto_refresh = True
-    texture.image = image
+    texture.image = _screen_image(bpy, screen)
+    _image_user(texture, screen)
     texture.interpolation = "Closest"
     group = tree.nodes.new("ShaderNodeGroup")
     group.node_tree = screen_node_group(bpy)
@@ -397,6 +419,8 @@ def _screen_material(bpy: Any, p: dict[str, Any], screen_w: float) -> Any:
 
 def device_add(bpy: Any, args: dict[str, Any]) -> Report:
     p = _parse(args)
+    if "model" in p:
+        return device_model(bpy, p)
     name, kind = p["name"], p["kind"]
     bw, bd, bh = _DIMS[kind]["body"]
     sw, sh = _DIMS[kind]["screen"]
@@ -466,6 +490,346 @@ def device_add(bpy: Any, args: dict[str, Any]) -> Report:
         "emission_strength": p["strength"],
         "bevel": p["bevel"],
         "finish": p["finish"],
+    }
+    if "movie" in p["screen"]:
+        report["movie"] = p["screen"]["movie"][0]
+    else:
+        report["frames"] = len(p["screen"]["frames"])
+        report["frame_offset"] = p["screen"]["frame_offset"]
+    return report
+
+
+# --- kit models (#362) ---------------------------------------------------------------------
+
+MODEL_SUFFIXES = (".glb",)
+SCREEN_UV = "SC_ScreenUV"
+SCREEN_IOR = 1.5
+COAT_ROUGHNESS = 0.04
+FRONT = (0.0, -1.0, 0.0)
+# Principled overrides on a kit model's body material (the control plane's device kit
+# keeps the same values in ``MACBOOK_FINISHES``).
+MODEL_FINISHES: dict[str, dict[str, Any]] = {
+    "space-black": {"Base Color": (0.028, 0.029, 0.032, 1.0), "Metallic": 1.0, "Roughness": 0.34},
+    "silver": {"Base Color": (0.80, 0.80, 0.81, 1.0), "Metallic": 1.0, "Roughness": 0.26},
+}
+Vec = tuple[float, float, float]
+
+
+def _parse_model(args: dict[str, Any]) -> dict[str, Any]:
+    """``device.add`` with ``model``: a pinned glb dressed with the screen capture."""
+    for key in ("grid", "bevel"):
+        if key in args:
+            raise ToolError(f"{TOOL}: {key} applies to the procedural rig only, not a model")
+    kind = args.get("kind")
+    if not isinstance(kind, str) or kind not in _DIMS:
+        raise ToolError(f"{TOOL}: kind must be one of {sorted(_DIMS)}")
+    if "screen" not in args:
+        raise ToolError(f"{TOOL}: screen is required")
+    model = args["model"]
+    if not isinstance(model, dict):
+        raise ToolError(f"{TOOL}: model must be {{path, sha256, screen, real_width}}")
+    check_only(model, {"path", "sha256", "screen", "real_width", "body_material"}, f"{TOOL} model")
+    path, sha = _pinned({"path": model.get("path"), "sha256": model.get("sha256")}, "model")
+    select = model.get("screen")
+    if not isinstance(select, dict):
+        raise ToolError(f"{TOOL}: model.screen must be {{node, material}}")
+    check_only(select, {"node", "material"}, f"{TOOL} model.screen")
+    node = select.get("node")
+    material = select.get("material")
+    if not isinstance(node, str) or not node or not isinstance(material, str) or not material:
+        raise ToolError(f"{TOOL}: model.screen node and material must be names")
+    body = model.get("body_material")
+    if body is not None and (not isinstance(body, str) or not body):
+        raise ToolError(f"{TOOL}: model.body_material must be a material name")
+    rotation = as_vec3(args.get("rotation", [0, 0, 0]), "rotation")
+    if any(rotation):
+        raise ToolError(f"{TOOL}: a model is placed upright; rotation must be [0, 0, 0]")
+    finish = args.get("finish")
+    p: dict[str, Any] = {
+        "kind": kind,
+        "name": as_name(args.get("name", kind.capitalize()), "name"),
+        "location": as_vec3(args.get("location", [0, 0, 0]), "location"),
+        "strength": as_num(args.get("emission_strength", 1.0), "emission_strength", 0, 100),
+        "screen": _screen(args["screen"]),
+        "finish": None
+        if finish is None
+        else as_choice(finish, "finish", {k: k for k in MODEL_FINISHES}),
+        "model": {
+            "path": path,
+            "sha256": sha,
+            "node": node,
+            "material": material,
+            "body_material": body,
+            "real_width": as_num(model.get("real_width"), "model.real_width", 0.001, 10),
+        },
+    }
+    if len(p["name"]) > 48:
+        raise ToolError(f"{TOOL}: name must be at most 48 characters")
+    screen = p["screen"]
+    if "movie" in screen:
+        movie_path, movie_sha = screen["movie"]
+        screen["paths"] = [_resolve(movie_path, movie_sha, MOVIE_SUFFIXES)]
+    else:
+        screen["paths"] = [_resolve(path, sha, IMAGE_SUFFIXES) for path, sha in screen["frames"]]
+    p["model"]["full"] = _resolve(path, sha, MODEL_SUFFIXES)
+    return p
+
+
+# Pure geometry (no bpy): world points, normalisation, the screen frame and its UVs.
+
+
+def world_point(matrix: Any, co: Any) -> Vec:
+    """``matrix @ co`` for a 4x4 row-indexable matrix and a 3-vector."""
+    x, y, z = (float(co[0]), float(co[1]), float(co[2]))
+    out = [matrix[i][0] * x + matrix[i][1] * y + matrix[i][2] * z + matrix[i][3] for i in range(3)]
+    return (float(out[0]), float(out[1]), float(out[2]))
+
+
+def world_direction(matrix: Any, d: Any) -> Vec:
+    out = [sum(float(matrix[i][j]) * float(d[j]) for j in range(3)) for i in range(3)]
+    return (out[0], out[1], out[2])
+
+
+def _dot(a: Vec, b: Vec) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _cross(a: Vec, b: Vec) -> Vec:
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _unit(v: Vec) -> Vec:
+    n = _dot(v, v) ** 0.5
+    if n < 1e-12:
+        raise ToolError(f"{TOOL}: the model's screen faces are degenerate")
+    return (v[0] / n, v[1] / n, v[2] / n)
+
+
+def normalise(points: list[Vec], real_width: float) -> tuple[float, float]:
+    """``(scale, lift)``: scale the world-bounds width to ``real_width``, then lift the
+    lowest point to z = 0 (a point ``p`` lands at ``p * scale + (0, 0, lift)``)."""
+    xs = [p[0] for p in points]
+    width = max(xs) - min(xs)
+    if width <= 0:
+        raise ToolError(f"{TOOL}: the model has zero width")
+    scale = real_width / width
+    return scale, -min(p[2] for p in points) * scale
+
+
+def screen_axes(points: list[Vec], normal: Vec) -> dict[str, Any]:
+    """The screen's frame from its face vertices and mean face normal (world space).
+
+    The normal is turned to face the front (-Y); up is world +Z projected onto the
+    screen plane; right is ``up x normal`` (the viewer's right). Returns centre, right,
+    up, normal, width and height.
+    """
+    n = _unit(normal)
+    if _dot(n, FRONT) < 0:
+        n = (-n[0], -n[1], -n[2])
+    world_up = (0.0, 0.0, 1.0) if abs(n[2]) < 0.99 else (0.0, 1.0, 0.0)
+    k = _dot(world_up, n)
+    up = _unit((world_up[0] - k * n[0], world_up[1] - k * n[1], world_up[2] - k * n[2]))
+    right = _cross(up, n)
+    rs = [_dot(p, right) for p in points]
+    us = [_dot(p, up) for p in points]
+    rc, uc, nc = (min(rs) + max(rs)) / 2, (min(us) + max(us)) / 2, _dot(points[0], n)
+    centre = tuple(right[i] * rc + up[i] * uc + n[i] * nc for i in range(3))
+    return {
+        "centre": centre,
+        "right": right,
+        "up": up,
+        "normal": n,
+        "width": max(rs) - min(rs),
+        "height": max(us) - min(us),
+    }
+
+
+def planar_uv(point: Vec, frame: dict[str, Any]) -> tuple[float, float]:
+    """The point's screen UV: (0, 0) bottom-left to (1, 1) top-right seen from the
+    front, so the capture is upright and unmirrored."""
+    c = frame["centre"]
+    rel = (point[0] - c[0], point[1] - c[1], point[2] - c[2])
+    return (
+        _dot(rel, frame["right"]) / frame["width"] + 0.5,
+        _dot(rel, frame["up"]) / frame["height"] + 0.5,
+    )
+
+
+def cover_crop(
+    screen_w: float, screen_h: float, image_w: float, image_h: float
+) -> tuple[float, float, float, float]:
+    """``(scale_u, scale_v, offset_u, offset_v)`` so ``uv * scale + offset`` covers the
+    screen with the image: scaled to fill, centred across, anchored at the top and
+    cropped at the bottom (or the sides); no letterbox."""
+    if min(screen_w, screen_h, image_w, image_h) <= 0:
+        return 1.0, 1.0, 0.0, 0.0
+    screen_aspect, image_aspect = screen_w / screen_h, image_w / image_h
+    if image_aspect >= screen_aspect:  # wider image: crop both sides equally
+        f = screen_aspect / image_aspect
+        return f, 1.0, (1.0 - f) / 2, 0.0
+    f = image_aspect / screen_aspect  # taller image: keep the top, crop the bottom
+    return 1.0, f, 0.0, 1.0 - f
+
+
+# bpy side.
+
+
+def _named(objs: list[Any], name: str) -> Any:
+    exact = [o for o in objs if o.name == name]
+    near = [o for o in objs if str(o.name).startswith(f"{name}.")]
+    return (exact or near or [None])[0]
+
+
+def _slot(obj: Any, material: str) -> int:
+    for i, slot in enumerate(obj.material_slots):
+        mat = slot.material
+        if mat is not None and (mat.name == material or str(mat.name).startswith(f"{material}.")):
+            return i
+    raise ToolError(f"{TOOL}: model node {obj.name!r} has no material {material!r}")
+
+
+def _apply_finish(bpy: Any, objs: list[Any], material: str, values: dict[str, Any]) -> None:
+    mats = [s.material for o in objs for s in o.material_slots if s.material is not None]
+    mat = _named(mats, material)
+    if mat is None or not mat.use_nodes:
+        raise ToolError(f"{TOOL}: the model has no body material {material!r}")
+    tree = mat.node_tree
+    for node in tree.nodes:
+        if node.type != "BSDF_PRINCIPLED":
+            continue
+        for link in list(tree.links):
+            if link.to_node == node and link.to_socket.name in values:
+                tree.links.remove(link)
+        for socket, value in values.items():
+            if socket in node.inputs:
+                node.inputs[socket].default_value = value
+
+
+def _model_screen_material(bpy: Any, p: dict[str, Any], frame: dict[str, Any]) -> Any:
+    """Emission from the sRGB capture (cover-cropped from the top) mixed by fresnel
+    with a glossy glass coat."""
+    screen = p["screen"]
+    mat = bpy.data.materials.new(f"screen.{p['name']}")
+    mat.use_nodes = True
+    tree = mat.node_tree
+    tree.nodes.clear()
+    output = tree.nodes.new("ShaderNodeOutputMaterial")
+    uvmap = tree.nodes.new("ShaderNodeUVMap")
+    uvmap.uv_map = SCREEN_UV
+    mapping = tree.nodes.new("ShaderNodeMapping")
+    mapping.vector_type = "POINT"
+    texture = tree.nodes.new("ShaderNodeTexImage")
+    texture.image = _screen_image(bpy, screen)
+    _image_user(texture, screen)
+    texture.interpolation = "Linear"
+    texture.extension = "EXTEND"
+    try:
+        image_w, image_h = float(texture.image.size[0]), float(texture.image.size[1])
+    except (TypeError, ValueError, IndexError):
+        image_w = image_h = 0.0
+    su, sv, ou, ov = cover_crop(frame["width"], frame["height"], image_w, image_h)
+    mapping.inputs["Scale"].default_value = (su, sv, 1.0)
+    mapping.inputs["Location"].default_value = (ou, ov, 0.0)
+    emission = tree.nodes.new("ShaderNodeEmission")
+    emission.inputs["Strength"].default_value = p["strength"]
+    glossy = tree.nodes.new("ShaderNodeBsdfGlossy")
+    glossy.inputs["Roughness"].default_value = COAT_ROUGHNESS
+    fresnel = tree.nodes.new("ShaderNodeFresnel")
+    fresnel.inputs["IOR"].default_value = SCREEN_IOR
+    mix = tree.nodes.new("ShaderNodeMixShader")
+    tree.links.new(uvmap.outputs["UV"], mapping.inputs["Vector"])
+    tree.links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
+    tree.links.new(texture.outputs["Color"], emission.inputs["Color"])
+    tree.links.new(fresnel.outputs["Fac"], mix.inputs[0])
+    tree.links.new(emission.outputs["Emission"], mix.inputs[1])
+    tree.links.new(glossy.outputs["BSDF"], mix.inputs[2])
+    tree.links.new(mix.outputs["Shader"], output.inputs["Surface"])
+    return mat
+
+
+def _r(v: Any) -> list[float]:
+    return [round(float(c), 5) for c in v]
+
+
+def device_model(bpy: Any, p: dict[str, Any]) -> Report:
+    """Import the pinned glb, normalise it, map the capture onto its display faces."""
+    m = p["model"]
+    before = {o.name for o in bpy.data.objects}
+    actions = {a.name for a in bpy.data.actions}
+    bpy.ops.import_scene.gltf(filepath=str(m["full"]))
+    new = [o for o in bpy.data.objects if o.name not in before]
+    if not new:
+        raise ToolError(f"{TOOL}: {m['path']!r} imported no objects")
+    for obj in new:
+        obj.animation_data_clear()
+    for action in list(bpy.data.actions):
+        if action.name not in actions:
+            bpy.data.actions.remove(action)
+    bpy.context.view_layer.update()
+    meshes = [o for o in new if o.type == "MESH"]
+    points = [world_point(o.matrix_world, c) for o in meshes for c in o.bound_box]
+    if not points:
+        raise ToolError(f"{TOOL}: {m['path']!r} has no meshes")
+    scale, lift = normalise(points, m["real_width"])
+    screen_obj = _named(meshes, m["node"])
+    if screen_obj is None:
+        raise ToolError(f"{TOOL}: the model has no mesh node {m['node']!r}")
+    index = _slot(screen_obj, m["material"])
+    mesh = screen_obj.data
+    polys = [poly for poly in mesh.polygons if poly.material_index == index]
+    if not polys:
+        raise ToolError(f"{TOOL}: no faces of {m['node']!r} use {m['material']!r}")
+    mw = screen_obj.matrix_world
+    loops = [li for poly in polys for li in poly.loop_indices]
+    world = {li: world_point(mw, mesh.vertices[mesh.loops[li].vertex_index].co) for li in loops}
+    normals = [world_direction(mw, poly.normal) for poly in polys]
+    mean = tuple(sum(n[i] for n in normals) for i in range(3))
+    frame = screen_axes(list(world.values()), (mean[0], mean[1], mean[2]))
+    uv = mesh.uv_layers.new(name=SCREEN_UV)
+    for li, point in world.items():
+        uv.data[li].uv = planar_uv(point, frame)
+    # Normalise: scale every root about the world origin, then lift onto the floor.
+    names = {o.name for o in new}
+    roots = [o for o in new if o.parent is None or o.parent.name not in names]
+    ox, oy, oz = p["location"]
+    offset = (ox, oy, oz + lift)
+    for root in roots:
+        root.scale = tuple(float(c) * scale for c in root.scale)
+        root.location = tuple(
+            float(c) * scale + o for c, o in zip(root.location, offset, strict=True)
+        )
+    if p["finish"] is not None and m["body_material"] is not None:
+        _apply_finish(bpy, new, m["body_material"], MODEL_FINISHES[p["finish"]])
+    mat = _model_screen_material(bpy, p, frame)
+    screen_obj.material_slots[index].material = mat
+
+    def place(v: Vec) -> list[float]:
+        return _r(v[i] * scale + offset[i] for i in range(3))
+
+    c, right, up = frame["centre"], frame["right"], frame["up"]
+    hw, hh = frame["width"] / 2, frame["height"] / 2
+    corners = [
+        place(tuple(c[i] + sr * hw * right[i] + su * hh * up[i] for i in range(3)))  # type: ignore[arg-type]
+        for sr, su in ((-1, 1), (1, 1), (1, -1), (-1, -1))
+    ]
+    report: dict[str, Any] = {
+        "device": str(roots[0].name),
+        "kind": p["kind"],
+        "model": m["path"],
+        "objects": sorted(str(o.name) for o in new),
+        "screen_object": str(screen_obj.name),
+        "screen_material": str(mat.name),
+        "emission_strength": p["strength"],
+        "finish": p["finish"],
+        "scale": round(scale, 6),
+        "screen": {
+            "centre": place(c),
+            "normal": _r(frame["normal"]),
+            "up": _r(up),
+            "width": round(frame["width"] * scale, 5),
+            "height": round(frame["height"] * scale, 5),
+            "corners": corners,
+        },
     }
     if "movie" in p["screen"]:
         report["movie"] = p["screen"]["movie"][0]
