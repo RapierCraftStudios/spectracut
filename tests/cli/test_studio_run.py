@@ -866,3 +866,19 @@ def test_sound_and_preproduction_share_one_model_runtime(
     deps = studio_mod.default_sound(production)
     assert seen == [runtime] and deps.runtime is runtime
     assert calls == [home]
+
+
+def test_preproduction_style_frames_use_the_one_beam_kit_and_comp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#347: abstract style frames are built from the One Beam kit and finished by its comp."""
+    kit, graph = studio_mod._one_beam_kit(), studio_mod._one_beam_comp()
+    assert kit is not None and kit.id == "one-beam"
+    assert graph is not None and graph.id == "one-beam" and graph.screen_matte is None
+    # A wheel install has neither dir: style frames fall back to the straight PNG.
+    from spectracut.finishing import comp
+    from spectracut.harness import kit as kit_mod
+
+    monkeypatch.setattr(kit_mod, "KITS_DIR", tmp_path / "kits")
+    monkeypatch.setattr(comp, "default_comps_dir", lambda: tmp_path / "comps")
+    assert studio_mod._one_beam_kit() is None and studio_mod._one_beam_comp() is None

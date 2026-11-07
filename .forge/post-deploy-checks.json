@@ -178,5 +178,10 @@
     "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && SPECTRACUT_E2E=1 SPECTRACUT_HOME=$HOME/.local/share/spectracut SPECTRACUT_FLAMENCO_URL=http://100.105.62.23:8085 SPECTRACUT_FLAMENCO_SHARED=/srv/flamenco SPECTRACUT_FLAMENCO_TAG=3070laptopgpu uv run pytest -q -m e2e tests/templates/test_templates_e2e.py -k device_hero",
     "pass": "/\\b[1-9]\\d* passed in\\b/",
     "timeout": 3600
+  },
+  "m2-one-beam-hero-comp-farm-e2e": {
+    "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && SPECTRACUT_E2E=1 SPECTRACUT_HOME=$HOME/.local/share/spectracut SPECTRACUT_FLAMENCO_URL=http://100.105.62.23:8085 SPECTRACUT_FLAMENCO_SHARED=/srv/flamenco SPECTRACUT_FLAMENCO_TAG=3070laptopgpu uv run pytest -q -m e2e tests/acceptance/test_m2_one_beam_comp.py",
+    "pass": "/\\b[1-9]\\d* passed in\\b/",
+    "timeout": 3600
   }
 }

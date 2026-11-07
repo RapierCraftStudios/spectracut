@@ -28,5 +28,18 @@ spectracut studio run alterlab-launch
 spectracut studio approve alterlab-launch <node>
 ```
 
+The brand kit is copied into the production at `studio new`, so after a kit change
+(e.g. the palette and fonts re-read from the product's theme tokens, #356)
+re-create the production before re-running art direction:
+
+```sh
+spectracut studio new productions/alterlab-launch/brief.json --profile standard \
+  --brand-kit brands/alterlab/brand-kit.yaml --product brands/alterlab/product.yaml \
+  --id alterlab-launch --force
+```
+
+With `--product` the command also prints any brand drift: kit swatches that no
+colour token in the product's theme matches.
+
 Repeat `studio run` and `studio approve` until delivery is clean; the delivery
 node writes the master and the 15 s and 30 s cut-downs in 16:9, 9:16, 1:1 and 4:5.

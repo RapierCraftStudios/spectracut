@@ -120,8 +120,13 @@ def test_cutdowns_are_15s_and_30s_in_every_aspect_from_the_films_shots() -> None
 def test_standard_film_runs_every_node_with_the_real_departments(launch_film: Film) -> None:
     graph = launch_film.graph
     standard = load_profile("standard")
-    # ``--brand-kit`` adds a brand_kit node (#270) the art nodes read, beside the stages.
-    assert {graph.spec(n).kind for n in graph.order()} == {*standard.stages, art_depts.BRAND_KIT}
+    # ``--brand-kit`` adds a brand_kit node (#270) and every film a references node (#342)
+    # the art nodes read, beside the stages.
+    assert {graph.spec(n).kind for n in graph.order()} == {
+        *standard.stages,
+        art_depts.BRAND_KIT,
+        art_depts.REFERENCES,
+    }
     assert {n: graph.status(n) for n in graph.order()} == {
         n: NodeStatus.CLEAN for n in graph.order()
     }

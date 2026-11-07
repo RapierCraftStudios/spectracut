@@ -188,7 +188,7 @@ def test_clean_copy_builds_steps_with_the_kit_font() -> None:
     assert title.args["dof"] is True and title.args["animation"] == "tracking_reveal"
     ui = next(s for s in steps if s.args["name"] == "type_ui")
     assert ui.args["match_from"] == [576, 648, 384, 54]
-    assert ui.args["color"] == [round(0x2F / 255, 6), round(0x6B / 255, 6), 1.0]
+    assert ui.args["color"] == [round(0xF8 / 255, 6)] * 3  # kit accent #f8f8f8
 
 
 @pytest.mark.parametrize(
@@ -225,9 +225,9 @@ def test_font_role_weight_and_licence_come_from_the_kit() -> None:
     kit, brief, presets = _kit(), _brief(), load_type_presets(PRESETS)
     card = [_cards()[0]]
     odd = {
-        "title-tracking-3d": presets["title-tracking-3d"].model_copy(update={"font_role": "mono"})
+        "title-tracking-3d": presets["title-tracking-3d"].model_copy(update={"font_role": "script"})
     }
-    with pytest.raises(TypographyError, match="no 'mono' font role"):
+    with pytest.raises(TypographyError, match="no 'script' font role"):
         type_steps(card, odd, kit, brief, "1:1")
     heavy = {"title-tracking-3d": presets["title-tracking-3d"].model_copy(update={"weight": 900})}
     with pytest.raises(TypographyError, match="weight 900"):

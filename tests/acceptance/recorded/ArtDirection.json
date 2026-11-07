@@ -1,16 +1,16 @@
 {
   "mood_board": [
     {
-      "ref": "Calm product interfaces on dark ink",
-      "take": "Legible type, one accent colour",
+      "ref": "Calm monochrome product interfaces on near-black ink",
+      "take": "Legible white type, no extra hues",
       "avoid": "Busy glows"
     }
   ],
   "palette": {
     "swatches": {
-      "ink": "#0b1220",
-      "surface": "#f5f7fa",
-      "accent": "#2f6bff"
+      "ink": "#030303",
+      "surface": "#f8f8f8",
+      "accent": "#f8f8f8"
     }
   },
   "materials": [

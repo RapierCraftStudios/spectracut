@@ -1,20 +1,26 @@
 # AlterLab brand kit. Original AlterLab content only: no third-party marks.
+# Palette and fonts are the product's own theme tokens, read from the AlterLab web
+# repo (~/Projects/AlterLab/web @ 84c11b998e, brands/alterlab/product.yaml) with
+# spectracut.spec.theme: the forced dark scheme (src/app/layout.tsx html.dark) of a
+# monochrome, near-black UI with white type. Each value's source is in token_sources;
+# `studio new --product ... --brand-kit ...` reports drift from the product theme.
 id: alterlab
 name: AlterLab
 palette:
   swatches:
-    ink: "#0b1220"
-    surface: "#f5f7fa"
-    accent: "#2f6bff"
-    signal: "#18b47b"
-    warm: "#f2a33a"
-    slate: "#3a475c"
+    ink: "#030303"
+    surface: "#f8f8f8"
+    accent: "#f8f8f8"
+    card: "#060606"
+    muted: "#808080"
+    border: "#222222"
 typography:
   families:
     display: Inter
     body: Inter
-  weights: [400, 600]
-tone: Clear, precise and calm; the product's interface is the hero and stays legible.
+    mono: JetBrains Mono
+  weights: [400, 500, 600]
+tone: Clear, precise and calm; a near-black monochrome interface with white type is the hero and stays legible.
 looks:
   - id: clean
     version: 1
@@ -37,3 +43,13 @@ claim_sources:
   - id: alterlab-site
     title: AlterLab website
     ref: https://alterlab.io
+token_sources:
+  palette.ink: {path: src/app/globals.css, line: 52, token: "--background", value: "oklch(10% 0 0)"}
+  palette.surface: {path: src/app/globals.css, line: 53, token: "--foreground", value: "oklch(98% 0 0)"}
+  palette.accent: {path: src/app/globals.css, line: 62, token: "--primary", value: "oklch(98% 0 0)"}
+  palette.card: {path: src/app/globals.css, line: 58, token: "--card", value: "oklch(12% 0 0)"}
+  palette.muted: {path: src/app/globals.css, line: 55, token: "--muted-foreground", value: "oklch(60% 0 0)"}
+  palette.border: {path: src/app/globals.css, line: 56, token: "--border", value: "oklch(25% 0 0)"}
+  typography.display: {path: src/app/layout.tsx, line: 2, token: next/font/google, value: Inter}
+  typography.body: {path: src/app/layout.tsx, line: 2, token: next/font/google, value: Inter}
+  typography.mono: {path: src/app/layout.tsx, line: 2, token: next/font/google, value: JetBrains Mono}

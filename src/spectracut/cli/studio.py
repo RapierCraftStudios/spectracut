@@ -48,6 +48,7 @@ from spectracut.spec.references import (
     ReferenceSet,
     load_reference_set,
 )
+from spectracut.spec.theme import kit_drift, read_product_theme
 from spectracut.storyboard.models import ArtDirection
 from spectracut.studio import device_shot as ds
 from spectracut.studio import intake
@@ -94,6 +95,8 @@ if TYPE_CHECKING:
     from spectracut.audio.music_edit import Stretcher
     from spectracut.audio.render import ArdourRunner
     from spectracut.audio.vo import VoiceOver
+    from spectracut.finishing.comp import CompGraph
+    from spectracut.harness.kit import Kit
     from spectracut.providers.local.registry import LocalProvider
 
 studio_app = typer.Typer(
@@ -437,6 +440,8 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                         graph.production_id,
                         workdir,
                         brand_kit=lambda: _brand_kit_of(graph),
+                        kit=_one_beam_kit,
+                        comp=_one_beam_comp,
                     ),
                     voice=art_depts.default_voice(runtime=runtime),
                     workdir=workdir,
@@ -726,6 +731,9 @@ def new(
             )
         elif UI_CAPTURE in graph.order():
             typer.echo(f"{UI_CAPTURE} node planned: captures every mapped screen per device")
+    if product is not None and brand_kit is not None:
+        for line in _brand_drift(product, brand_kit):
+            typer.echo(line)
     if not device and brand_kit is None and art_depts.ART_DIRECTION in quality.stages:
         typer.echo("no --brand-kit: art direction has no brand kit to draw from")
     est = estimate(graph, DEPARTMENTS)
@@ -733,6 +741,18 @@ def new(
         typer.echo(line)
     if not device and est.unknown_departments:
         typer.echo("no department registered yet for: " + ", ".join(est.unknown_departments))
+
+
+def _brand_drift(product: Path, kit_path: Path) -> list[str]:
+    """Drift lines between the brand kit and the product's theme (a warning, never a failure)."""
+    try:
+        kit = load_brand_kit(kit_path)
+        drift = kit_drift(kit, read_product_theme(load_product_source(product)))
+    except ValueError as exc:
+        return [f"brand drift: cannot read product theme: {exc}"]
+    if not drift:
+        return [f"brand kit {kit.id} matches the product theme"]
+    return [f"brand drift: {line}" for line in drift]
 
 
 class LazyReferenceJudge:
@@ -1001,6 +1021,26 @@ def _brand_kit_of(graph: ProductionGraph) -> BrandKit | None:
         return BrandKit.model_validate(raw) if raw is not None else None
     except ValidationError:
         return None
+
+
+ONE_BEAM = "one-beam"
+"""The lookdev kit and comp graph abstract style frames are built and finished with."""
+
+
+def _one_beam_kit() -> Kit | None:
+    """The One Beam lookdev kit, or ``None`` when the repo's kits dir is absent (a wheel)."""
+    from spectracut.harness.kit import KITS_DIR, load_kit
+
+    path = KITS_DIR / ONE_BEAM
+    return load_kit(path) if path.is_dir() else None
+
+
+def _one_beam_comp() -> CompGraph | None:
+    """The ``one-beam`` comp graph, or ``None`` when the repo's comps dir lacks it."""
+    from spectracut.finishing import comp
+
+    directory = comp.default_comps_dir()
+    return comp.load_comps(directory).get(ONE_BEAM) if directory.is_dir() else None
 
 
 def _pass_score(graph: ProductionGraph) -> float:

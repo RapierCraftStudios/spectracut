@@ -170,7 +170,7 @@ def test_device_recipe_is_deterministic_and_pins_the_screen() -> None:
     names = {s.args.get("name") for s in a.steps if s.tool == "object.add_primitive"}
     assert names == {"device_body", "device_screen", "plinth"}
     colours: list[Any] = [s.args["color"] for s in a.steps if s.tool == "material.apply_preset"]
-    assert [round(c * 255) for c in colours[1]] == [0x0B, 0x12, 0x20]  # body: kit ink
+    assert [round(c * 255) for c in colours[1]] == [0x03, 0x03, 0x03]  # body: kit ink #030303
     other = ds.build_device_recipe(
         _brief(), kit, screen_image="ui/dashboard.png", screen_sha256="0" * 64
     )
