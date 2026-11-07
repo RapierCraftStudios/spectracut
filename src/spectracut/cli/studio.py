@@ -551,60 +551,91 @@ def new(
     else:
         assert idea is not None
         brief = _autofill(idea, source or [], headless, brand_kit)
-    try:
-        quality = load_profile(profile)
-    except ValueError as exc:
-        raise _fail(str(exc)) from exc
-    shot_params: dict[str, JsonValue] | None = None
-    template_params: dict[str, JsonValue] = {}
-    if quality.name == ds.PROFILE:
-        if brand_kit is None:
-            raise _fail(f"profile {ds.PROFILE} needs --brand-kit PATH")
-        shot_params = _device_shot_params(brand_kit)
-    elif brand_kit is not None:
-        template_params = _brand_params(brand_kit)
-    pid = production_id or brief.id
-    policy = _policy(autonomy, delegate, None)
-    store = ProductionStore(home)
     caps = BudgetCaps(elevenlabs_characters=cap_elevenlabs, gpu_minutes=cap_gpu, ai_requests=cap_ai)
     try:
-        graph = ProductionGraph(pid, profile=quality, autonomy=policy)
-        if shot_params is not None:
-            specs = breakdown(brief, quality)
-            specs = [_with_params(s, shot_params) if s.kind == ds.SHOT_STAGE else s for s in specs]
-        else:
-            kit = (
-                BrandKit.model_validate(template_params[ds.BRAND_KIT_PARAM])
-                if template_params
-                else None
-            )
-            plan = Producer(DEPARTMENTS).breakdown(
-                brief, quality, duration_s=duration, brand_kit=kit
-            )
-            specs = list(plan.nodes)
-            if template_params:
-                specs = [
-                    s.model_copy(update={"params": {**s.params, **template_params}})
-                    if s.kind in (shot_depts.TEMPLATE_SHOTS, shot_depts.SHOTS, *FINISHING_KINDS)
-                    else s
-                    for s in specs
-                ]
-        graph.add_nodes(specs)
-        path = store.create(
-            pid, brief, graph, force=force, caps=caps if caps.limits() else None, autonomy=policy
+        path, graph = create_production(
+            ProductionStore(home),
+            brief,
+            production_id=production_id,
+            profile=profile,
+            brand_kit=brand_kit,
+            duration=duration,
+            caps=caps,
+            policy=lambda: _policy(autonomy, delegate, None),
+            force=force,
+            from_idea=idea is not None,
         )
-        if isinstance(brief, CreativeBrief) and idea is not None:
-            write_atomic(path / "assumptions.md", intake.assumptions_markdown(brief).encode())
     except (ProductionError, ValueError, OSError) as exc:
         raise _fail(str(exc)) from exc
+    pid = graph.production_id
+    quality = graph.profile
+    assert quality is not None
+    device = quality.name == ds.PROFILE
     typer.echo(f"production {pid} created at {path}")
-    if shot_params is None and brand_kit is None and art_depts.ART_DIRECTION in quality.stages:
+    if not device and brand_kit is None and art_depts.ART_DIRECTION in quality.stages:
         typer.echo("no --brand-kit: art direction has no brand kit to draw from")
     est = estimate(graph, DEPARTMENTS)
     for line in est.lines():
         typer.echo(line)
-    if shot_params is None and est.unknown_departments:
+    if not device and est.unknown_departments:
         typer.echo("no department registered yet for: " + ", ".join(est.unknown_departments))
+
+
+def create_production(
+    store: ProductionStore,
+    brief: Brief | CreativeBrief,
+    *,
+    production_id: str | None = None,
+    profile: str = "standard",
+    brand_kit: Path | None = None,
+    duration: float = 60.0,
+    caps: BudgetCaps | None = None,
+    policy: Callable[[], AutonomyPolicy | None] = lambda: None,
+    force: bool = False,
+    from_idea: bool = False,
+) -> tuple[Path, ProductionGraph]:
+    """Plan ``brief`` under ``profile`` and store it as a new production.
+
+    Writes ``assumptions.md`` for a brief generated from an idea (``from_idea``).
+    Raises :class:`ValueError` (bad profile, missing brand kit, bad plan) or
+    :class:`ProductionError` (the production exists and ``force`` is not set).
+    """
+    quality = load_profile(profile)
+    shot_params: dict[str, JsonValue] | None = None
+    template_params: dict[str, JsonValue] = {}
+    if quality.name == ds.PROFILE:
+        if brand_kit is None:
+            raise ValueError(f"profile {ds.PROFILE} needs --brand-kit PATH")
+        shot_params = _device_shot_params(brand_kit)
+    elif brand_kit is not None:
+        template_params = _brand_params(brand_kit)
+    pid = production_id or brief.id
+    autonomy = policy()
+    graph = ProductionGraph(pid, profile=quality, autonomy=autonomy)
+    if shot_params is not None:
+        specs = breakdown(brief, quality)
+        specs = [_with_params(s, shot_params) if s.kind == ds.SHOT_STAGE else s for s in specs]
+    else:
+        kit = (
+            BrandKit.model_validate(template_params[ds.BRAND_KIT_PARAM])
+            if template_params
+            else None
+        )
+        plan = Producer(DEPARTMENTS).breakdown(brief, quality, duration_s=duration, brand_kit=kit)
+        specs = list(plan.nodes)
+        if template_params:
+            specs = [
+                s.model_copy(update={"params": {**s.params, **template_params}})
+                if s.kind in (shot_depts.TEMPLATE_SHOTS, shot_depts.SHOTS, *FINISHING_KINDS)
+                else s
+                for s in specs
+            ]
+    graph.add_nodes(specs)
+    limited = caps if caps is not None and caps.limits() else None
+    path = store.create(pid, brief, graph, force=force, caps=limited, autonomy=autonomy)
+    if isinstance(brief, CreativeBrief) and from_idea:
+        write_atomic(path / "assumptions.md", intake.assumptions_markdown(brief).encode())
+    return path, graph
 
 
 def _ask_doubts(batch: Sequence[intake.Aspect]) -> list[int]:
