@@ -10,20 +10,25 @@
 - ``script-writer`` (kind ``script``): the :class:`Script` (beats with VO,
   on-screen text and the claims each line makes, each citing a brief source).
 
+With a ``references`` input (:mod:`.references`) each concept cites the reference
+craft points it applies in ``craft_refs`` (:meth:`ConceptWriter.check_output`).
+
 Every script passes the copy gate (:mod:`spectracut.writer.copy_gate`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 
 from spectracut.spec._base import NonEmptyStr, Slug, StrictModel
 from spectracut.spec.brief import CreativeBrief
+from spectracut.spec.references import ReferenceSet
 from spectracut.studio.department import CostEstimate, Department
 from spectracut.studio.departments.discovery import BRIEF, STORY_SKILLS
+from spectracut.studio.departments.references import REFERENCES, check_craft_refs
 from spectracut.studio.graph import ProductionGraph
 from spectracut.studio.node import NodeSpec, NodeStatus
 
@@ -44,6 +49,8 @@ class Concept(StrictModel):
     """Why this concept fits the brief's audience."""
     visuals: list[NonEmptyStr] = Field(default_factory=list)
     """The concept's signature visuals; every style frame shows one of them or a beat."""
+    craft_refs: list[str] = Field(default_factory=list)
+    """Ids of the reference craft points this applies (``<reference>:<point>``)."""
 
 
 class Claim(StrictModel):
@@ -75,10 +82,25 @@ class ConceptWriter(Department):
 
     name = "concept-writer"
     produces = frozenset({CONCEPT})
-    inputs: ClassVar[dict[str, type[BaseModel]]] = {BRIEF: CreativeBrief}
+    inputs: ClassVar[dict[str, type[BaseModel]]] = {
+        BRIEF: CreativeBrief,
+        REFERENCES: ReferenceSet,
+    }
     output = Concept
     skill_pack = STORY_SKILLS / "concept-writer"
     cost = CostEstimate(ai_requests=1, ai_input_tokens=3_000)
+
+    @classmethod
+    def check_output(
+        cls,
+        node_id: str,
+        output: JsonValue,
+        inputs: Mapping[str, JsonValue],
+        kinds: Mapping[str, str],
+    ) -> None:
+        """With a references input: ``craft_refs`` cites craft points of the set."""
+        concept = Concept.model_validate(output)
+        check_craft_refs(cls.name, node_id, concept.craft_refs, inputs, kinds)
 
 
 class ScriptWriter(Department):
@@ -96,9 +118,16 @@ DEVELOPMENT_DEPARTMENTS: tuple[type[Department], ...] = (ConceptWriter, ScriptWr
 
 
 def development_nodes(
-    brief_id: str = BRIEF, n: int = 3, angles: Sequence[str] | None = None
+    brief_id: str = BRIEF,
+    n: int = 3,
+    angles: Sequence[str] | None = None,
+    *,
+    references_id: str | None = None,
 ) -> list[NodeSpec]:
-    """``n`` concept nodes (``concept-1`` .. ``concept-n``), each reading only the brief."""
+    """``n`` concept nodes (``concept-1`` .. ``concept-n``), each reading the brief.
+
+    ``references_id`` (the ``references`` node) is wired in too when given.
+    """
     if n < 1:
         raise ValueError(f"need at least one concept, got {n}")
     chosen = list(angles) if angles is not None else list(DEFAULT_ANGLES)
@@ -109,7 +138,7 @@ def development_nodes(
             id=f"{CONCEPT}-{i + 1}",
             kind=CONCEPT,
             department=ConceptWriter.name,
-            inputs=(brief_id,),
+            inputs=(brief_id,) if references_id is None else (brief_id, references_id),
             params={"angle": chosen[i]},
         )
         for i in range(n)

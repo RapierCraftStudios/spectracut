@@ -134,7 +134,8 @@ def test_studio_run_approve_status_across_invocations(
     status = runner.invoke(app, ["studio", "status", "spellwise"])
     assert status.exit_code == 0, status.output
     assert "  brief: clean tier=preview gate=human human=approved" in status.output
-    assert "ledger: runs=1" in status.output
+    # The brief and the references node (built beside it, #342) ran.
+    assert "ledger: runs=2" in status.output
 
     twice = runner.invoke(app, ["studio", "approve", "spellwise", "brief"])
     assert twice.exit_code == 2 and "error:" in twice.output
@@ -386,7 +387,8 @@ def test_status_lists_productions(home: Path, brief_file: Path) -> None:
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output
     assert "productions: 1" in result.output
-    assert "spellwise: profile=standard pending=15" in result.output
+    # The profile's 15 stages plus the references node (craft notes, #342).
+    assert "spellwise: profile=standard pending=16" in result.output
     assert "jobs: 0" in result.output
 
 

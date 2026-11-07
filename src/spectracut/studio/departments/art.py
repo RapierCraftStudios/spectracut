@@ -29,6 +29,13 @@
   and referenced by path; an injected preview writes a playable mp4 for review.
 
 :func:`preproduction_nodes` declares the four nodes; :func:`brand_kit_node` the brand kit.
+
+With a ``references`` input (:mod:`.references`) art direction and storyboard cite the
+reference craft points they apply (``craft_refs``); the storyboard's average board
+length and on-screen text are measured against the cited references
+(:func:`~spectracut.critique.references.measure_storyboard`), and the style frames
+record a reference-comparison score (``reference_comparison``) from the
+``reference_judge``. No render may be a reference file (study for craft, never copy).
 """
 
 from __future__ import annotations
@@ -42,14 +49,21 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, JsonValue
 
 from spectracut.audio.vo import VoiceoverTrack
+from spectracut.critique.references import (
+    ReferenceComparison,
+    assert_not_reference,
+    compare_frames,
+    measure_storyboard,
+)
 from spectracut.edit.preview import AnimaticPreview
 from spectracut.edit.timeline import Edit
-from spectracut.providers.base import ProviderError
+from spectracut.providers.base import ProviderError, ReferenceJudge
 from spectracut.providers.local.registry import get_provider, mock_mode, resolve_model
 from spectracut.providers.local.runtime import ModelRuntime
 from spectracut.providers.local.tts import LocalTts
 from spectracut.spec.brand import BrandKit
 from spectracut.spec.brief import CreativeBrief
+from spectracut.spec.references import ReferenceSet
 from spectracut.storyboard.animatic import (
     TempAudio,
     build_animatic,
@@ -77,6 +91,12 @@ from spectracut.studio.department import (
     DepartmentOutputError,
 )
 from spectracut.studio.departments.discovery import BRIEF
+from spectracut.studio.departments.references import (
+    REFERENCES,
+    build_references,
+    check_craft_refs,
+    references_input,
+)
 from spectracut.studio.departments.writer import CONCEPT, SCRIPT, Concept, Script
 from spectracut.studio.gates import GateMode
 from spectracut.studio.graph import RunContext, Runner, RunResult
@@ -137,6 +157,7 @@ class ArtDirector(Department):
         BRIEF: CreativeBrief,
         CONCEPT: Concept,
         BRAND_KIT: BrandKit,
+        REFERENCES: ReferenceSet,
     }
     output = ArtDirection
     cost = CostEstimate(ai_requests=1, ai_input_tokens=3_000)
@@ -149,12 +170,16 @@ class ArtDirector(Department):
         inputs: Mapping[str, JsonValue],
         kinds: Mapping[str, str],
     ) -> None:
-        """With a brand kit input: palette hexes are kit swatches, the Look is a kit Look."""
+        """With a brand kit input: palette hexes are kit swatches, the Look is a kit Look.
+
+        With a references input: ``craft_refs`` cites craft points of the set.
+        """
+        art = ArtDirection.model_validate(output)
+        check_craft_refs(cls.name, node_id, art.craft_refs, inputs, kinds)
         raw = _input_of(inputs, kinds, BRAND_KIT)
         if raw is None:
             return
         kit = BrandKit.model_validate(raw)
-        art = ArtDirection.model_validate(output)
         allowed = {hex_.casefold() for hex_ in kit.palette.swatches.values()}
         off = [
             f"{name}={hex_}"
@@ -226,6 +251,7 @@ class StoryboardArtist(Department):
         SCRIPT: Script,
         BRAND_KIT: BrandKit,
         ART_DIRECTION: ArtDirection,
+        REFERENCES: ReferenceSet,
     }
     output = Storyboard
     cost = CostEstimate(ai_requests=1, ai_input_tokens=5_000)
@@ -238,12 +264,22 @@ class StoryboardArtist(Department):
         inputs: Mapping[str, JsonValue],
         kinds: Mapping[str, str],
     ) -> None:
-        """With a script input: every board covers a script beat; every VO beat has a board."""
+        """With a script input: every board covers a script beat; every VO beat has a board.
+
+        With a references input: ``craft_refs`` cites craft points of the set, the
+        average board length is within the cited references' pace range and no
+        board's on-screen text exceeds the type bound (one idea per card).
+        """
+        storyboard = Storyboard.model_validate(output)
+        refs = check_craft_refs(cls.name, node_id, storyboard.craft_refs, inputs, kinds)
+        if refs is not None:
+            measured = measure_storyboard(storyboard, refs)
+            if measured.problems:
+                raise DepartmentOutputError(cls.name, node_id, "; ".join(measured.problems))
         raw = _input_of(inputs, kinds, SCRIPT)
         if raw is None:
             return
         script = Script.model_validate(raw)
-        storyboard = Storyboard.model_validate(output)
         beats = [line.beat for line in script.lines]
         resolved = resolve_beats(storyboard, beats)
         problems = []
@@ -399,13 +435,15 @@ def preproduction_nodes(
     concept_id: str | None = None,
     brand_kit_id: str | None = None,
     voiceover_id: str | None = None,
+    references_id: str | None = None,
 ) -> list[NodeSpec]:
     """The four pre-production nodes; style frames build at ``tier`` (final).
 
     ``concept_id`` (the approved concept) and ``brand_kit_id`` are wired into art
     direction, style frames and storyboard when given, in the order each
     department declares its inputs. ``voiceover_id`` (the voiceover node) is wired
-    into the animatic when given, so it cuts to that audio.
+    into the animatic when given, so it cuts to that audio. ``references_id`` (the
+    ``references`` node) is wired into art direction and storyboard when given.
     """
 
     def wired(*ids: str | None) -> tuple[str, ...]:
@@ -416,7 +454,7 @@ def preproduction_nodes(
             id=ART_DIRECTION,
             kind=ART_DIRECTION,
             department=ArtDirector.name,
-            inputs=wired(brief_id, concept_id, brand_kit_id),
+            inputs=wired(brief_id, concept_id, brand_kit_id, references_id),
         ),
         NodeSpec(
             id=STYLE_FRAMES,
@@ -429,7 +467,9 @@ def preproduction_nodes(
             id=STORYBOARD,
             kind=STORYBOARD,
             department=StoryboardArtist.name,
-            inputs=wired(brief_id, concept_id, script_id, brand_kit_id, ART_DIRECTION),
+            inputs=wired(
+                brief_id, concept_id, script_id, brand_kit_id, ART_DIRECTION, references_id
+            ),
         ),
         NodeSpec(
             id=ANIMATIC,
@@ -457,7 +497,12 @@ class PreproductionRunner:
     and boards render without a concept, and ``concept_note`` (why concept images are
     skipped) is reported once per build through ``note(node_id, text)``. An explorer
     failure never fails the node: it is logged and noted, and the rest of that build
-    renders without concepts. Other kinds pass through to ``inner``.
+    renders without concepts. ``references`` is built from its param
+    (:func:`build_references`); style frames record ``reference_comparison``: each
+    render scored by ``reference_judge`` against the keyframe of the references the
+    art direction cites (a null score with a note when there is no judge or no local
+    keyframe), and no render may be a reference file. Other kinds pass through to
+    ``inner``.
     """
 
     def __init__(
@@ -475,8 +520,10 @@ class PreproductionRunner:
         media_root: Path | None = None,
         concept_note: str | None = None,
         note: Callable[[str, str], None] | None = None,
+        reference_judge: ReferenceJudge | None = None,
     ) -> None:
         self.inner = inner
+        self.reference_judge = reference_judge
         self.concept_note = concept_note
         self.note = note
         self.media_root = None if media_root is None else Path(media_root)
@@ -496,6 +543,8 @@ class PreproductionRunner:
             return self._animatic(ctx)
         if ctx.spec.kind == BRAND_KIT:
             return build_brand_kit(ctx)
+        if ctx.spec.kind == REFERENCES:
+            return build_references(ctx)
         return self.inner(ctx)
 
     def _note(self, node_id: str, text: str) -> None:
@@ -553,7 +602,11 @@ class PreproductionRunner:
                 frame.model_copy(update={"concept": concept, "render": render, "tier": "final"})
             )
         dept = self.departments[ctx.spec.department]
-        result = StyleFrames(frames=done, review_media=self._review_media(done))
+        result = StyleFrames(
+            frames=done,
+            review_media=self._review_media(done),
+            reference_comparison=self._reference_comparison(ctx, art, done),
+        )
         output = dept.validate_output(ctx.spec.id, result.model_dump(mode="json"))
         ai = dict(planned.usage.ai_usage)
         for key, value in render_ai.items():
@@ -564,6 +617,21 @@ class PreproductionRunner:
             update={"ai_usage": ai, "gpu_minutes": planned.usage.gpu_minutes + gpu}
         )
         return RunResult(output=output, usage=usage)
+
+    def _reference_comparison(
+        self, ctx: RunContext, art: ArtDirection, frames: list[StyleFrame]
+    ) -> ReferenceComparison | None:
+        """Renders vs the cited references' keyframes; ``None`` with no references input.
+
+        Every render path first passes the no-copy guard. Pace does not apply to stills.
+        """
+        refs = references_input(ctx.inputs, {})
+        renders = [Path(f.render.path) for f in frames if f.render is not None]
+        for path in renders:
+            assert_not_reference(path, refs)
+        if refs is None:
+            return None
+        return compare_frames(renders, refs, art.craft_refs, self.reference_judge)
 
     def _review_media(self, frames: list[StyleFrame]) -> dict[str, JsonValue] | None:
         """The gate's player descriptor: every frame render relative to ``media_root``."""

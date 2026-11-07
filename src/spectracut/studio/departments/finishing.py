@@ -5,7 +5,12 @@
   picture clip keeps the animatic's record position and length and points at its
   rendered shot (``edit.conform.replace_shot``); the ``vo`` track is rebuilt from the
   voiceover lines at the frames the mix places them, and the ``music`` track from the
-  music bed when a music node is wired in. The edit is written as OTIO.
+  music bed when a music node is wired in. The edit is written as OTIO. With a
+  ``references`` input the cut records ``reference_comparison``: its measured pace
+  (average picture clip length vs the range of the references the storyboard cites)
+  and the first frame of each used shot scored against their keyframes by the
+  reference judge (a null score with a note when there is no judge or keyframe); no
+  media ref may be a reference file.
 - ``render`` (:class:`Finisher`): re-renders every shot's base recipe at the final
   tier under the brand kit's Look (``templates.base.final_tier_steps``) and appends a
   brand end card carrying the brief's CTA when the edit has none. The CTA passes
@@ -36,6 +41,12 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from spectracut.audio.vo import VoiceoverTrack
+from spectracut.critique.references import (
+    ReferenceComparison,
+    assert_not_reference,
+    compare_frames,
+    measure_pace,
+)
 from spectracut.edit.conform import replace_shot
 from spectracut.edit.otio_io import write_otio
 from spectracut.edit.timeline import Clip, Edit, Gap, Track
@@ -44,14 +55,18 @@ from spectracut.finishing.looks import resolve_look
 from spectracut.finishing.typography import CopyVerdict, TypeCard, copy_gate
 from spectracut.formats.cutdowns import AspectRender, CutDownSpec, RenderLibrary, cut_down
 from spectracut.formats.safe_areas import RESOLUTIONS
+from spectracut.providers.base import ReferenceJudge
 from spectracut.spec._base import Slug, StrictModel
 from spectracut.spec.brand import BrandKit, Look
 from spectracut.spec.brief import Brief
 from spectracut.spec.recipe import Recipe, RecipeStep
+from spectracut.spec.references import ReferenceSet
 from spectracut.spec.spec import Aspect
+from spectracut.storyboard.models import Storyboard
 from spectracut.studio import device_shot as ds
 from spectracut.studio.department import SKILLS_ROOT, CostEstimate, Department
-from spectracut.studio.departments.art import ANIMATIC
+from spectracut.studio.departments.art import ANIMATIC, STORYBOARD
+from spectracut.studio.departments.references import REFERENCES, references_input
 from spectracut.studio.departments.shots import (
     SHOTS,
     TEMPLATE_SHOTS,
@@ -120,6 +135,8 @@ class EditCut(StrictModel):
     otio_sha256: str = Field(min_length=1)
     shots: list[RenderedShot] = Field(default_factory=list)
     """The rendered shots behind the picture clips (their recipes are re-rendered)."""
+    reference_comparison: ReferenceComparison | None = None
+    """The cut's pace and shot frames scored against the cited references."""
 
 
 class EndCardRecord(StrictModel):
@@ -188,8 +205,12 @@ class Editor(Department):
         SHOTS: RenderedShots,
         VOICEOVER: VoiceoverTrack,
         MUSIC: MusicBed,
+        REFERENCES: ReferenceSet,
+        STORYBOARD: Storyboard,
     }
     output = EditCut
+    wired_with: ClassVar[Mapping[str, str]] = {STORYBOARD: REFERENCES}
+    """The storyboard is read (for its cited craft points) only with a references input."""
     skill_pack = SKILLS_ROOT / "editor"
     cost = CostEstimate()
 
@@ -405,8 +426,12 @@ class FinishingRunner:
         qa_store: QAReportStore | None = None,
         qa: QARunner | None = None,
         brief: Brief | None = None,
+        reference_judge: ReferenceJudge | None = None,
     ) -> None:
         self.inner = inner
+        if reference_judge is None and isinstance(judge, ReferenceJudge):
+            reference_judge = judge
+        self.reference_judge = reference_judge
         self.departments = departments
         self.workdir = Path(workdir)
         self.production_id = production_id
@@ -498,8 +523,36 @@ class FinishingRunner:
             bed = Clip(id="music-bed", media_ref=music.media_ref, source_out=frames)
             edit = _with_track(edit, _audio_track("music", [(0, bed)], total))
         ref, sha = _write(edit, self.workdir / f"{ctx.spec.id}.otio")
-        cut = EditCut(edit=edit, otio_ref=ref, otio_sha256=sha, shots=used)
+        cut = EditCut(
+            edit=edit,
+            otio_ref=ref,
+            otio_sha256=sha,
+            shots=used,
+            reference_comparison=self._reference_comparison(ctx, edit, used),
+        )
         return self._validated(ctx, cut, Usage())
+
+    def _reference_comparison(
+        self, ctx: RunContext, edit: Edit, used: Sequence[RenderedShot]
+    ) -> ReferenceComparison | None:
+        """The cut's pace and first shot frames vs the storyboard's cited references.
+
+        ``None`` with no references input. Every file media ref of the cut and every
+        compared frame first passes the no-copy guard.
+        """
+        refs = references_input(ctx.inputs, {})
+        frames = [Path(s.output_dir) / sorted(s.frames)[0] for s in used if s.frames]
+        media = [Path(c.media_ref) for t in edit.tracks for c in t.clips() if c.media_ref]
+        for path in (*media, *frames):
+            assert_not_reference(path, refs)
+        if refs is None:
+            return None
+        board = _input(ctx, STORYBOARD, Storyboard)
+        cited = board.craft_refs if board is not None else []
+        picture = _picture(edit)
+        pace = measure_pace([float(edit.rate.seconds(c.duration)) for c in picture], refs, cited)
+        existing = [f for f in frames if f.is_file()]
+        return compare_frames(existing, refs, cited, self.reference_judge, pace=pace)
 
     # ---- render --------------------------------------------------------------------
 

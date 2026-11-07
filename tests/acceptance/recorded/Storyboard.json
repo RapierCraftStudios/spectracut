@@ -54,5 +54,9 @@
       "text": "Start free",
       "duration_s": 5.0
     }
+  ],
+  "craft_refs": [
+    "base44-launch:kinetic-type-as-the-spine",
+    "elevenagents-architect:calm-pace"
   ]
 }

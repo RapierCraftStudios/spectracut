@@ -227,7 +227,9 @@ def assert_not_reference(
     root = (Path(store) if store is not None else default_store()).resolve()
     resolved = out.resolve()
     if resolved == root or resolved.is_relative_to(root):
-        raise ValueError(f"output {out} is inside the reference store {root}; never copy references")
+        raise ValueError(
+            f"output {out} is inside the reference store {root}; never copy references"
+        )
     if refs is None or not out.is_file():
         return
     keyframes = [Path(k) for r in refs.references for k in r.keyframes if Path(k).is_file()]
@@ -236,4 +238,6 @@ def assert_not_reference(
     digest = _sha256(out)
     for k in keyframes:
         if k.stat().st_size == out.stat().st_size and _sha256(k) == digest:
-            raise ValueError(f"output {out} is a copy of reference keyframe {k}; never copy references")
+            raise ValueError(
+                f"output {out} is a copy of reference keyframe {k}; never copy references"
+            )

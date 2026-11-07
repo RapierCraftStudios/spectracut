@@ -189,7 +189,10 @@ def breakdown(
         name = department_for(stage)
         dept = registry.get(name)
         if dept is not None:
-            reads = [k for k in dept.inputs if k in earlier]
+            # A kind read only alongside another (``wired_with``, e.g. the editor reads
+            # the storyboard only for the references' craft citations) needs that too.
+            needs: Mapping[str, str] = getattr(dept, "wired_with", {})
+            reads = [k for k in dept.inputs if k in earlier and needs.get(k, k) in earlier]
         else:
             reads = [previous] if previous is not None else []
         specs.append(
