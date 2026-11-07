@@ -73,6 +73,8 @@ def test_run_renders_signed_job_and_reports_profile(
     report_json = json.loads((out / "report.json").read_text())
     assert report["scene_graph_hash"] == report_json["scene_graph_hash"]
     assert len(report["scene_graph_hash"]) == 64
+    assert report["render_device"] == report_json["render_device"]
+    assert report["render_device"]["device"] in {"GPU", "CPU"}
     (launch,) = records(host_env["FAKE_BLENDER_RECORD"])
     assert launch["argv"][:2] == ["-b", "--factory-startup"]
     assert "SPECTRACUT_HOST_CONFIG" not in launch["env"]

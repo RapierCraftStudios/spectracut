@@ -37,6 +37,7 @@ import pytest
 
 from spectracut.queue.flamenco import FlamencoClient, build_shot_job, select_worker_tag
 from spectracut.queue.signing import JobEnvelope, SignedJob, load_private_key, sign_job
+from spectracut.spec.recipe import Recipe, RecipeStep
 
 pytestmark = [
     pytest.mark.e2e,
@@ -146,3 +147,99 @@ def test_flamenco_recipe_renders_on_each_tagged_worker(
             time.sleep(5)
         assert status == "completed", f"{tag.name}: {status}"
         assert len(list(out.glob("frame_*"))) == 2
+
+
+# Cycles on the farm: the bpy runtime selects the GPU itself (#305). SPECTRACUT_FLAMENCO_TAGS
+# names the GPU workers to check, e.g. ``3070laptopgpu`` for legion.
+PREVIS_GLASS_BUDGET_S = 180.0
+
+
+def _cycles_recipe(width: int, height: int, samples: int, rid: str) -> Recipe:
+    tools: list[tuple[str, dict[str, object]]] = [
+        ("scene.clear", {}),
+        ("camera.add", {"name": "Cam", "location": [0, -6, 1.5], "rotation": [1.4, 0, 0]}),
+        ("camera.set_lens", {"mm": 35}),
+        ("render.set_engine", {"engine": "cycles"}),
+        ("render.set_resolution", {"width": width, "height": height}),
+        ("render.set_property", {"property": "cycles.samples", "value": samples}),
+        ("light.add", {"kind": "area", "energy": 800, "location": [2, -2, 3]}),
+        ("world.set_haze", {"density": 0.02}),
+    ]
+    for i in range(3):  # the previs glass stack: three glass slabs, one behind another
+        name = f"Glass{i}"
+        tools.append(
+            (
+                "object.add_primitive",
+                {
+                    "kind": "cube",
+                    "name": name,
+                    "location": [0, i * 0.6, 0],
+                    "scale": [1.2, 0.05, 0.8],
+                },
+            )
+        )
+        tools.append(("material.apply_preset", {"object": name, "preset": "glass"}))
+    steps = [RecipeStep(index=i, tool=t, args=a) for i, (t, a) in enumerate(tools)]
+    return Recipe(id=rid, shot_id="shot-1", blender_version="4.5", steps=steps)
+
+
+def _farm_render(
+    make_envelope: Callable[..., JobEnvelope], recipe: Recipe, label: str
+) -> list[tuple[str, Path, float]]:
+    """Render ``recipe`` (frame 1) on each tagged worker; ``(tag, out dir, seconds)``."""
+    assert FLAMENCO is not None
+    shared = Path(os.environ["SPECTRACUT_FLAMENCO_SHARED"])
+    key = load_private_key()
+    client = FlamencoClient(FLAMENCO)
+    tags = client.list_tags()
+    stamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+    done = []
+    for name in os.environ.get("SPECTRACUT_FLAMENCO_TAGS", "").split(","):
+        tag = select_worker_tag(name, tags)
+        envelope = make_envelope(recipe, job_id=f"e2e-{label}-{tag.name}-{stamp}", frames=(1, 1))
+        job_file = shared / "jobs" / f"{envelope.job_id}.json"
+        job_file.parent.mkdir(parents=True, exist_ok=True)
+        job_file.write_text(sign_job(envelope, key).model_dump_json())
+        out = shared / "out" / envelope.job_id
+        started = time.monotonic()
+        submitted = client.submit(
+            build_shot_job(str(job_file), envelope, tag, output_dir=str(out), chunk_size=1)
+        )
+        deadline = datetime.now(UTC) + timedelta(minutes=15)
+        status = ""
+        while datetime.now(UTC) < deadline:
+            status = client.job_status(str(submitted["id"]))
+            if status in {"completed", "failed", "canceled"}:
+                break
+            time.sleep(5)
+        assert status == "completed", f"{tag.name}: {status}"
+        done.append((tag.name, out, time.monotonic() - started))
+    return done
+
+
+def _device(out: Path) -> dict[str, object]:
+    result = json.loads((out / "result.json").read_text())
+    device = result["render_device"]
+    assert isinstance(device, dict)
+    return device
+
+
+@pytest.mark.skipif(not FLAMENCO, reason="set SPECTRACUT_FLAMENCO_URL")
+def test_flamenco_cycles_job_renders_on_gpu(make_envelope: Callable[..., JobEnvelope]) -> None:
+    recipe = _cycles_recipe(320, 180, 16, "cycles-gpu")
+    for tag, out, _ in _farm_render(make_envelope, recipe, "gpu"):
+        device = _device(out)
+        assert device["device"] == "GPU", f"{tag}: {device}"
+        assert device["backend"] in {"OPTIX", "CUDA"}, f"{tag}: {device}"
+        assert device.get("devices"), f"{tag}: no GPU enabled"
+
+
+@pytest.mark.skipif(not FLAMENCO, reason="set SPECTRACUT_FLAMENCO_URL")
+def test_flamenco_previs_glass_1080p_under_3_minutes(
+    make_envelope: Callable[..., JobEnvelope],
+) -> None:
+    recipe = _cycles_recipe(1920, 1080, 192, "previs-glass")
+    for tag, out, seconds in _farm_render(make_envelope, recipe, "glass"):
+        assert _device(out)["device"] == "GPU", tag
+        assert len(list(out.glob("frame_*"))) == 1
+        assert seconds < PREVIS_GLASS_BUDGET_S, f"{tag}: {seconds:.0f}s"
