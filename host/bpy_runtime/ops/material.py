@@ -95,8 +95,8 @@ def material_apply_preset(bpy: Any, args: dict[str, Any]) -> Report:
         emission = as_color(args["emission_color"], "emission_color")
     elif preset in EMISSIVE:
         emission = color
-    if obj.type != "MESH":
-        raise ToolError(f"{tool}: {args['object']!r} is not a mesh object")
+    if obj.type not in ("MESH", "CURVE"):
+        raise ToolError(f"{tool}: {args['object']!r} is not a mesh or curve object")
     mat = bpy.data.materials.new(name)
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
