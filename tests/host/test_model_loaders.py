@@ -14,7 +14,8 @@ from typing import Any
 
 import pytest
 from spectracut_host import models as host_models
-from spectracut_host.loaders import MAX_VRAM_GB, BaseSession, _base, check_vram_spec, weights_dir
+from spectracut_host.loaders import _base
+from spectracut_host.loaders._base import MAX_VRAM_GB, BaseSession, check_vram_spec, weights_dir
 from spectracut_host.models import (
     FACTORIES,
     LOCK_NAME,
