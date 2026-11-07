@@ -37,12 +37,30 @@ _UPRIGHT = [1.570796, 0, 0]
 class TypeSlots(StrictModel):
     """The line of copy, its font role and size, and the kit's pinned font files."""
 
-    body: NonEmptyStr = Field(max_length=120)
-    mode: Literal["depth", "cutout"] = "depth"
-    role: Slug = "display"
-    size: Annotated[float, Field(gt=0, le=5)] = 0.3
-    extrude: Annotated[float, Field(ge=0, le=1)] = 0.06
-    fonts: Mapping[str, FontFile] = Field(default_factory=dict)
+    body: NonEmptyStr = Field(
+        max_length=120,
+        description=(
+            "The one line of copy set as type on screen (a headline, claim or VO line), "
+            "never a brief field, id or note."
+        ),
+    )
+    mode: Literal["depth", "cutout"] = Field(
+        default="depth",
+        description="`depth`: extruded 3D type; `cutout`: type punched out of a coloured plate.",
+    )
+    role: Slug = Field(
+        default="display", description="The brand kit typography role whose font sets the line."
+    )
+    size: Annotated[float, Field(gt=0, le=5)] = Field(
+        default=0.3, description="Type size in scene units."
+    )
+    extrude: Annotated[float, Field(ge=0, le=1)] = Field(
+        default=0.06, description="Depth of the extruded type in scene units."
+    )
+    fonts: Mapping[str, FontFile] = Field(
+        default_factory=dict,
+        description="Pinned brand font files by role; leave empty unless given font files.",
+    )
 
 
 def _scene(kit: BrandKit, slots: TypeSlots, pipeline: ColorPipeline) -> list[Call]:
