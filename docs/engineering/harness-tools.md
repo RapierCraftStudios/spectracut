@@ -4,8 +4,9 @@ The harness MCP server (`src/spectracut/harness/tools/`) exposes typed build too
 Each records one or more declarative recipe steps that the host bpy runtime
 (`host/bpy_runtime/tools.py`, `TOOL_NAMES`/`TOOLS`) executes on a render host. A
 recipe is JSON only: no arbitrary Python. Every runtime op checks its arguments
-before touching `bpy`; ops with randomness take a `seed`. Every op below is
-deterministic, so none takes a seed.
+before touching `bpy`. Every op below is deterministic: the ops with randomness
+(`object.animate` `shatter`/`assemble` and `particles.add`) take a `seed` and give
+the same result for the same seed.
 
 ## Materials
 
@@ -143,8 +144,68 @@ not already exist, and objects named in arguments must exist
 
 ## Animation
 
-Filled in by a later sub-issue (#285).
+Animation ops live in `host/bpy_runtime/ops/keyframe.py` and
+`host/bpy_runtime/ops/animate.py`. Frames are integers in [0, 1048574].
+
+- `object.keyframe`: `object`, `keys` (2 to 1000, strictly increasing `frame`),
+  `easing`, `material`. Each key sets at least one channel:
+  - `location`, `rotation` (radians), `scale`: `[x, y, z]` on any object,
+    including a camera.
+  - `lens` [1, 5000] mm: camera objects only.
+  - `inputs`: an allowlist of Principled BSDF inputs on the object's material:
+    `emission_strength` [0, 1000], `alpha` [0, 1], `roughness` [0, 1],
+    `transmission` [0, 1]. `material` names one of the object's material slots
+    (default: the active material) and is refused without `inputs`.
+
+  `easing` is `linear`, `ease_in`, `ease_out` or `ease_in_out` (the default), the
+  same vocabulary as `camera.move`. It applies to every key the op writes.
+- `render.set_frame_range`: `frame_start`, `frame_end` (after `frame_start`). It
+  sets the scene range for previews and saved scenes; a render job's own frames
+  still decide what renders (the runner applies them after the recipe steps).
+- `object.animate`: `object`, `preset`, `frame_start`, `frame_end`, plus fields per
+  preset (others are refused):
+  - `turntable`: `degrees` [-3600, 3600] (default 360) about `axis` (`x`, `y`,
+    `z`, default `z`), linear.
+  - `reveal`: `from` `scale` (default; grows from near zero) or `position` (slides
+    in from `offset`, required).
+  - `shatter`: split the mesh into `pieces` [2, 256] (default 12) that fly apart by
+    `distance` [0, 100] m; `seed` fixes the split.
+  - `assemble`: `shatter` reversed.
+
+```json
+[{"tool": "render.set_frame_range", "args": {"frame_start": 1, "frame_end": 96}},
+ {"tool": "object.keyframe",
+  "args": {"object": "Beam", "easing": "ease_out",
+           "keys": [{"frame": 1, "inputs": {"emission_strength": 0}},
+                    {"frame": 24, "inputs": {"emission_strength": 40}}]}},
+ {"tool": "object.keyframe",
+  "args": {"object": "Camera",
+           "keys": [{"frame": 1, "location": [0, -6, 1.5], "lens": 35},
+                    {"frame": 96, "location": [0, -4, 1.2], "lens": 50}]}},
+ {"tool": "object.animate",
+  "args": {"object": "Tier1", "preset": "reveal", "from": "position", "offset": [0, 0, -1],
+           "frame_start": 1, "frame_end": 30}}]
+```
 
 ## Particles
 
-Filled in by a later sub-issue (#285).
+`particles.add` (`host/bpy_runtime/ops/particles.py`) adds a dust/emitter system
+as a Particle System modifier on a mesh:
+
+- `emitter`: an existing mesh object.
+- `name` (default `Dust`): the modifier and settings name; it must be new on the
+  emitter.
+- `count` [1, 100000] (default 1000), `lifetime` [1, 10000] frames (default 50),
+  `size` (0, 100] m (default 0.01), `velocity` [0, 100] (speed along the
+  emitter's normals, default 0), `frame_start`/`frame_end` (emission window,
+  default 1/1).
+- `seed` [0, 2147483647] (default 0): the system's seed. The op draws no random
+  numbers itself, so the same settings and seed give the same particles.
+- `instance`: an object rendered per particle (not the emitter). Without it the
+  particles render as halos.
+
+```json
+{"tool": "particles.add",
+ "args": {"emitter": "Room", "count": 2000, "seed": 7, "lifetime": 240, "size": 0.004,
+          "velocity": 0.05, "frame_start": 1, "frame_end": 96, "instance": "Mote"}}
+```
