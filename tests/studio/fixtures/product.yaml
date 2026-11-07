@@ -1,0 +1,10 @@
+id: fixture-app
+repo: nextjs-app
+framework: nextjs
+run:
+  command: npm run dev
+  url: http://localhost:3000
+seed_command: npm run seed
+demo_login:
+  username_env: FIXTURE_DEMO_EMAIL
+  password_env: FIXTURE_DEMO_PASSWORD

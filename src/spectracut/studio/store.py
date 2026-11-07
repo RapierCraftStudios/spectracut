@@ -25,6 +25,7 @@ from pydantic import AwareDatetime, ValidationError
 
 from spectracut.spec._base import ContentHash, Slug, StrictModel, canonical_json, content_hash
 from spectracut.spec.brief import Brief, CreativeBrief
+from spectracut.spec.product import ProductSource
 from spectracut.studio.autonomy import AutonomyPolicy, BudgetApproval
 from spectracut.studio.contract import FilmContract
 from spectracut.studio.graph import GraphSnapshot, ProductionGraph
@@ -75,6 +76,9 @@ class ProductionMeta(StrictModel):
     """The autonomy policy; ``None`` keeps every gate and budget hold with the owner."""
     budget_log: tuple[BudgetApproval, ...] = ()
     """Who let each node build past a budget cap, and on what evidence."""
+    product: ProductSource | None = None
+    """Where the product lives (``studio new --product``); its demo login is env-var
+    names only, never secrets."""
 
 
 class ProductionStore:
@@ -102,6 +106,7 @@ class ProductionStore:
         now: datetime | None = None,
         caps: BudgetCaps | None = None,
         autonomy: AutonomyPolicy | None = None,
+        product: ProductSource | None = None,
     ) -> Path:
         """Store a new production; refuses to replace one unless ``force``."""
         path = self.path(production_id)
@@ -121,6 +126,7 @@ class ProductionStore:
             created_at=now or datetime.now(UTC),
             caps=caps,
             autonomy=autonomy,
+            product=product,
         )
         write_atomic(path / "brief.json", canonical_json(brief))
         write_atomic(path / "production.json", canonical_json(meta))

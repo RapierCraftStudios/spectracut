@@ -1,0 +1,17 @@
+# AlterLab product source: where the product lives and how to run it.
+# Used by `spectracut studio new --product brands/alterlab/product.yaml`.
+# No secrets here: the demo login names environment variables whose values come
+# from the environment or a secret store at capture time.
+id: alterlab
+repo: ~/Projects/AlterLab/web
+frontend_dir: .
+framework: nextjs
+run:
+  command: npm run dev
+  url: http://localhost:3000
+# Seeds the demo account and data (run from the repo; dev_seed.py lives in the
+# AlterLab monorepo root, one level above web/). Demo data only, never customer data.
+seed_command: python ../scripts/dev_seed.py
+demo_login:
+  username_env: ALTERLAB_DEMO_EMAIL
+  password_env: ALTERLAB_DEMO_PASSWORD
