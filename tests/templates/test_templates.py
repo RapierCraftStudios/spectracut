@@ -45,7 +45,8 @@ from spectracut.templates.base import (
     TemplateError,
     swatch,
 )
-from spectracut.templates.devices import DeviceSlots
+from spectracut.templates.device_kit import SCREEN_EMISSION, kit_for
+from spectracut.templates.devices import SETS, DeviceSlots, set_for
 
 ROOT = Path(__file__).resolve().parents[2]
 KIT = ROOT / "brands" / "alterlab" / "brand-kit.yaml"
@@ -60,14 +61,24 @@ HOST_ARGS: dict[str, set[str]] = {
     "scene.clear": set(),
     "object.add_primitive": {"kind", "name", "location", "scale"},
     "object.import_gltf": {"path", "name", "location", "scale"},
-    "material.apply_preset": {"object", "preset", "color", "name"},
+    "material.apply_preset": {"object", "preset", "color", "name", "roughness", "ior"},
+    "object.add_slab": {"name", "dimensions", "location"},
     "material.apply_screen": {"object", "image", "image_sha256", "strength"},
     "camera.add": {"name", "location", "rotation", "lens"},
     "camera.set_lens": {"mm"},
     "camera.set_transform": {"location", "rotation"},
     "camera.add_aspect": {"aspect", "name"},
     "camera.use": {"name", "long_edge"},
-    "light.add": {"kind", "name", "energy", "location", "rotation"},
+    "light.add": {
+        "kind",
+        "name",
+        "energy",
+        "location",
+        "rotation",
+        "size",
+        "size_y",
+        "camera_visible",
+    },
     "device.add": {
         "kind",
         "name",
@@ -78,6 +89,7 @@ HOST_ARGS: dict[str, set[str]] = {
         "grid",
         "bevel",
         "finish",
+        "model",
     },
     "world.set_gradient": {"bottom", "top", "strength"},
     "text.add": {
@@ -201,6 +213,11 @@ def test_same_template_renders_two_brand_kits(template_id: str, aspect: Any) -> 
     assert tools(scene_a) == tools(scene_b)
     # the final tiers differ only by each kit's Look render rules (clean forbids DoF)
     assert [t for t in tools(a) if t != "camera.set_dof"] == tools(b)
+    if template_id in (LAPTOP.id, PHONE.id):
+        # #362: kit devices sit on the dark or light set the kit's surface swatch picks.
+        for kit, recipe in ((alterlab(), a), (northwind(), b)):
+            assert colours(recipe) == [SETS[set_for(kit)][0]] * 2
+        return
     assert colours(a) != colours(b)
     assert all(
         c in [swatch(alterlab(), r) for r in ("ink", "surface", "accent")] for c in colours(a)
@@ -257,7 +274,8 @@ def test_ui_white_on_the_screen_encodes_near_display_white(pipeline: ColorPipeli
     for template in (LAPTOP, PHONE):
         recipe = template.build(alterlab(), DEVICE_SLOTS, pipeline=pipeline)
         (device,) = args_of(recipe, "device.add")
-        assert device["emission_strength"] == strength
+        # #362: kit devices use the lookdev's fixed screen emission, not the pipeline's.
+        assert device["emission_strength"] == SCREEN_EMISSION == 1.7
         assert 0 < device["emission_strength"] <= 100
 
 
@@ -445,9 +463,15 @@ def test_referenced_assets_pins_every_template_asset() -> None:
             "screen_movie": {"path": "ui/run.mp4", "sha256": SHA},
         },
     )
-    assert referenced_assets(recipe) == {"ui/run.mp4": SHA, "hdri/studio.hdr": SHA_B}
+    mac = kit_for("laptop")
+    assert referenced_assets(recipe) == {
+        "ui/run.mp4": SHA,
+        "hdri/studio.hdr": SHA_B,
+        mac.path: mac.sha256,
+    }
     frames = LAPTOP.build(alterlab(), DEVICE_SLOTS)
     assert referenced_assets(frames) == {
+        mac.path: mac.sha256,
         "ui/screen_0001.png": SHA,
         "ui/screen_0002.png": SHA,
         "hdri/studio.hdr": SHA_B,
@@ -477,30 +501,52 @@ def test_device_screen_takes_frames_or_movie_and_hdri_lighting() -> None:
     assert args_of(recipe, "world.set_hdri") == [
         {"path": "hdri/studio.hdr", "sha256": SHA_B, "strength": 1.0, "rotation": 0.0}
     ]
-    assert {a["name"] for a in args_of(recipe, "light.add")} == {"key", "fill", "rim"}
+    names = {a["name"] for a in args_of(recipe, "light.add")}
+    assert names == {"key", "rim_left", "rim_right", "fill", "sweep"}
     assert args_of(LAPTOP.build(alterlab(), DEVICE_SLOTS), "device.add")[0]["kind"] == "laptop"
 
 
-@pytest.mark.parametrize("lighting", ["studio-soft", "studio-dark", "studio-bright"])
-def test_device_studio_lighting_without_hdri(lighting: str) -> None:
-    """#339: no pinned HDRI -> studio gradient world, preset lights, reflective floor."""
+@pytest.mark.parametrize("set_variant", ["dark", "light"])
+def test_device_apple_studio_rig_and_set_without_hdri(set_variant: str) -> None:
+    """#362: no pinned HDRI -> the set's gradient world, a sweep in the set's material
+    and the apple-studio rig, every light hidden from the camera; a kit glb, no cube."""
     slots = {k: v for k, v in DEVICE_SLOTS.items() if k != "hdri"}
-    recipe = LAPTOP.build(alterlab(), {**slots, "lighting": lighting})
+    recipe = LAPTOP.build(alterlab(), {**slots, "set": set_variant})
     _check_host_args(recipe)
     assert "world.set_hdri" not in tools(recipe)
+    assert "object.add_primitive" in tools(recipe)  # the floor plane only
+    assert all(a["kind"] == "plane" for a in args_of(recipe, "object.add_primitive"))
     (world,) = args_of(recipe, "world.set_gradient")
     assert world["bottom"] < world["top"]
-    lights = args_of(recipe, "light.add")
-    assert [a["name"] for a in lights] == ["key", "fill", "rim"]
-    assert all(a["kind"] == "area" for a in lights)
-    (floor,) = args_of(recipe, "material.apply_preset")
-    assert floor["preset"] == "glossy_plastic"
+    lights = {a["name"]: a for a in args_of(recipe, "light.add")}
+    assert list(lights) == ["key", "rim_left", "rim_right", "fill", "sweep"]
+    assert all(a["kind"] == "area" and a["camera_visible"] is False for a in lights.values())
+    assert (lights["key"]["size"], lights["key"]["size_y"]) == (0.9, 0.6)
+    for rim in ("rim_left", "rim_right"):
+        assert (lights[rim]["size"], lights[rim]["size_y"]) == (0.06, 1.2)
+    screen = kit_for("laptop").frame.centre
+    assert lights["rim_left"]["location"][0] < screen[0] < lights["rim_right"]["location"][0]
+    assert all(lights[r]["location"][1] > screen[1] for r in ("rim_left", "rim_right"))
+    assert lights["fill"]["location"][1] < screen[1]  # in front
+    assert lights["fill"]["energy"] < lights["key"]["energy"]  # weak fill
+    colour, overrides = SETS[set_variant]
+    sets = args_of(recipe, "material.apply_preset")
+    assert [m["object"] for m in sets] == ["floor", "backdrop"]
+    assert all(m["color"] == colour and m["roughness"] == overrides["roughness"] for m in sets)
+    if set_variant == "dark":
+        assert colour == [0.004] * 3 and overrides["roughness"] == 0.28
+    else:
+        assert sum(colour) / 3 == pytest.approx(0.72, abs=0.01)
     (device,) = args_of(recipe, "device.add")
-    assert device["finish"] == "aluminium" and device["bevel"] > 0
-    # No OEM marks: nothing but the screen UI is an image, and no text is added.
+    mac = kit_for("laptop")
+    assert device["model"]["sha256"] == mac.sha256 and device["model"]["path"] == mac.path
+    assert device["model"]["screen"] == {"node": "Top", "material": "DisplayGlass"}
+    assert device["finish"] == "space-black" and "bevel" not in device
+    # No OEM marks beyond the model: nothing but the screen UI is an image, no text.
     assert "text.add" not in tools(recipe)
-    assert set(referenced_assets(recipe)) == {"ui/screen_0001.png", "ui/screen_0002.png"}
-    assert DeviceSlots.model_validate(slots).lighting == "studio-soft"
+    assert set(referenced_assets(recipe)) == {"ui/screen_0001.png", "ui/screen_0002.png", mac.path}
+    assert DeviceSlots.model_validate(slots).set is None
+    assert set_for(alterlab()) in ("dark", "light")
 
 
 @pytest.mark.parametrize("animation", sorted(ANIMATE_EXTRA))

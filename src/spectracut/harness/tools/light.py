@@ -93,8 +93,9 @@ class LightAdd(ToolArgs):
     """Either one light or a preset rig, never both.
 
     One light: kind, energy, location, rotation, size and size_y (area only),
-    color, spot_angle (spot only), camera_visible; no target, distance or power. Rig: rig with optional
-    target, distance and power, and none of the single-light arguments.
+    color, spot_angle (spot only), camera_visible; no target, distance or power.
+    Rig: rig with optional target, distance and power, and none of the single-light
+    arguments.
     """
 
     kind: Literal["point", "sun", "area", "spot"] | None = None

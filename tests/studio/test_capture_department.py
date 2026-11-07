@@ -158,13 +158,12 @@ def test_ui_capture_is_a_registered_department() -> None:
     assert UICaptureDepartment.produces == frozenset({UI_CAPTURE})
 
 
-def test_devices_are_laptop_16_10_and_phone_19_5_9() -> None:
+def test_devices_match_the_kit_macbook_and_iphone_screens() -> None:
+    # #362: 1512x982 at 2x (MacBook Pro aspect) and 393x852 at 3x (iPhone).
     laptop, phone = DEVICES["laptop"], DEVICES["phone"]
-    scale = laptop.device_scale_factor
-    assert (laptop.width * scale, laptop.height * scale) == (2880, 1800)
-    assert laptop.width / laptop.height == 16 / 10
-    scale = phone.device_scale_factor
-    assert (phone.width * scale, phone.height * scale) == (1170, 2532)
+    assert (laptop.width, laptop.height, laptop.device_scale_factor) == (1512, 982, 2)
+    assert (laptop.width * 2, laptop.height * 2) == (3024, 1964)
+    assert (phone.width, phone.height, phone.device_scale_factor) == (393, 852, 3)
     assert phone.height / phone.width == pytest.approx(19.5 / 9, abs=0.01)
 
 
@@ -246,7 +245,8 @@ def test_runner_captures_every_mapped_screen_per_device_with_provenance(tmp_path
     # Each capture ran twice (determinism) and logs in through env-var names only.
     assert len(cli.specs) == 4
     spec = cli.specs[0]
-    assert spec["viewport"] == {"width": 1440, "height": 900} and spec["deviceScaleFactor"] == 2
+    assert spec["viewport"] == {"width": 1512, "height": 982} and spec["deviceScaleFactor"] == 2
+    assert spec["colorScheme"] == "dark"
     typed = [a for a in spec["setup"] if a["do"] == "type"]
     assert [a["textEnv"] for a in typed] == [EMAIL_ENV, PASSWORD_ENV]
     assert spec["textSelectors"] == ["[data-user-name]"]
@@ -414,8 +414,8 @@ def test_e2e_fixture_app_captures_are_deterministic_and_demo_only(
         assert SECRET not in spec and PASSWORD_ENV in spec
     laptop = next(c for c in out.captures if c.device == "laptop")
     assert laptop.still.path.endswith(".png")
-    assert Path(laptop.still.path).read_bytes()[16:24] == (2880).to_bytes(4, "big") + (
-        1800
+    assert Path(laptop.still.path).read_bytes()[16:24] == (3024).to_bytes(4, "big") + (
+        1964
     ).to_bytes(4, "big")
 
 

@@ -737,7 +737,7 @@ def test_set_passes_enables_exactly_the_issue_allowlist() -> None:
 # --- #362: device.add with a pinned kit model ----------------------------------------------
 
 KIT_IMPORT = r"""
-_actions = [SimpleNamespace(name="Anim")]
+_actions = [SimpleNamespace(name="Scene")]  # a pre-existing action stays
 _bpy.data.actions.__iter__.side_effect = lambda: iter(list(_actions))
 _bpy.data.actions.remove.side_effect = lambda a: (
     _actions.remove(a), _events.append(["action.remove", a.name])
@@ -753,6 +753,7 @@ def _socket():
 
 def _import(filepath):
     _events.append(["import", filepath])
+    _actions.append(SimpleNamespace(name="Anim"))  # the glb's animation
     root = _new_object("Macbook")
     root.type = "EMPTY"
     root.matrix_world = IDENTITY
@@ -810,6 +811,15 @@ def _kit_dump():
             json.dump(state, fh, default=str)
 
 
+def _kit_material(name):
+    m = _material(name)
+    m.node_tree.nodes.new.side_effect = lambda t: (
+        _events.append(["node", name, t]) or MagicMock(name=t)
+    )
+    return m
+
+
+_bpy.data.materials.new.side_effect = _kit_material
 _bpy.ops.import_scene.gltf.side_effect = _import
 atexit.register(_kit_dump)
 """
@@ -856,9 +866,7 @@ def _kit_assets(tmp_path: Path) -> Path:
     return assets
 
 
-def test_device_add_model_normalises_and_maps_the_screen(
-    kit_blender: Path, tmp_path: Path
-) -> None:
+def test_device_add_model_normalises_and_maps_the_screen(kit_blender: Path, tmp_path: Path) -> None:
     assets = _kit_assets(tmp_path)
     run = run_steps(kit_blender, tmp_path, [("device.add", _kit_step())], assets_dir=assets)
     assert run.proc.returncode == 0, run.proc.stderr
@@ -883,9 +891,10 @@ def test_device_add_model_normalises_and_maps_the_screen(
     assert ["clear", "Macbook"] in events and ["clear", "Top"] in events
     assert ["action.remove", "Anim"] in events
     calls = run.calls
+    nodes = {e[2] for e in events if e[:2] == ["node", "screen.device"]}
     for node in ("ShaderNodeEmission", "ShaderNodeBsdfGlossy", "ShaderNodeFresnel"):
-        assert any(f"nodes.new('{node}')" in c for c in calls), node
-    assert any("nodes.new('ShaderNodeMapping')" in c for c in calls)
+        assert node in nodes, node
+    assert {"ShaderNodeMapping", "ShaderNodeUVMap", "ShaderNodeTexImage"} <= nodes
     # No procedural rig parts.
     assert not any("Dev.body" in c or "meshes.new" in c for c in calls)
 

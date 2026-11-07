@@ -279,6 +279,7 @@ def test_e2e_device_hero_shot_has_dof_camera_motion_and_legible_ui(tmp_path: Pat
     base, _slots, extra = sd.device_recipe(
         _kit(), board, capture, variant="front", aspect="16:9", look=look
     )
+    extra.update(sd.model_assets(base))  # the kit glb, fetched and verified (#362)
     frames_n = sd.shot_frames(board)
     out = _render_frames(sd.tier_recipe(base, Tier.FINAL), assets, frames_n, extra)
     frames = sorted(out.glob("frame_*.png"))
@@ -296,3 +297,51 @@ def test_e2e_device_hero_shot_has_dof_camera_motion_and_legible_ui(tmp_path: Pat
     # Legible at delivery size: OCR reads words of the UI off the in-focus frame.
     words = [t for t in reader.read(frames[-1].read_bytes()) if len(t.text.strip()) >= 3]
     assert len(words) >= 3, words
+
+
+CLIP_FRACTION = 0.002
+"""The light set may clip (luma 255) on at most this fraction of pixels (#362)."""
+DARK_BACKGROUND_MAX = 0.12
+"""The dark set's background box stays below this luma: no light cards or hotspots."""
+
+
+@pytest.mark.e2e
+@skip_unless_e2e
+@pytest.mark.parametrize("set_variant", ["dark", "light"])
+def test_e2e_device_hero_kit_macbook_in_both_sets(set_variant: str, tmp_path: Path) -> None:
+    """#362: the kit MacBook renders whole and in frame, its screen sharp against a
+    background that falls off with DOF; the dark set shows no light cards or floor
+    hotspots and the light set does not clip."""
+    from spectracut.studio.departments import shots as sd
+    from spectracut.templates import device_kit
+
+    assets, device = _assets(tmp_path)
+    slots = {k: v for k, v in device.items() if k != "hdri"}
+    recipe = LAPTOP.final(_kit(), {**slots, "set": set_variant}, variant="three-quarter")
+    mac = device_kit.kit_for("laptop")
+    cam = sd._camera_state(recipe)
+    assert cam is not None
+    loc = (cam[1][0], cam[1][1], cam[1][2])
+    corners = [
+        (x, y, z)
+        for x in (mac.bounds[0][0], mac.bounds[1][0])
+        for y in (mac.bounds[0][1], mac.bounds[1][1])
+        for z in (mac.bounds[0][2], mac.bounds[1][2])
+    ]
+    assert device_kit.in_frame(loc, mac.frame.centre, device_kit.KIT_LENS, 16 / 9, corners)
+    out = _render_frames(recipe, assets, 1, sd.model_assets(recipe))
+    image = decode_png(sorted(out.glob("frame_*.png"))[0].read_bytes())
+    luma = _luma(image)
+    w, h = image.width, image.height
+    screen = (w * 2 // 5, h * 2 // 5, w * 3 // 5, h * 3 // 5)
+    background = (0, 0, w // 6, h // 6)
+    # DOF: the screen UI carries far more fine detail than the defocused backdrop.
+    assert high_frequency_energy(luma, screen) > 4 * high_frequency_energy(luma, background)
+    if set_variant == "light":
+        clipped = sum(v >= 1.0 for row in luma for v in row)
+        assert clipped / (w * h) <= CLIP_FRACTION, clipped
+    else:
+        x0, y0, x1, y1 = background
+        peak = max(luma[y][x] for y in range(y0, y1) for x in range(x0, x1))
+        floor = max(luma[y][x] for y in range(h * 9 // 10, h) for x in range(w))
+        assert peak < DARK_BACKGROUND_MAX and floor < 2 * DARK_BACKGROUND_MAX, (peak, floor)

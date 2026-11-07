@@ -75,6 +75,9 @@ export function parseSpec(raw: unknown): LaunchOptions {
     }
   }
   if (spec.url !== undefined && typeof spec.url !== "string") throw new TypeError("capture spec url must be a string");
+  if (spec.colorScheme !== undefined && spec.colorScheme !== "light" && spec.colorScheme !== "dark") {
+    throw new TypeError(`capture spec colorScheme must be "light" or "dark", got ${String(spec.colorScheme)}`);
+  }
   return spec as unknown as LaunchOptions;
 }
 

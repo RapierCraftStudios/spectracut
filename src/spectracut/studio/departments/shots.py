@@ -73,8 +73,6 @@ from spectracut.studio.graph import RunContext, Runner, RunResult
 from spectracut.studio.ledger import Usage
 from spectracut.studio.node import NodeSpec, Tier
 from spectracut.templates import TEMPLATES
-from spectracut.templates.device_kit import KIT_LENS, by_sha256, ensure_device_asset
-from spectracut.templates.devices import kit_entry, set_for
 from spectracut.templates.base import (
     RESOLUTIONS,
     Call,
@@ -82,9 +80,9 @@ from spectracut.templates.base import (
     Template,
     TemplateAspect,
     require_clean_copy,
-    swatch,
 )
-from spectracut.templates.devices import DEVICE
+from spectracut.templates.device_kit import KIT_LENS, by_sha256, ensure_device_asset
+from spectracut.templates.devices import kit_entry, set_for
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -682,7 +680,7 @@ def device_recipe(
     and the Look's rules.
 
     Pure: returns ``(recipe, slots, staging map of the captures)``; the department
-    stages the model glb (:meth:`TemplateShotsDepartment._device_shot`).
+    stages the model glb (:meth:`ShotRunner._device_shot`).
     """
     assert board.device is not None
     screen, extra = capture_frames(capture, shot_frames(board))

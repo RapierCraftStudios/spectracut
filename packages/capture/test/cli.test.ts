@@ -22,8 +22,28 @@ describe("capture cli spec", () => {
     [{ ...SPEC, script: [{ do: "type", text: "a", textEnv: "A", bpm: 120 }] }],
     [{ ...SPEC, script: [{ do: "type", bpm: 120 }] }],
     [{ ...SPEC, textSelectors: [1] }],
+    [{ ...SPEC, colorScheme: "blue" }],
+    [{ ...SPEC, colorScheme: 1 }],
   ])("rejects an invalid spec %#", (bad) => {
     expect(() => parseSpec(bad)).toThrow();
+  });
+
+  it("passes a dark colorScheme through to the launch and leaves it unset by default", async () => {
+    expect(parseSpec({ ...SPEC, colorScheme: "dark" }).colorScheme).toBe("dark");
+    expect(parseSpec(SPEC).colorScheme).toBeUndefined();
+    const result = {
+      outDir: "/tmp/out",
+      manifest: { fps: 30, frames: [] },
+      events: [],
+      layers: [],
+      clip: null,
+    } as unknown as CaptureResult;
+    const seen: LaunchOptions[] = [];
+    await runSpec({ ...SPEC, colorScheme: "dark" }, async (options) => {
+      seen.push(options);
+      return result;
+    });
+    expect(seen[0]?.colorScheme).toBe("dark");
   });
 
   it("summarises the launch result", async () => {
