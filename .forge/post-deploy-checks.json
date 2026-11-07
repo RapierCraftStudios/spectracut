@@ -103,5 +103,10 @@
     "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && SPECTRACUT_E2E=1 uv run pytest -q -m e2e tests/providers/test_providers_e2e.py -k animatic",
     "pass": "/\\b1 passed\\b/",
     "timeout": 900
+  },
+  "sfx-loaders-legion-e2e": {
+    "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && SPECTRACUT_E2E=1 uv run pytest -q -m e2e tests/host/test_sfx_loaders_e2e.py",
+    "pass": "/\\b2 passed\\b/",
+    "timeout": 3600
   }
 }
