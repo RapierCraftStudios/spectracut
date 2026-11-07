@@ -60,6 +60,7 @@ from spectracut.studio.departments import finishing as finishing_depts
 from spectracut.studio.departments import references as reference_depts
 from spectracut.studio.departments import shots as shot_depts
 from spectracut.studio.departments import sound as sound_depts
+from spectracut.studio.departments.capture import UI_CAPTURE, CaptureRunner
 from spectracut.studio.departments.style_frame_farm import (
     FarmRecipeRenderer,
     FarmStyleFrameRenderer,
@@ -75,7 +76,13 @@ from spectracut.studio.graph import (
     RunResult,
 )
 from spectracut.studio.node import NodeSpec, Tier
-from spectracut.studio.producer import BudgetCaps, Producer, edge_problems, scheduled
+from spectracut.studio.producer import (
+    BudgetCaps,
+    Producer,
+    edge_problems,
+    product_capture_nodes,
+    scheduled,
+)
 from spectracut.studio.profiles import available_profiles, load_profile
 from spectracut.studio.runner import CapacityLimits, DepartmentRunner
 from spectracut.studio.scene_builder import SceneBrief, SceneBuild, SceneBuilder
@@ -344,6 +351,7 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
     farm: DeviceShotDeps | None = None
     finishing: finishing_depts.FinishingRunner | None = None
     sound: sound_depts.SoundRunner | None = None
+    capture: CaptureRunner | None = None
     lock = threading.Lock()
     farm_lock = threading.Lock()
 
@@ -491,8 +499,23 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
             runner = sound
         return runner(ctx)
 
+    def ui_capture(ctx: RunContext) -> RunResult:
+        nonlocal capture
+        with lock:
+            if capture is None:
+                capture = CaptureRunner(
+                    text,
+                    DEPARTMENTS,
+                    workdir=production_dir / "capture",
+                    source=production.store.meta(production.id).product,
+                )
+            runner = capture
+        return runner(ctx)
+
     def run(ctx: RunContext) -> RunResult:
         nonlocal shots
+        if ctx.spec.kind == UI_CAPTURE:
+            return ui_capture(ctx)
         if ctx.spec.kind == art_depts.BRAND_KIT:
             return art_depts.build_brand_kit(ctx)
         if ctx.spec.kind == reference_depts.REFERENCES:
@@ -701,6 +724,8 @@ def new(
             typer.echo(
                 "no script node: the product source is recorded but no screen map is planned"
             )
+        elif UI_CAPTURE in graph.order():
+            typer.echo(f"{UI_CAPTURE} node planned: captures every mapped screen per device")
     if not device and brand_kit is None and art_depts.ART_DIRECTION in quality.stages:
         typer.echo("no --brand-kit: art direction has no brand kit to draw from")
     est = estimate(graph, DEPARTMENTS)
@@ -775,6 +800,11 @@ def create_production(
     pid = production_id or brief.id
     autonomy = policy()
     graph = ProductionGraph(pid, profile=quality, autonomy=autonomy)
+    source: ProductSource | None = None
+    routes: list[FrontendRoute] = []
+    if product is not None:
+        source = load_product_source(product)
+        routes = product_routes(source)
     if shot_params is not None:
         specs = breakdown(brief, quality)
         specs = [_with_params(s, shot_params) if s.kind == ds.SHOT_STAGE else s for s in specs]
@@ -785,7 +815,14 @@ def create_production(
             else None
         )
         plan = Producer(DEPARTMENTS).breakdown(
-            brief, quality, duration_s=duration, brand_kit=kit, references=_references()
+            brief,
+            quality,
+            duration_s=duration,
+            brand_kit=kit,
+            references=_references(),
+            product=source
+            if source is not None and _has_script(breakdown(brief, quality))
+            else None,
         )
         specs = list(plan.nodes)
         if template_params:
@@ -795,12 +832,8 @@ def create_production(
                 else s
                 for s in specs
             ]
-    source: ProductSource | None = None
-    if product is not None:
-        source = load_product_source(product)
-        routes = product_routes(source)
-        if quality.name != ds.PROFILE:
-            specs.extend(_product_nodes(brief, specs, source, routes))
+    if source is not None and quality.name != ds.PROFILE:
+        specs = _with_product_nodes(brief, specs, source, routes)
     graph.add_nodes(specs)
     limited = caps if caps is not None and caps.limits() else None
     path = store.create(
@@ -809,6 +842,25 @@ def create_production(
     if isinstance(brief, CreativeBrief) and from_idea:
         write_atomic(path / "assumptions.md", intake.assumptions_markdown(brief).encode())
     return path, graph
+
+
+def _has_script(specs: Sequence[NodeSpec]) -> bool:
+    return any(s.kind == discovery_depts.SCRIPT for s in specs)
+
+
+def _with_product_nodes(
+    brief: Brief | CreativeBrief,
+    specs: Sequence[NodeSpec],
+    source: ProductSource,
+    routes: Sequence[FrontendRoute],
+) -> list[NodeSpec]:
+    """``specs`` plus the ``product`` and ``ui_capture`` nodes, shots rewired to the captures."""
+    product = _product_nodes(brief, specs, source, routes)
+    if not product:
+        return list(specs)
+    added = product_capture_nodes(specs, source, product[0].id)
+    rewired = {s.id: s for s in added[1:]}
+    return [rewired.get(s.id, s) for s in specs] + [*product, added[0]]
 
 
 def _product_nodes(

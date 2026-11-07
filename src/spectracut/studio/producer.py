@@ -43,12 +43,14 @@ from spectracut.providers.base import ProviderExhausted
 from spectracut.spec._base import Slug, StrictModel
 from spectracut.spec.brand import BrandKit
 from spectracut.spec.brief import Brief, CreativeBrief
+from spectracut.spec.product import ProductSource
 from spectracut.spec.references import ReferenceSet
 from spectracut.spec.spec import Spec
 from spectracut.studio.autonomy import AutonomyPolicy, BudgetApproval
 from spectracut.studio.conformance import Conformance
 from spectracut.studio.department import CostEstimate, Department
 from spectracut.studio.departments import department_for
+from spectracut.studio.departments.capture import UI_CAPTURE, capture_node
 from spectracut.studio.estimate import (
     BRIEF_PARAM,
     PLAN_PARAM,
@@ -88,6 +90,8 @@ class PlannedAsset(StrictModel):
     kind: Slug
     source: str
     """Where the asset comes from, for provenance (e.g. ``brief:product``)."""
+    node: Slug | None = Field(default=None, exclude_if=lambda v: v is None)
+    """The graph node that builds the asset, when one does (omitted from dumps when unset)."""
 
 
 class ProductionPlan(StrictModel):
@@ -193,6 +197,7 @@ class Producer:
         script: Spec | None = None,
         brand_kit: BrandKit | None = None,
         references: ReferenceSet | None = None,
+        product: ProductSource | None = None,
     ) -> ProductionPlan:
         """Shot list, asset list and one task per profile stage for ``brief``.
 
@@ -203,7 +208,9 @@ class Producer:
         it (art direction, style frames, storyboard) read it. With ``references`` a
         ``references`` node carrying the reference set follows it, and the departments
         that declare it (concept, art direction, storyboard, edit) read it. With
-        neither the nodes are exactly the profile's.
+        neither the nodes are exactly the profile's. With ``product`` the
+        ``product-ui`` asset is built by the ``ui_capture`` node from that source
+        (the caller adds the node with :func:`product_capture_nodes`).
         """
         if script is not None:
             length = script.length_s
@@ -230,7 +237,7 @@ class Producer:
         plan = ProductionPlan(
             duration_s=length,
             shots=shots,
-            assets=_assets(brief, profile),
+            assets=_assets(brief, profile, product),
             vo_characters=vo,
         )
         # Imported here: art -> device_shot -> store imports this module.
@@ -469,11 +476,20 @@ class Producer:
         )
 
 
-def _assets(brief: Brief | CreativeBrief, profile: QualityProfile) -> tuple[PlannedAsset, ...]:
+def _assets(
+    brief: Brief | CreativeBrief, profile: QualityProfile, source: ProductSource | None = None
+) -> tuple[PlannedAsset, ...]:
     """What the production needs before shots: product UI, brand kit, VO and music."""
     product = "brief:product" if isinstance(brief, Brief) else "brief:message"
+    ui = (
+        PlannedAsset(id="product-ui", kind=UI_CAPTURE, source=product)
+        if source is None
+        else PlannedAsset(
+            id="product-ui", kind=UI_CAPTURE, source=f"product:{source.id}", node=UI_CAPTURE
+        )
+    )
     assets = [
-        PlannedAsset(id="product-ui", kind="ui_capture", source=product),
+        ui,
         PlannedAsset(id="brand-kit", kind="brand_kit", source="brand-kit"),
     ]
     if profile.includes("voiceover"):
@@ -481,6 +497,28 @@ def _assets(brief: Brief | CreativeBrief, profile: QualityProfile) -> tuple[Plan
     if profile.includes("sound_design") or profile.includes("mix"):
         assets.append(PlannedAsset(id="music", kind="audio", source="licensed-library"))
     return tuple(assets)
+
+
+SHOTS_KIND = "shots"
+"""Kind of the node that renders the final shots (reads the captures)."""
+
+
+def product_capture_nodes(
+    specs: Iterable[NodeSpec], source: ProductSource, product_id: str
+) -> list[NodeSpec]:
+    """The ``ui_capture`` node for ``source`` and the ``shots`` nodes rewired to read it.
+
+    The capture node reads the screen map of node ``product_id``; each ``shots`` node
+    of ``specs`` comes back with ``ui_capture`` added to its inputs, for the caller
+    to apply in place of the original.
+    """
+    node = capture_node(source, product_id)
+    shots = [
+        s.model_copy(update={"inputs": (*s.inputs, node.id)})
+        for s in specs
+        if s.kind == SHOTS_KIND and node.id not in s.inputs
+    ]
+    return [node, *shots]
 
 
 # ---- scheduling ----------------------------------------------------------------

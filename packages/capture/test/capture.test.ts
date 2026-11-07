@@ -396,3 +396,64 @@ describe("clean frame", () => {
     await expect(run(stubborn, { clean: rules })).rejects.toBeInstanceOf(CleanError);
   });
 });
+
+describe("setup actions and text record", () => {
+  it("runs setup before recording without frames or events", async () => {
+    const page = new FakePage();
+    const setup: Action[] = [
+      { do: "goto", url: "https://app.example.test/login" },
+      { do: "click", at: { selector: "#card" } },
+      { do: "type", text: "pw", bpm: 240, secret: true },
+      { do: "wait", ms: 80 },
+    ];
+    const plain = await run(new FakePage());
+    const { result } = await run(page, { setup });
+    expect(page.typed.startsWith("pw")).toBe(true);
+    expect(result.manifest.frames[0]?.index).toBe(0);
+    expect(result.manifest.frames.length).toBe(plain.result.manifest.frames.length);
+    expect(result.events.map((e) => e.type)).toEqual(plain.result.events.map((e) => e.type));
+    expect(result.events.some((e) => e.url?.includes("/login"))).toBe(false);
+  });
+
+  it("records visible text after each navigation and at the end in text.json", async () => {
+    const page = new FakePage();
+    page.text = [{ text: "demo@fixture.test", heightCss: 40 }];
+    const { dir, result } = await run(page);
+    const records = JSON.parse(await readFile(join(dir, "text.json"), "utf8"));
+    expect(records).toEqual(result.texts);
+    expect(records.map((r: { url: string }) => r.url)).toEqual([
+      "https://app.example.test/",
+      "https://app.example.test/next?token=redacted",
+      "https://app.example.test/next?token=redacted",
+    ]);
+    expect(records[0]).toMatchObject({ frame: 0, texts: ["demo@fixture.test"], selectors: {} });
+  });
+
+  it("passes text selectors to the page reader", async () => {
+    const page = new FakePage();
+    const seen: (readonly string[])[] = [];
+    const reader: CapturePage = Object.assign(page, {
+      async readText(selectors: readonly string[]) {
+        seen.push(selectors);
+        return { texts: ["Hello"], selectors: { "[data-user-name]": ["Demo Person"] } };
+      },
+    });
+    const dir = await outDir();
+    const r = await capture(reader, {
+      url: "https://app.example.test/",
+      script: [{ do: "wait", frames: 1 }],
+      fps: 25,
+      outDir: dir,
+      textSelectors: ["[data-user-name]"],
+    });
+    expect(seen[0]).toEqual(["[data-user-name]"]);
+    expect(r.texts.at(-1)?.selectors).toEqual({ "[data-user-name]": ["Demo Person"] });
+  });
+
+  it("refuses to type an unresolved textEnv", async () => {
+    const dir = await outDir();
+    await expect(
+      capture(new FakePage(), { script: [{ do: "type", textEnv: "DEMO_PASSWORD", bpm: 120 }], fps: 25, outDir: dir }),
+    ).rejects.toThrow(/DEMO_PASSWORD was not resolved/);
+  });
+});

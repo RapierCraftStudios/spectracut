@@ -15,3 +15,11 @@ seed_command: python ../scripts/dev_seed.py
 demo_login:
   username_env: ALTERLAB_DEMO_EMAIL
   password_env: ALTERLAB_DEMO_PASSWORD
+  # Sign-in page of the web app (src/app/signin); default field selectors.
+  route: /signin
+# Demo-data allow-list: a capture fails if it shows an email or a name (under the
+# name selectors) not listed here. The seeded demo account (scripts/dev_seed.py).
+demo_data:
+  emails: [dev@alterlab.io]
+  names: [Dev User]
+  name_selectors: []

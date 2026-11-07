@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { launchAndCapture, type CaptureResult, type LaunchOptions } from "./capture.js";
+import type { Action } from "./dsl.js";
 
 export interface CaptureSummary {
   outDir: string;
@@ -14,6 +15,45 @@ export interface CaptureSummary {
   frames: number;
   events: number;
   layers: number;
+  /** Number of visible-text records (text.json). */
+  texts: number;
+}
+
+function checkActions(value: unknown, field: string): void {
+  if (!Array.isArray(value)) throw new TypeError(`capture spec needs a ${field} array`);
+  for (const [i, action] of value.entries()) {
+    if (typeof action !== "object" || action === null || Array.isArray(action)) {
+      throw new TypeError(`capture spec ${field}[${i}] must be an object`);
+    }
+    if (typeof (action as Record<string, unknown>).do !== "string") {
+      throw new TypeError(`capture spec ${field}[${i}] needs a do field`);
+    }
+    const a = action as Record<string, unknown>;
+    if (a.do === "type" && (a.text === undefined) === (a.textEnv === undefined)) {
+      throw new TypeError(`capture spec ${field}[${i}] type needs exactly one of text and textEnv`);
+    }
+  }
+}
+
+/**
+ * Replace every `type.textEnv` with the variable's value. Returns new arrays and
+ * leaves the input untouched, so resolved values never go back to disk. A missing
+ * variable is an error naming the variable, never a value.
+ */
+export function resolveTextEnv(
+  actions: readonly Action[],
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Action[] {
+  return actions.map((action) => {
+    if (action.do !== "type" || action.textEnv === undefined) return action;
+    const value = env[action.textEnv];
+    if (value === undefined || value === "") {
+      throw new Error(`capture spec types environment variable ${action.textEnv}, which is not set`);
+    }
+    const resolved = { ...action, text: value };
+    delete resolved.textEnv;
+    return resolved;
+  });
 }
 
 /** Validate a decoded job spec and return it as launch options. */
@@ -27,6 +67,13 @@ export function parseSpec(raw: unknown): LaunchOptions {
     throw new RangeError(`capture spec fps must be a positive number, got ${String(spec.fps)}`);
   }
   if (!Array.isArray(spec.script)) throw new TypeError("capture spec needs a script array");
+  checkActions(spec.script, "script");
+  if (spec.setup !== undefined) checkActions(spec.setup, "setup");
+  if (spec.textSelectors !== undefined) {
+    if (!Array.isArray(spec.textSelectors) || !spec.textSelectors.every((s) => typeof s === "string")) {
+      throw new TypeError("capture spec textSelectors must be an array of strings");
+    }
+  }
   if (spec.url !== undefined && typeof spec.url !== "string") throw new TypeError("capture spec url must be a string");
   return spec as unknown as LaunchOptions;
 }
@@ -35,8 +82,14 @@ export function parseSpec(raw: unknown): LaunchOptions {
 export async function runSpec(
   raw: unknown,
   launch: (options: LaunchOptions) => Promise<CaptureResult> = launchAndCapture,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): Promise<CaptureSummary> {
-  const options = parseSpec(raw);
+  const parsed = parseSpec(raw);
+  const options: LaunchOptions = {
+    ...parsed,
+    script: resolveTextEnv(parsed.script, env),
+    ...(parsed.setup ? { setup: resolveTextEnv(parsed.setup, env) } : {}),
+  };
   const result = await launch(options);
   return {
     outDir: result.outDir,
@@ -44,6 +97,7 @@ export async function runSpec(
     frames: result.manifest.frames.length,
     events: result.events.length,
     layers: result.layers.length,
+    texts: result.texts?.length ?? 0,
   };
 }
 

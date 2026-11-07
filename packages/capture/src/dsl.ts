@@ -34,7 +34,13 @@ export type Action =
   | { do: "drag"; from: Target; to: Target; durationMs: number; easing?: EasingName }
   | {
       do: "type";
-      text: string;
+      /** Literal text to type (exactly one of `text` and `textEnv`). */
+      text?: string;
+      /**
+       * Name of an environment variable holding the text. The CLI resolves it into
+       * `text` before launch, so the value never lands in a spec file.
+       */
+      textEnv?: string;
       /** Tempo the keys lock to. */
       bpm: number;
       /** Keys per beat (4 = sixteenth notes). */
@@ -177,6 +183,13 @@ async function runAction(ctx: ScriptContext, action: Action): Promise<void> {
       return;
     }
     case "type": {
+      if (action.text === undefined) {
+        throw new Error(
+          action.textEnv !== undefined
+            ? `type action textEnv ${action.textEnv} was not resolved before the capture`
+            : "type action needs text or textEnv",
+        );
+      }
       const keys = Array.from(action.text);
       const times = beatTimes(ctx.clock.timeMs, keys.length, action.bpm, action.subdivision ?? 4);
       for (const [i, ch] of keys.entries()) {

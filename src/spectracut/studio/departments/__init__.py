@@ -5,7 +5,8 @@ Discovery (intake, product understanding, brief) lives in ``.discovery``,
 Development (concepts, script) in ``.writer``, Art in ``.art``, Shots (template
 shots and shots rendered on the farm) in ``.shots``, Sound (voiceover, sound
 design, music, mix) in ``.sound`` and Finishing (edit, graded master, delivery) in
-``.finishing``; import from those modules. The ``brand_kit`` node (department
+``.finishing`` and UI capture (the product's real screens, kind ``ui_capture``) in
+``.capture``; import from those modules. The ``brand_kit`` node (department
 ``brand-kit``, in ``.art``) carries the production's brand kit, built in code, so
 the art departments read it as a declared input. The ``references`` node (department
 ``references``, in ``.references``) carries the production's reference films (craft
@@ -31,6 +32,7 @@ STAGE_DEPARTMENTS: dict[str, str] = {
     "script": "script-writer",
     "brand_kit": "brand-kit",
     "references": "references",
+    "ui_capture": "ui-capture",
     "art_direction": "art-director",
     "style_frames": "style-frame-artist",
     "storyboard": "storyboard",
@@ -56,6 +58,7 @@ def department_for(stage: str) -> str:
 def all_departments() -> dict[str, type[Department]]:
     """Every implemented department by name (imported lazily to avoid import cycles)."""
     from spectracut.studio.departments.art import ART_DEPARTMENTS
+    from spectracut.studio.departments.capture import CAPTURE_DEPARTMENTS
     from spectracut.studio.departments.discovery import DISCOVERY_DEPARTMENTS
     from spectracut.studio.departments.finishing import FINISHING_DEPARTMENTS
     from spectracut.studio.departments.references import REFERENCE_DEPARTMENTS
@@ -70,6 +73,7 @@ def all_departments() -> dict[str, type[Department]]:
             *REFERENCE_DEPARTMENTS,
             *DEVELOPMENT_DEPARTMENTS,
             *ART_DEPARTMENTS,
+            *CAPTURE_DEPARTMENTS,
             *SHOT_DEPARTMENTS,
             *SOUND_DEPARTMENTS,
             *FINISHING_DEPARTMENTS,
