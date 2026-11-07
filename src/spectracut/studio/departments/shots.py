@@ -58,6 +58,7 @@ from spectracut.storyboard.models import ArtDirection, Board, MoodEntry, Storybo
 from spectracut.studio import device_shot as ds
 from spectracut.studio.department import SKILLS_ROOT, CostEstimate, Department
 from spectracut.studio.departments.art import ANIMATIC, STORYBOARD
+from spectracut.studio.departments.capture import UI_CAPTURE, UICaptures
 from spectracut.studio.estimate import STAGE_RATES
 from spectracut.studio.gates import Critic, CriticVerdict, Finding, Severity
 from spectracut.studio.graph import RunContext, Runner, RunResult
@@ -323,7 +324,11 @@ class ShotsDepartment(Department):
 
     name = "shots"
     produces = frozenset({SHOTS})
-    inputs: ClassVar[dict[str, type[BaseModel]]] = {TEMPLATE_SHOTS: RenderedShots}
+    inputs: ClassVar[dict[str, type[BaseModel]]] = {
+        TEMPLATE_SHOTS: RenderedShots,
+        UI_CAPTURE: UICaptures,
+    }
+    """Template shots to re-render, and the product's UI captures (``--product`` only)."""
     output = RenderedShots
     skill_pack = SKILLS_ROOT / "motion-designer"
     uses_gpu = True

@@ -729,6 +729,11 @@ def create_production(
     pid = production_id or brief.id
     autonomy = policy()
     graph = ProductionGraph(pid, profile=quality, autonomy=autonomy)
+    source: ProductSource | None = None
+    routes: list[FrontendRoute] = []
+    if product is not None:
+        source = load_product_source(product)
+        routes = product_routes(source)
     if shot_params is not None:
         specs = breakdown(brief, quality)
         specs = [_with_params(s, shot_params) if s.kind == ds.SHOT_STAGE else s for s in specs]
@@ -738,7 +743,13 @@ def create_production(
             if template_params
             else None
         )
-        plan = Producer(DEPARTMENTS).breakdown(brief, quality, duration_s=duration, brand_kit=kit)
+        plan = Producer(DEPARTMENTS).breakdown(
+            brief,
+            quality,
+            duration_s=duration,
+            brand_kit=kit,
+            product=source if source is not None and _has_script(plan_specs := breakdown(brief, quality)) else None,
+        )
         specs = list(plan.nodes)
         if template_params:
             specs = [

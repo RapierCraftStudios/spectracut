@@ -9,10 +9,11 @@ import { join } from "node:path";
 
 import type { Browser, Page } from "playwright-core";
 
-import { cleanFrame, DESCRIBE_SRC, HIDE_SRC, REDACT_SRC, type CleanPage, type CleanRules } from "./clean.js";
+import { cleanFrame, DESCRIBE_SRC, HIDE_SRC, REDACT_SRC, redactUrl, type CleanPage, type CleanRules } from "./clean.js";
 import {
   DEFAULT_START_TIME_MS,
   FrameRecorder,
+  frameTimeMs,
   SEEK_ANIMATIONS_SRC,
   VirtualClock,
   type ClockPage,
@@ -38,6 +39,24 @@ export interface CapturePage extends ClockPage, InputPage, CleanPage, LayerPage 
   deviceScaleFactor(): number;
   /** Glyph-box heights of visible text under `selector` (whole page when null). */
   measureText(selector: string | null): Promise<TextBox[]>;
+  /**
+   * Visible text of the page (CSS-visible text nodes, each up to 300 chars) and the
+   * text inside each of `selectors`. Optional: without it the capture falls back to
+   * the `measureText` strings.
+   */
+  readText?(selectors: readonly string[]): Promise<PageText>;
+}
+
+/** Text read from a page: visible strings and the text found under each selector. */
+export interface PageText {
+  texts: string[];
+  selectors: Record<string, string[]>;
+}
+
+/** One text record in text.json: what the page showed after a navigation or at the end. */
+export interface TextRecord extends PageText {
+  frame: number;
+  url: string;
 }
 
 export interface SubjectOptions {
@@ -69,6 +88,13 @@ export interface CaptureOptions {
   /** Legibility check after device compositing; false disables it. */
   legibility?: LegibilityConfig | false;
   layers?: readonly LayerSpec[];
+  /**
+   * Actions run after the clock is installed and before recording (for example a
+   * login): no frames are written, no events emitted and the frame counter stays 0.
+   */
+  setup?: readonly Action[];
+  /** Selectors whose text is recorded in text.json (beside the visible text). */
+  textSelectors?: readonly string[];
 }
 
 export interface CaptureResult {
@@ -76,8 +102,13 @@ export interface CaptureResult {
   manifest: FrameManifest;
   events: CaptureEvent[];
   layers: LayerManifest[];
+  /** Visible-text records (text.json), one per navigation plus one at the end. */
+  texts: TextRecord[];
   clip: Rect | null;
 }
+
+/** Longest visible string kept in a text record. */
+export const TEXT_RECORD_MAX_CHARS = 300;
 
 function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -96,9 +127,23 @@ export async function capture(page: CapturePage, options: CaptureOptions): Promi
   let clip: Rect | null = null;
   let reframe = true;
   let lastUrl = "";
+  let readPending = false;
+  const texts: TextRecord[] = [];
+  const textSelectors = options.textSelectors ?? [];
+
+  const recordText = async (): Promise<void> => {
+    const read: PageText = page.readText
+      ? await page.readText(textSelectors)
+      : {
+          texts: (await page.measureText(null)).map((b) => b.text.slice(0, TEXT_RECORD_MAX_CHARS)),
+          selectors: {},
+        };
+    texts.push({ frame: clock.frame, url: redactUrl(page.url() || lastUrl), ...read });
+  };
 
   await mkdir(outDir, { recursive: true });
   await clock.install();
+  if (options.setup && options.setup.length > 0) await runSetup(page, fps, cursor, options.setup);
   lastUrl = page.url();
 
   const emit = (event: Omit<CaptureEvent, "frame" | "timeMs">): void => {
@@ -108,6 +153,7 @@ export async function capture(page: CapturePage, options: CaptureOptions): Promi
     lastUrl = page.url() || url;
     emit(navigationEvent(url));
     reframe = true;
+    readPending = true;
   };
 
   const captureFrame = async (): Promise<void> => {
@@ -115,6 +161,10 @@ export async function capture(page: CapturePage, options: CaptureOptions): Promi
     if (current !== lastUrl) await onNavigation(current);
     await clock.settle();
     if (cleanRules) await cleanFrame(page, cleanRules);
+    if (readPending) {
+      await recordText();
+      readPending = false;
+    }
     if (reframe) {
       clip = null;
       if (options.subject) {
@@ -145,14 +195,73 @@ export async function capture(page: CapturePage, options: CaptureOptions): Promi
   }
   await runScript({ page, fps, clock, cursor, captureFrame, emit, onNavigation }, options.script);
   if (clock.frame === 0) await captureFrame();
+  await clock.settle();
+  if (cleanRules) await cleanFrame(page, cleanRules);
+  await recordText();
 
   const manifest = recorder.manifest(fps);
   const layerManifest = layers.manifest();
   await writeFile(join(outDir, "manifest.json"), json(manifest));
   await writeFile(join(outDir, "events.json"), json(events));
   if ((options.layers ?? []).length > 0) await writeFile(join(outDir, "layers.json"), json(layerManifest));
-  return { outDir, manifest, events, layers: layerManifest, clip };
+  await writeFile(join(outDir, "text.json"), json(texts));
+  return { outDir, manifest, events, layers: layerManifest, texts, clip };
 }
+
+/**
+ * Run setup actions before recording: the page clock moves one frame per step so
+ * scripted waits and typing still progress, but nothing is written or emitted.
+ */
+async function runSetup(page: CapturePage, fps: number, cursor: Point, setup: readonly Action[]): Promise<void> {
+  let frame = 0;
+  const clock = {
+    get frame() {
+      return frame;
+    },
+    get timeMs() {
+      return frameTimeMs(frame, fps);
+    },
+  };
+  await runScript(
+    {
+      page,
+      fps,
+      clock,
+      cursor,
+      captureFrame: async () => {
+        await page.runClock(frameTimeMs(frame + 1, fps) - frameTimeMs(frame, fps));
+        frame += 1;
+      },
+      emit: () => undefined,
+      onNavigation: async () => undefined,
+    },
+    setup,
+  );
+}
+
+/** In-page source: CSS-visible text strings of the document and the text under each selector. */
+export const READ_TEXT_SRC = `(selectors) => {
+  const max = ${TEXT_RECORD_MAX_CHARS};
+  const texts = [];
+  const root = document.body || document.documentElement;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = (node.nodeValue || "").replace(/\\s+/g, " ").trim();
+    const parent = node.parentElement;
+    if (!text || !parent) continue;
+    if (parent.closest("script, style, noscript, [data-spectracut-hidden]")) continue;
+    if (!parent.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+    texts.push(text.slice(0, max));
+  }
+  const bySelector = {};
+  for (const sel of selectors) {
+    bySelector[sel] = Array.from(document.querySelectorAll(sel))
+      .filter((el) => !el.closest("[data-spectracut-hidden]"))
+      .map((el) => (el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, max))
+      .filter((t) => t !== "");
+  }
+  return { texts, selectors: bySelector };
+}`;
 
 /** In-page source: synthetic wheel at a point that scrolls the nearest scrollable ancestor at once. */
 export const WHEEL_SRC = `(w) => {
@@ -225,6 +334,7 @@ export function playwrightPage(page: Page, deviceScaleFactor = 1): CapturePage {
     },
     redactText: (query) => inPage(page, REDACT_SRC, query),
     measureText: (selector) => inPage(page, MEASURE_TEXT_SRC, selector),
+    readText: (selectors) => inPage(page, READ_TEXT_SRC, selectors),
     async isolateLayer(selector) {
       await inPage(page, ISOLATE_LAYER_SRC, selector);
     },

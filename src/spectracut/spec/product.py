@@ -4,8 +4,10 @@
 A ``product.yaml`` (for example ``brands/alterlab/product.yaml``) is loaded by
 :func:`load_product_source` into a :class:`ProductSource`: the repo, the front-end
 directory inside it, the framework, how to run it (a command and/or a URL), the
-seed command for demo data, and the demo login as **names of environment
-variables**, never their values. Every model is closed, so a literal
+seed command for demo data, the demo login as **names of environment
+variables** (never their values) with its sign-in route and selectors, and the
+demo-data allow-list (:class:`DemoData`) captures are checked against. Every
+model is closed, so a literal
 ``password:`` key is rejected rather than stored.
 
 :func:`scan_nextjs_routes` reads a Next.js front end (App Router ``app/`` or
@@ -40,6 +42,24 @@ class DemoLogin(StrictModel):
 
     username_env: EnvVarName
     password_env: EnvVarName
+    route: str = "/login"
+    """Sign-in page of the front end."""
+    username_selector: str = "input[type=email]"
+    password_selector: str = "input[type=password]"
+    submit_selector: str = "button[type=submit]"
+
+
+class DemoData(StrictModel):
+    """What demo data may appear in a capture: the allow-list the capture is checked against.
+
+    Every email-shaped string a capture shows must be in ``emails`` (or be the demo
+    login's email); every text under one of ``name_selectors`` must be in ``names``.
+    """
+
+    emails: list[str] = Field(default_factory=list)
+    names: list[str] = Field(default_factory=list)
+    name_selectors: list[str] = Field(default_factory=list)
+    """Selectors of elements that render a person's name (e.g. the account menu)."""
 
 
 class ProductRun(StrictModel):
@@ -81,6 +101,8 @@ class ProductSource(StrictModel):
     seed_command: str = ""
     """Command that seeds the demo data (run from ``repo``)."""
     demo_login: DemoLogin | None = None
+    demo_data: DemoData = DemoData()
+    """Demo-data allow-list for captures."""
     routes: list[FrontendRoute] = Field(default_factory=list)
     """Route map override; empty means scan the front end."""
 
