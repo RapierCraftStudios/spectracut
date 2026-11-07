@@ -41,8 +41,10 @@ from bpy_runtime.ops.geometry import (
     object_parent,
 )
 from bpy_runtime.ops.inspect import inspect_bounds, inspect_framing
+from bpy_runtime.ops.keyframe import object_keyframe, render_set_frame_range
 from bpy_runtime.ops.look import look_set_view
 from bpy_runtime.ops.material import material_apply_preset, material_apply_screen
+from bpy_runtime.ops.particles import particles_add
 from bpy_runtime.ops.props import render_set_output, render_set_passes, render_set_property
 from bpy_runtime.ops.scene import object_import_gltf
 from bpy_runtime.ops.text import text_add
@@ -89,6 +91,9 @@ TOOL_NAMES = frozenset(
         "object.array",
         "object.boolean",
         "object.parent",
+        "object.keyframe",
+        "render.set_frame_range",
+        "particles.add",
     }
 )
 
@@ -247,6 +252,9 @@ TOOLS: dict[str, Callable[[Any, dict[str, Any]], Report]] = {
     "object.array": object_array,
     "object.boolean": object_boolean,
     "object.parent": object_parent,
+    "object.keyframe": object_keyframe,
+    "render.set_frame_range": render_set_frame_range,
+    "particles.add": particles_add,
 }
 
 assert frozenset(TOOLS) == TOOL_NAMES, "TOOLS and TOOL_NAMES must list the same tools"

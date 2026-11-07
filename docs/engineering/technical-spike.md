@@ -121,7 +121,7 @@ spectracut/
   src/spectracut/
     cli/                         # Typer commands: plan, board, render, review, serve, hosts, export
     spec/                        # Pydantic schemas: Spec, BrandKit, Brief, Recipe, Shot, Variant
-    harness/                     # MCP server + typed tool layer (scene, camera, light, material, screen, inspect, preview)
+    harness/                     # MCP server + typed tool layer (scene, geometry, text, camera, light, material, screen, animation: keyframes and frame range, particles, inspect, preview)
     recipes/                     # replayable scene recipes, (de)serialisation, hashing
     studio/                      # production graph, departments (subagents), Producer, gates, quality profiles, step ledger
     canon/                       # story bible, universe canon, continuity checks
