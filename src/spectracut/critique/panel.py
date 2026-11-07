@@ -236,4 +236,6 @@ def provider_confirm(provider: TextProvider) -> Confirm:
 
 def text_panel(provider: TextProvider) -> ReviewerPanel:
     """The five built-in reviewers and the confirm check, each a call to ``provider``."""
-    return ReviewerPanel(default_reviewers(provider_review_call(provider)), provider_confirm(provider))
+    return ReviewerPanel(
+        default_reviewers(provider_review_call(provider)), provider_confirm(provider)
+    )

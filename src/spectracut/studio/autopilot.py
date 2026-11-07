@@ -84,9 +84,7 @@ def default_policy(
     kept = set(keep)
     gates = profile.gates if profile is not None else {}
     kinds = tuple(k for k, m in gates.items() if m is GateMode.HUMAN and k not in kept)
-    return AutonomyPolicy(
-        delegate_kinds=kinds, budget_ceiling=budget_ceiling or BudgetCeiling()
-    )
+    return AutonomyPolicy(delegate_kinds=kinds, budget_ceiling=budget_ceiling or BudgetCeiling())
 
 
 # ---- preflight --------------------------------------------------------------
@@ -543,6 +541,11 @@ def _gates(graph: ProductionGraph) -> list[dict[str, JsonValue]]:
 def _polish(graph: ProductionGraph) -> list[dict[str, JsonValue]]:
     out: list[dict[str, JsonValue]] = []
     for nid in graph.order():
+        out += [
+            {"node": nid, "source": "pass", "text": f"attempt {e.attempt} sent back for revision"}
+            for e in graph.ledger.entries_for(nid)
+            if e.outcome == "revise"
+        ]
         decision = graph.decision(nid)
         if decision is not None and decision.critic is not None:
             for f in decision.critic.findings:
