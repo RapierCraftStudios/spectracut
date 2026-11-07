@@ -86,6 +86,13 @@ def rig_steps(
 
 
 class LightAdd(ToolArgs):
+    """Either one light or a preset rig, never both.
+
+    One light: kind, energy, location, rotation, size (area only), color,
+    spot_angle (spot only); no target, distance or power. Rig: rig with optional
+    target, distance and power, and none of the single-light arguments.
+    """
+
     kind: Literal["point", "sun", "area", "spot"] | None = None
     name: str | None = None
     energy: Energy | None = None
@@ -101,9 +108,13 @@ class LightAdd(ToolArgs):
     rig: Literal["three_point", "key_fill", "product_softbox", "rim_area"] | None = Field(
         default=None, description="add a preset rig of lights aimed at target instead of one light"
     )
-    target: Vec3 | None = None
-    distance: Annotated[float, Field(gt=0, le=1000)] | None = None
-    power: Annotated[float, Field(gt=0, le=100)] | None = None
+    target: Vec3 | None = Field(default=None, description="point the rig aims at (rig only)")
+    distance: Annotated[float, Field(gt=0, le=1000)] | None = Field(
+        default=None, description="rig light distance from target in m (rig only)"
+    )
+    power: Annotated[float, Field(gt=0, le=100)] | None = Field(
+        default=None, description="rig energy multiplier (rig only)"
+    )
 
     @model_validator(mode="after")
     def _rig_or_single(self) -> LightAdd:

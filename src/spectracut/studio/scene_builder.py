@@ -102,31 +102,149 @@ def compile_calls(calls: JsonValue, *, recipe_id: str, shot_id: str) -> Recipe:
     """Compile harness ``[{tool, args}]`` calls into a declarative :class:`Recipe`.
 
     Only ``build`` tools are accepted; their typed arguments are validated by
-    :meth:`HarnessTool.parse` and recorded by the tool's own handler. A query,
-    meta or unknown tool, a malformed call or bad arguments raise
-    :class:`HarnessError`.
+    :meth:`HarnessTool.parse` and recorded by the tool's own handler. Every call is
+    validated before anything renders: a query, meta or unknown tool, a malformed
+    call or bad arguments in *any* call raise one :class:`HarnessError` whose message
+    lists each problem as ``calls[i] <tool>: <message>`` and whose ``details`` carry
+    ``problems=[{index, tool, message}]``.
     """
     if not isinstance(calls, list) or not calls:
         raise HarnessError("recipe.empty", "calls must be a non-empty list of {tool, args}")
     recorder = Recorder(recipe_id=recipe_id, shot_id=shot_id)
     session = Session(recorder=recorder, dispatcher=cast(PreviewDispatcher, _NoDispatcher()))
+    problems: list[dict[str, JsonValue]] = []
+    codes: list[str] = []
     for i, call in enumerate(calls):
-        if not isinstance(call, Mapping) or set(call) - {"tool", "args"}:
-            raise HarnessError("args.invalid", f"calls[{i}]: expected exactly {{tool, args}}")
-        name, args = call.get("tool"), call.get("args", {})
-        if not isinstance(name, str):
-            raise HarnessError("args.invalid", f"calls[{i}]: tool must be a string")
-        if args is None:
-            args = {}
-        if not isinstance(args, Mapping):
-            raise HarnessError("args.invalid", f"calls[{i}] {name}: args must be an object")
-        tool = get_tool(name)
-        if tool.kind != "build":
-            raise HarnessError(
-                "host.refused", f"calls[{i}]: {name} is a {tool.kind} tool; only build tools"
-            )
-        tool.handler(session, tool.parse(args))
+        name: str | None = None
+        try:
+            if not isinstance(call, Mapping) or set(call) - {"tool", "args"}:
+                raise HarnessError("args.invalid", "expected exactly {tool, args}")
+            tool_name, args = call.get("tool"), call.get("args", {})
+            if not isinstance(tool_name, str):
+                raise HarnessError("args.invalid", "tool must be a string")
+            name = tool_name
+            if args is None:
+                args = {}
+            if not isinstance(args, Mapping):
+                raise HarnessError("args.invalid", "args must be an object")
+            tool = get_tool(name)
+            if tool.kind != "build":
+                raise HarnessError(
+                    "host.refused", f"{name} is a {tool.kind} tool; only build tools"
+                )
+            tool.handler(session, tool.parse(args))
+        except HarnessError as exc:
+            message = exc.message
+            if name is not None and message.startswith(f"{name}: "):
+                message = message[len(name) + 2 :]
+            problems.append({"index": i, "tool": name, "message": message})
+            codes.append(exc.code)
+    if problems:
+        raise HarnessError(codes[0], "; ".join(problem_lines(problems)), problems=problems)
     return recorder.recipe()
+
+
+def problem_lines(problems: Sequence[Mapping[str, JsonValue]]) -> list[str]:
+    """``calls[i] <tool>: <message>`` per problem from :func:`compile_calls`."""
+    return [
+        f"calls[{p.get('index')}]"
+        + (f" {p['tool']}" if p.get("tool") else "")
+        + f": {p.get('message')}"
+        for p in problems
+    ]
+
+
+# --------------------------------------------------------------------------- cheat sheet
+
+CHEAT_SHEET = "tools.md"
+"""The checked-in :func:`tool_cheat_sheet` in the scene-builder skill pack."""
+
+
+def _type_of(schema: Mapping[str, Any], defs: Mapping[str, Any]) -> str:
+    if "$ref" in schema:
+        name = str(schema["$ref"]).rsplit("/", 1)[-1]
+        target = defs.get(name, {})
+        if "enum" in target or "anyOf" in target or "type" in target and target["type"] != "object":
+            return _type_of(target, defs)
+        return name
+    if "anyOf" in schema:
+        kinds = [_type_of(s, defs) for s in schema["anyOf"] if s.get("type") != "null"]
+        return " | ".join(kinds) or "null"
+    if "enum" in schema:
+        return " | ".join(json.dumps(v) for v in schema["enum"])
+    if "const" in schema:
+        return json.dumps(schema["const"])
+    kind = schema.get("type")
+    if kind == "array":
+        item = _type_of(schema.get("items", {}), defs)
+        lo, hi = schema.get("minItems"), schema.get("maxItems")
+        if lo is not None and lo == hi:
+            size = f"[{lo}]"
+        else:
+            size = "".join(
+                f", {op} {n}" for op, n in (("len >=", lo), ("len <=", hi)) if n is not None
+            )
+            size = f" ({size[2:]})" if size else ""
+        return f"list[{item}]{size}"
+    bounds = [
+        f"{op} {schema[key]}"
+        for key, op in (
+            ("minimum", ">="),
+            ("exclusiveMinimum", ">"),
+            ("maximum", "<="),
+            ("exclusiveMaximum", "<"),
+            ("minLength", "len >="),
+            ("maxLength", "len <="),
+            ("pattern", "matches"),
+        )
+        if key in schema
+    ]
+    text = str(kind or "any")
+    return f"{text} ({', '.join(bounds)})" if bounds else text
+
+
+def tool_cheat_sheet() -> str:
+    """The build-tool cheat sheet, generated from the harness argument schemas.
+
+    Per build tool: its summary, the rules on which arguments go together (the
+    argument model's description, e.g. light rig vs single light) and each argument
+    with its type, whether it is required, and its description. Nested argument
+    models are listed with their own rules. ``skills/scene-builder/tools.md`` is
+    this text, checked in.
+    """
+    lines = [
+        "# Scene builder build-tool cheat sheet",
+        "",
+        "Generated from the harness argument schemas by",
+        "`spectracut.studio.scene_builder.tool_cheat_sheet()`; do not edit by hand.",
+        "Arguments not listed are refused.",
+    ]
+    for tool in sorted(build_tools(), key=lambda t: t.name):
+        schema = tool.schema()
+        defs: Mapping[str, Any] = schema.get("$defs", {})
+        lines += ["", f"## {tool.name}", "", " ".join(tool.summary.split())]
+        models = [("", schema)] + [
+            (name, d) for name, d in sorted(defs.items()) if d.get("type") == "object"
+        ]
+        for name, model in models:
+            if name:
+                lines += ["", f"`{name}`:"]
+            rules = model.get("description")
+            if rules:
+                lines += ["", "Rules: " + " ".join(str(rules).split())]
+            required = set(model.get("required", []))
+            props: Mapping[str, Any] = model.get("properties", {})
+            if props:
+                lines.append("")
+            for arg, prop in props.items():
+                need = "required" if arg in required else "optional"
+                entry = f"- `{arg}` ({need}): {_type_of(prop, defs)}"
+                if prop.get("description"):
+                    entry += f". {' '.join(str(prop['description']).split())}"
+                lines.append(entry)
+            if not props:
+                lines += ["", "- no arguments"]
+    return "\n".join(lines) + "\n"
 
 
 def check_recipe_copy(recipe: Recipe, allowed: Sequence[str], kit: BrandKit | None) -> None:
@@ -172,6 +290,17 @@ class SceneBrief(StrictModel):
         return colours
 
 
+REPAIR_BUDGET = 3
+"""Repair turns per candidate after validation errors; they never use a revise attempt."""
+
+
+class SceneRepair(StrictModel):
+    """One repair turn: the validation errors the builder was asked to fix."""
+
+    round: int = Field(ge=1)
+    errors: list[str] = Field(default_factory=list)
+
+
 class SceneIteration(StrictModel):
     """One candidate as built, rendered and judged."""
 
@@ -187,6 +316,8 @@ class SceneIteration(StrictModel):
     notes: str = ""
     kept: bool = False
     """The attempt's winner and it became the best so far."""
+    repairs: list[SceneRepair] = Field(default_factory=list)
+    """Repair turns spent on this candidate before it compiled (or ran out)."""
 
 
 class SceneBuild(StrictModel):
@@ -258,6 +389,7 @@ class _Candidate:
     render: ImageRecord | None = None
     output: JsonValue = None
     usage: Usage = field(default_factory=Usage)
+    repairs: list[SceneRepair] = field(default_factory=list)
 
 
 def _add(a: Usage, b: Usage) -> Usage:
@@ -331,6 +463,7 @@ class SceneBuilder:
         ]
         if brief.brand_kit is not None and brief.brand_kit.forbidden_words:
             parts += ["", "Forbidden words:", _dumps(brief.brand_kit.forbidden_words)]
+        parts += ["", "Build tool cheat sheet (which arguments go together):", tool_cheat_sheet()]
         parts += ["", "Build tools (name: summary and JSON args schema):", _dumps(tools)]
         if state is not None:
             parts += [
@@ -361,6 +494,23 @@ class SceneBuilder:
         parts += ["", 'Answer as JSON: {"plan": "...", "calls": [{"tool": ..., "args": {...}}]}.']
         return "\n".join(parts)
 
+    def repair_prompt(self, prompt: str, calls: JsonValue, errors: Sequence[str]) -> str:
+        """The repair prompt: the original prompt, the rejected calls and their exact errors."""
+        return "\n".join(
+            [
+                prompt,
+                "",
+                "Your previous answer was rejected before rendering. Its calls:",
+                _dumps(calls),
+                "",
+                "Validation errors (calls[index] tool: message):",
+                *(f"- {e}" for e in errors),
+                "",
+                "Fix every error and answer again with the whole corrected recipe, "
+                'as JSON: {"plan": "...", "calls": [...]}.',
+            ]
+        )
+
     def build(self, brief: SceneBrief) -> SceneBuild:
         root = self.workdir / brief.id
         spec = NodeSpec(id=brief.id, kind=SCENE_BUILD, department=DEPARTMENT)
@@ -368,32 +518,63 @@ class SceneBuilder:
         system = self.system_prompt()
         candidates: dict[tuple[int, int], _Candidate] = {}
 
+        def answer(out: JsonValue) -> tuple[str, JsonValue]:
+            if isinstance(out, Mapping):
+                return str(out.get("plan") or ""), out.get("calls")
+            return "", None
+
         def generate(request: RevisionRequest) -> JsonValue:
             cand = _Candidate(attempt=request.attempt, candidate=request.candidate)
             candidates[(cand.attempt, cand.candidate)] = cand
-            completion = self.text.complete(
-                system, self.prompt(brief, request), schema=CALLS_SCHEMA
-            )
+            prompt = self.prompt(brief, request)
+            completion = self.text.complete(system, prompt, schema=CALLS_SCHEMA)
             cand.usage = _prefixed(completion.usage)
-            out = completion.output
-            calls: JsonValue = None
-            if isinstance(out, Mapping):
-                cand.plan = str(out.get("plan") or "")
-                calls = out.get("calls")
-            try:
-                recipe = compile_calls(
-                    calls,
-                    recipe_id=f"{brief.id}-a{cand.attempt}-c{cand.candidate}"[:128],
-                    shot_id=brief.id,
-                )
-                check_recipe_copy(recipe, brief.copy_lines(), brief.brand_kit)
-                cand.recipe = recipe
-            except (HarnessError, CopyRefused) as exc:
-                cand.error = str(exc)
+            cand.plan, calls = answer(completion.output)
             folder = root / f"a{cand.attempt}-c{cand.candidate}"
             folder.mkdir(parents=True, exist_ok=True)
+            for turn in range(REPAIR_BUDGET + 1):
+                errors: list[str] = []
+                try:
+                    recipe = compile_calls(
+                        calls,
+                        recipe_id=f"{brief.id}-a{cand.attempt}-c{cand.candidate}"[:128],
+                        shot_id=brief.id,
+                    )
+                    check_recipe_copy(recipe, brief.copy_lines(), brief.brand_kit)
+                    cand.recipe, cand.error = recipe, ""
+                    break
+                except HarnessError as exc:
+                    cand.error = str(exc)
+                    problems = exc.details.get("problems")
+                    errors = problem_lines(problems) if isinstance(problems, list) else [str(exc)]
+                except CopyRefused as exc:
+                    cand.error = str(exc)
+                    errors = [str(exc)]
+                if turn == REPAIR_BUDGET:
+                    break
+                # A repair turn: the exact errors go back to the builder; no render,
+                # no revise attempt.
+                repair = SceneRepair(round=turn + 1, errors=errors)
+                cand.repairs.append(repair)
+                (folder / f"repair-{repair.round}.json").write_text(
+                    _dumps({"plan": cand.plan, "calls": calls, "errors": errors}) + "\n",
+                    encoding="utf-8",
+                )
+                completion = self.text.complete(
+                    system, self.repair_prompt(prompt, calls, errors), schema=CALLS_SCHEMA
+                )
+                cand.usage = _add(cand.usage, _prefixed(completion.usage))
+                cand.plan, calls = answer(completion.output)
             (folder / "calls.json").write_text(
-                _dumps({"plan": cand.plan, "calls": calls, "error": cand.error}) + "\n",
+                _dumps(
+                    {
+                        "plan": cand.plan,
+                        "calls": calls,
+                        "error": cand.error,
+                        "repairs": len(cand.repairs),
+                    }
+                )
+                + "\n",
                 encoding="utf-8",
             )
             recipe_json: JsonValue = None
@@ -451,6 +632,7 @@ class SceneBuilder:
                     scores=dict(verdict.scores) if verdict else {},
                     notes=verdict.comment if verdict else cand.error,
                     kept=key in kept,
+                    repairs=list(cand.repairs),
                 )
             )
         best = outcome.recipe if isinstance(outcome.recipe, Mapping) else {}
@@ -511,6 +693,8 @@ def scene_build_runner(builder: SceneBuilder) -> Runner:
 
 __all__ = [
     "CALLS_SCHEMA",
+    "CHEAT_SHEET",
+    "REPAIR_BUDGET",
     "SCENE_BUILD",
     "CopyRefused",
     "RecipeRenderer",
@@ -518,7 +702,10 @@ __all__ = [
     "SceneBuild",
     "SceneBuilder",
     "SceneIteration",
+    "SceneRepair",
     "check_recipe_copy",
     "compile_calls",
+    "problem_lines",
     "scene_build_runner",
+    "tool_cheat_sheet",
 ]

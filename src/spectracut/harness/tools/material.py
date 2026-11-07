@@ -25,6 +25,8 @@ def hex_rgb(hex_colour: str) -> list[JsonValue]:
 
 
 class ApplyPreset(ToolArgs):
+    """Pass color or brand_color, not both."""
+
     object: str
     preset: Literal[
         "matte_plastic",
