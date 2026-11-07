@@ -301,7 +301,7 @@ class FlamencoExecutor:
                     self._cancel(flamenco_id, f"spectracut: {reason}")
                     raise FlamencoJobFailed(
                         flamenco_id,
-                        f"{raw} ({reason}; cancelled)",
+                        f"{task_status} ({reason}; job was {raw}, cancelled)",
                         usage=self._usage_since(started),
                         log_tail=self._log_tail(failed),
                     )

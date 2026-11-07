@@ -392,7 +392,7 @@ def test_soft_failed_task_with_one_worker_ends_the_wait_with_the_log_tail() -> N
         _task_executor(client, ticker).run(_blender_job())
     assert ticker.t <= 120.0
     err = info.value
-    assert err.flamenco_id == "fl-1" and "soft-failed" in err.status
+    assert err.flamenco_id == "fl-1" and err.status.startswith("soft-failed (")
     assert REFUSAL in err.log_tail and REFUSAL in str(err)
     assert len(err.log_tail.splitlines()) == 40
     assert client.cancelled and client.cancelled[0][0] == "fl-1"
