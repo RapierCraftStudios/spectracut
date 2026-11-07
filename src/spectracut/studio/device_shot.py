@@ -525,13 +525,19 @@ def fresh_job_id(config: DeviceShotConfig, base: str) -> str:
 
 
 def envelope(
-    job_id: str, recipe: Recipe, config: DeviceShotConfig, now: datetime, frame_end: int = 1
+    job_id: str,
+    recipe: Recipe,
+    config: DeviceShotConfig,
+    now: datetime,
+    frame_end: int = 1,
+    frame_start: int = 1,
 ) -> JobEnvelope:
+    """The job envelope of ``recipe`` over frames ``frame_start``..``frame_end``."""
     return JobEnvelope(
         job_id=job_id,
         recipe=recipe,
         recipe_hash=recipe.content_hash,
-        frame_start=1,
+        frame_start=frame_start,
         frame_end=frame_end,
         output=recipe.shot_id,
         required_tag=config.worker_tag,
