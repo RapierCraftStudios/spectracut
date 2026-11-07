@@ -17,7 +17,7 @@ nothing. It then names exactly one :class:`AutopilotStop`:
 - ``failed``: anything else.
 
 Every run writes ``runs/<n>/report.json`` and ``report.md`` in the production
-dir (:class:`RunReport`). Only names of missing prerequisites go in the report,
+dir (:class:`AutopilotReport`). Only names of missing prerequisites go in the report,
 never credential values.
 """
 
@@ -190,7 +190,7 @@ def mock_for(exc: BaseException) -> str:
 
 
 @dataclass
-class RunReport:
+class AutopilotReport:
     """What one ``make`` run did, written as ``runs/<n>/report.json`` and ``report.md``."""
 
     production_id: str
@@ -295,7 +295,7 @@ def _list(value: JsonValue) -> list[JsonValue]:
 class AutopilotResult:
     stop: AutopilotStop
     detail: str
-    report: RunReport
+    report: AutopilotReport
     report_path: Path
     executed: list[str] = field(default_factory=list)
 
@@ -328,10 +328,10 @@ def _record_failures(runner: Runner, failures: dict[str, BaseException]) -> Runn
 
 def stopped_report(
     production_id: str, stop: AutopilotStop, detail: str, preflight_lines: Sequence[str]
-) -> RunReport:
+) -> AutopilotReport:
     """A report for a run that stopped before the graph ran."""
     now = datetime.now(UTC).isoformat()
-    return RunReport(production_id, stop, detail, now, now, preflight=list(preflight_lines))
+    return AutopilotReport(production_id, stop, detail, now, now, preflight=list(preflight_lines))
 
 
 def run_to_delivery(
@@ -410,7 +410,7 @@ def run_to_delivery(
         raise
     budget.extend(f"needs approval: {n}" for n in needs)
     stop, detail = _classify(graph, failures, needs, breaker)
-    report = RunReport(
+    report = AutopilotReport(
         production_id=production_id,
         stop=stop,
         detail=detail,
