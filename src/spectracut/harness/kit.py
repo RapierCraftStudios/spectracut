@@ -29,7 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
@@ -227,15 +227,13 @@ class Kit(StrictModel):
             calls.append({"tool": call.tool, "args": _place(expanded, location, scale)})
         return calls
 
-    def expand_calls(self, calls: JsonValue) -> list[JsonValue]:
+    def expand_calls(self, calls: Sequence[JsonValue]) -> list[JsonValue]:
         """Expand every ``{"kit": name, "args"}`` item; ``{tool, args}`` items pass through.
 
         Every problem is collected first, then one :class:`HarnessError` lists them as
         ``details.problems = [{index, tool: "kit:<name>", message}]`` against the
-        original call index. A non-list ``calls`` is returned unchanged.
+        original call index.
         """
-        if not isinstance(calls, list):
-            return calls
         out: list[JsonValue] = []
         problems: list[dict[str, JsonValue]] = []
         for i, call in enumerate(calls):
@@ -381,10 +379,10 @@ def _check(kit: Kit) -> list[str]:
         return problems
     for name in kit.entries:
         try:
-            for i, call in enumerate(kit.expand(name, {})):
-                tool_name, args = str(call["tool"]), call["args"]
+            for i, expanded in enumerate(kit.expand(name, {})):
+                tool_name, args = str(expanded["tool"]), expanded["args"]
                 try:
-                    get_tool(tool_name).parse(args)
+                    get_tool(tool_name).parse(args if isinstance(args, Mapping) else None)
                 except HarnessError as exc:
                     message = exc.message.removeprefix(f"{tool_name}: ")
                     problems.append(f"entry {name} calls[{i}] {tool_name}: {message}")
@@ -426,8 +424,9 @@ def _validated(raw: Mapping[str, Any], label: str) -> Kit:
         raise HarnessError("config.invalid", f"kit {label}: " + "; ".join(problems))
     return kit
 
+
 def kit_from(value: object) -> Kit | None:
-    """A :class:`Kit` from a kit, a kit.yaml path, a kit JSON object (with ``root``), or ``None``."""
+    """A :class:`Kit` from a kit, a kit.yaml path, a kit JSON object (``root`` set) or ``None``."""
     if value is None or isinstance(value, Kit):
         return value
     if isinstance(value, str | Path):
@@ -449,4 +448,3 @@ __all__ = [
     "kit_from",
     "load_kit",
 ]
-

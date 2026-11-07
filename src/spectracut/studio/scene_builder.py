@@ -433,7 +433,7 @@ class SceneBrief(StrictModel):
     def required_copy(self) -> tuple[str, ...]:
         """The description's quoted strings that are allowed copy: each must be on screen."""
         allowed = {c.strip() for c in self.copy_lines()}
-        quoted = (a or b for a, b in _QUOTED.findall(self.description))
+        quoted = (next(g for g in groups if g) for groups in _QUOTED.findall(self.description))
         return tuple(q for q in dict.fromkeys(quoted) if q.strip() in allowed)
 
     def palette(self) -> dict[str, str]:
@@ -998,7 +998,7 @@ def scene_build_runner(builder: SceneBuilder) -> Runner:
         kit = params.get("brand_kit")
         copy = params.get("copy")
         elements = params.get("elements")
-        kit = params.get("kit")
+        lookdev = params.get("kit")
         brief = SceneBrief(
             id=ctx.spec.id,
             description=str(params.get("description") or ""),
@@ -1006,7 +1006,7 @@ def scene_build_runner(builder: SceneBuilder) -> Runner:
             brand_kit=BrandKit.model_validate(kit) if kit is not None else None,
             allowed_copy=tuple(str(c) for c in copy) if isinstance(copy, list) else None,
             elements=tuple(str(e) for e in elements) if isinstance(elements, list) else (),
-            kit=kit_from(kit),
+            kit=kit_from(lookdev),
         )
         build = builder.build(brief)
         output: JsonValue = build.model_dump(mode="json")
