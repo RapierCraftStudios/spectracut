@@ -31,16 +31,12 @@ from spectracut.studio.ledger import Usage
 from spectracut.studio.node import NodeSpec, Tier
 from spectracut.studio.profiles import CritiqueSettings, QualityProfile
 from spectracut.studio.scene_builder import (
-    CHEAT_SHEET,
-    PACK,
-    REPAIR_BUDGET,
     SCENE_BUILD,
     SceneBrief,
     SceneBuild,
     SceneBuilder,
     compile_calls,
     scene_build_runner,
-    tool_cheat_sheet,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -410,6 +406,8 @@ def test_invalid_tool_argument_triggers_a_repair_turn_and_the_frame_renders(
 
 
 def test_repairs_are_bounded_then_the_candidate_fails(tmp_path: Path) -> None:
+    from spectracut.studio.scene_builder import REPAIR_BUDGET
+
     text = FakeText([rigless_distance()])
     vision = FakeVision({})
     b, renderer = builder(tmp_path, text, vision, budget=0)
@@ -447,6 +445,8 @@ def test_compile_calls_reports_every_invalid_call() -> None:
 
 
 def test_tool_cheat_sheet_matches_the_harness_schemas() -> None:
+    from spectracut.studio.scene_builder import CHEAT_SHEET, PACK, tool_cheat_sheet
+
     sheet = tool_cheat_sheet()
     assert (PACK / CHEAT_SHEET).read_text(encoding="utf-8") == sheet, (
         "regenerate skills/scene-builder/tools.md from tool_cheat_sheet()"
