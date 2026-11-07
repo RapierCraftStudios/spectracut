@@ -67,6 +67,8 @@ def override(spec: ModelSpec) -> str:
 
 def test_missing_family_module_says_run_setup(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(entry_env("clap"), raising=False)
+    # the loader module exists (#300); a host without the family behaves as if it did not
+    monkeypatch.setitem(sys.modules, "spectracut_host.loaders.clap", None)
     spec = MODELS["larger-clap-general"]
     with pytest.raises(
         ProviderError, match=r"family clap not installed on this host.*spectracut setup"
