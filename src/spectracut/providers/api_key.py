@@ -162,8 +162,7 @@ class AnthropicKeyVisionJudge:
         content.append(
             {
                 "type": "text",
-                "text": f"{text}\n"
-                'Answer only with JSON: {"score": <0..1>, "notes": "<short>"}',
+                "text": f'{text}\nAnswer only with JSON: {{"score": <0..1>, "notes": "<short>"}}',
             }
         )
         body = {

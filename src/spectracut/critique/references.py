@@ -127,8 +127,7 @@ def measure_storyboard(storyboard: Storyboard, refs: ReferenceSet) -> Storyboard
     if pace is not None and not pace.ok:
         lo, hi = pace.range_s
         problems.append(
-            f"average shot {pace.avg_shot_s} s is outside the cited references' range "
-            f"{lo}-{hi} s"
+            f"average shot {pace.avg_shot_s} s is outside the cited references' range {lo}-{hi} s"
         )
     long_cards = [
         f"{b.shot_id}={b.text!r}" for b in storyboard.boards if _words(b.text) > MAX_CARD_WORDS

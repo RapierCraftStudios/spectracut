@@ -168,9 +168,7 @@ def _sections(markdown: str) -> dict[str, tuple[str, list[CraftPoint]]]:
             if seen[slug] > 1:
                 slug = f"{slug}-{seen[slug]}"
             craft.append(
-                CraftPoint(
-                    id=f"{current}:{slug}", aspect=_aspect(label), label=label, text=text
-                )
+                CraftPoint(id=f"{current}:{slug}", aspect=_aspect(label), label=label, text=text)
             )
         out[current] = (title, craft)
 
@@ -234,7 +232,9 @@ def load_reference_set(
         rid = str(piece["id"])
         ref = parsed.get(rid)
         if ref is None:
-            raise ReferenceError(f"reference {rid!r} of set {set_id!r} has no notes in {notes_path}")
+            raise ReferenceError(
+                f"reference {rid!r} of set {set_id!r} has no notes in {notes_path}"
+            )
         frame = keyframes / f"{rid}.png"
         found = [str(frame.resolve())] if frame.is_file() else []
         refs.append(ref.model_copy(update={"keyframes": found}))

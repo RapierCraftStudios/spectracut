@@ -208,7 +208,9 @@ class StyleFrameArtist(Department):
         CONCEPT: Concept,
         BRAND_KIT: BrandKit,
         ART_DIRECTION: ArtDirection,
+        REFERENCES: ReferenceSet,
     }
+    """``references`` is read by the runner's reference comparison (keyframes, not prompts)."""
     output = StyleFrames
     skill_pack = SKILLS_ROOT / "art-director"
     cost = CostEstimate(ai_requests=1, ai_input_tokens=3_000, gpu_minutes=6.0)
@@ -443,7 +445,8 @@ def preproduction_nodes(
     direction, style frames and storyboard when given, in the order each
     department declares its inputs. ``voiceover_id`` (the voiceover node) is wired
     into the animatic when given, so it cuts to that audio. ``references_id`` (the
-    ``references`` node) is wired into art direction and storyboard when given.
+    ``references`` node) is wired into art direction, style frames and storyboard when
+    given.
     """
 
     def wired(*ids: str | None) -> tuple[str, ...]:
@@ -460,7 +463,7 @@ def preproduction_nodes(
             id=STYLE_FRAMES,
             kind=STYLE_FRAMES,
             department=StyleFrameArtist.name,
-            inputs=wired(brief_id, concept_id, brand_kit_id, ART_DIRECTION),
+            inputs=wired(brief_id, concept_id, brand_kit_id, ART_DIRECTION, references_id),
             tier=tier,
         ),
         NodeSpec(

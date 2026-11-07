@@ -278,7 +278,15 @@ def test_departments_are_registered_with_their_stage() -> None:
     for stage, cls in ((fd.EDIT, fd.Editor), (fd.RENDER, fd.Finisher), (fd.DELIVERY, fd.Delivery)):
         assert depts[STAGE_DEPARTMENTS[stage]] is cls
         assert stage in cls.produces
-    assert list(fd.Editor.inputs) == ["animatic", "template_shots", "shots", "voiceover", "music"]
+    assert list(fd.Editor.inputs) == [
+        "animatic",
+        "template_shots",
+        "shots",
+        "voiceover",
+        "music",
+        "references",
+        "storyboard",
+    ]
     assert list(fd.Finisher.inputs) == ["edit", "mix"]
     assert list(fd.Delivery.inputs) == ["render", "voiceover", "mix", "music"]
     assert fd.Finisher.uses_gpu and fd.Delivery.uses_gpu
