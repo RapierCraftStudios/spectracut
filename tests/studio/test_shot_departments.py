@@ -33,6 +33,7 @@ from spectracut.spec.recipe import Recipe
 from spectracut.storyboard.models import Board, Storyboard
 from spectracut.studio import device_shot as ds
 from spectracut.studio.departments import STAGE_DEPARTMENTS, all_departments
+from spectracut.studio.departments import choreography as ch
 from spectracut.studio.departments import shots as sd
 from spectracut.studio.departments.capture import UI_CAPTURE, UICaptures
 from spectracut.studio.gates import GateMode
@@ -391,7 +392,9 @@ def test_shot_planner_schema_carries_each_template_slot_schema() -> None:
         described = [k for k, v in slots["properties"].items() if "description" in v]
         assert described, template_id
         variants = branch["properties"]["variant"]["anyOf"][0]["enum"]
-        assert variants == [v.id for v in template.variants], template_id
+        # Device templates also offer the camera paths (#369).
+        paths = list(ch.SHOT_PATHS) if template_id.startswith("device-") else []
+        assert variants == [v.id for v in template.variants] + paths, template_id
     typography = resolve(by_id["typography"]["properties"]["slots"])
     assert typography["required"] == ["body"]
     assert "description" in typography["properties"]["body"]
@@ -914,7 +917,7 @@ def _device_board() -> Board:
 
 def test_close_preset_focus_and_fstop(tmp_path: Path) -> None:
     capture = _capture(tmp_path).captures[0]
-    assert sd.DEVICE_VARIANTS == ("front", "three-quarter", "wide", "close")
+    assert sd.DEVICE_VARIANTS == ("front", "three-quarter", "wide", "close", "ui-run-3cut")
     look = Look(id="close", motion_blur=False, depth_of_field=True)
     recipes = {
         v: sd.device_recipe(
@@ -953,3 +956,167 @@ def test_rendered_shot_records_screen_state(tmp_path: Path) -> None:
     assert "screen_state" not in dumped
     dumped = sd.RenderedShot.model_construct(screen_state=record).model_dump(mode="json")  # type: ignore[call-arg]
     assert dumped["screen_state"] == record
+
+
+# ---- camera-path device shots (#369) -----------------------------------------------------
+
+PATH_ANCHORS = {
+    "SC": (0.5, 0.5),
+    "#url": (0.197, 0.46),
+    "text=Run": (0.135, 0.525),
+    ".result-card": (0.66, 0.2),
+    "text=Status": (0.45, 0.205),
+}
+
+
+def _path_captures(tmp_path: Path) -> UICaptures:
+    """A 25-frame 24 fps capture with DOM anchors and a paste (f10) then a click (f12)."""
+    dumped = _capture(tmp_path, frames=25, fps=24).model_dump(mode="json")
+    raw = dumped["captures"][0]
+    raw["anchors"] = {k: list(v) for k, v in PATH_ANCHORS.items()}
+    events = [{"type": "keystroke", "key": "⌘V", "frame": 10}, {"type": "click", "frame": 12}]
+    Path(raw["events"]).write_text(json.dumps(events), encoding="utf-8")
+    return UICaptures.model_validate(dumped)
+
+
+def _path_rig(tmp_path: Path) -> tuple[Rig, UICaptures]:
+    rig, _ = _device_rig(tmp_path)
+    captures = _path_captures(tmp_path)
+    planned: dict[str, JsonValue] = {
+        "template": "device-laptop",
+        "variant": "ui-run-3cut",
+        "slots": {"screen_frames": [{"path": "ui/frame_0001.png", "sha256": _SHA}]},
+    }
+    plan = _plan(open=planned)
+    rig.text = DeviceText(plan, captures, 1.0)
+    rig.runner.inner = rig.text
+    return rig, captures
+
+
+def test_device_path_variant_keeps_its_id_and_keys_one_camera_move(tmp_path: Path) -> None:
+    capture = _path_captures(tmp_path).captures[0]
+    look = Look(id="dof", motion_blur=False, depth_of_field=True)
+    recipe, slots, extra = sd.device_recipe(
+        load_brand_kit(KIT),
+        _device_board(),
+        capture,
+        variant="ui-run-3cut",
+        aspect="16:9",
+        look=look,
+    )
+    moves = [s.args for s in recipe.steps if s.tool == "camera.move"]
+    # One camera.move: the path keys, eased; no board move and no focus_steps pull.
+    assert len(moves) == 1 and moves[0]["easing"] == "ease_in_out"
+    keys: Any = moves[0]["keys"]
+    assert [k["frame"] for k in keys] == [1, 40, 41, 72, 73, 132]
+    assert {"location", "rotation", "lens", "focus_distance", "fstop"} <= set(keys[0])
+    ranges = [s.args for s in recipe.steps if s.tool == "render.set_frame_range"]
+    assert ranges[-1] == {"frame_start": 1, "frame_end": 132}
+    frames: Any = slots["screen_frames"]
+    assert len(frames) == 132 and set(extra) == {f["path"] for f in frames}
+    # Non-path variants still clamp and keep the board move + focus pull.
+    plain = sd.device_recipe(
+        load_brand_kit(KIT), _device_board(), capture, variant="bogus", aspect="16:9", look=look
+    )[0]
+    assert sum(s.tool == "camera.move" for s in plain.steps) == 2
+
+
+def test_device_path_without_capture_anchors_fails_closed(tmp_path: Path) -> None:
+    capture = _capture(tmp_path, frames=25, fps=24).captures[0]
+    Path(capture.events).write_text(
+        json.dumps([{"type": "keystroke", "key": "⌘V", "frame": 1}, {"type": "click", "frame": 2}]),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="role 'URL'.*matches no anchor"):
+        sd.device_recipe(
+            load_brand_kit(KIT),
+            _device_board(),
+            capture,
+            variant="ui-run-3cut",
+            aspect="16:9",
+            look=Look(id="x"),
+        )
+
+
+def test_device_path_shot_records_cuts_anchors_and_gate_stills(tmp_path: Path) -> None:
+    rig, _captures = _path_rig(tmp_path)
+    report = rig.run()
+    assert not report.failed, {n: rig.graph.state(n).error for n in report.failed}
+    out = sd.RenderedShots.model_validate(rig.graph.output("template_shots"))
+    shot = out.shots[0]
+    assert (shot.template, shot.variant, shot.frame_end) == ("device-laptop", "ui-run-3cut", 132)
+    assert shot.cuts == ch.UI_RUN_3CUT.timing()
+    assert shot.anchors is not None and shot.anchors["RUN"]["selector"] == "text=Run"
+    assert shot.gate_stills is not None
+    assert set(shot.gate_stills) == {"A:1", "A:40", "B:41", "B:72", "C:73", "C:132"}
+    # Six single-frame gate jobs at 16 spp, signed before the sequence job.
+    jobs = [j for j in rig.fake.submitted if "open" in j["name"]]
+    assert [j["settings"]["frames"] for j in jobs[:7]] == [
+        "1-1",
+        "40-40",
+        "41-41",
+        "72-72",
+        "73-73",
+        "132-132",
+        "1-132",
+    ]
+    for job in jobs[:6]:
+        signed = json.loads(Path(job["settings"]["job_file"]).read_text(encoding="utf-8"))
+        steps = signed["envelope"]["recipe"]["steps"]
+        assert {"property": "cycles.samples", "value": sd.GATE_SAMPLES} in [
+            s["args"] for s in steps
+        ]
+    assert sd.GATE_SAMPLES == 16
+    # Non-path shots keep their JSON: no cuts/anchors/gate_stills keys.
+    assert not {"cuts", "anchors", "gate_stills"} & set(out.shots[1].model_dump(mode="json"))
+    final = sd.RenderedShots.model_validate(rig.graph.output("shots"))
+    assert final.shots[0].cuts == shot.cuts and final.shots[0].anchors == shot.anchors
+
+
+def _gradient(offset: int) -> bytes:
+    rows = b"".join(bytes(x * 4 + offset for x in range(32) for _ in range(3)) for _y in range(8))
+    return encode_png(32, 8, 3, rows)
+
+
+def _path_record(tmp_path: Path, offsets: list[int], blank_still: bool = False) -> dict[str, Any]:
+    out = tmp_path / "render"
+    out.mkdir(parents=True)
+    frames = {}
+    for n, off in enumerate(offsets, start=1):
+        (out / f"frame_{n:04d}.png").write_bytes(_gradient(off))
+        frames[f"frame_{n:04d}.png"] = str(n)
+    cuts = [{"name": "A", "start": 1, "end": 6}, {"name": "B", "start": 7, "end": len(offsets)}]
+    stills = {}
+    for key in ("A:1", "A:6", "B:7", f"B:{len(offsets)}"):
+        still = tmp_path / f"gate_{key.replace(':', '_')}.png"
+        flat = blank_still and key == "B:7"
+        still.write_bytes(solid_png(16, 16, (40, 40, 40)) if flat else _checker_png())
+        stills[key] = str(still)
+    record = _shot_record(out)
+    del record["description"]
+    record.update(
+        template="device-laptop",
+        frames=frames,
+        frame_end=len(offsets),
+        cuts=cuts,
+        anchors={"RUN": {"selector": "text=Run", "uv": [0.1, 0.5]}},
+        gate_stills=stills,
+    )
+    return record
+
+
+def test_shot_critic_fails_a_blank_gate_still_and_a_twitching_sequence(tmp_path: Path) -> None:
+    critic, spec = sd.shot_critic(0.6), sd.shot_nodes()[0]
+    smooth = [0, 1, 2, 3, 4, 5, 60, 61, 62, 63, 64, 65]
+    good = _path_record(tmp_path / "good", smooth)
+    assert critic(spec, {"shots": [good]}).passed
+    blank = _path_record(tmp_path / "blank", smooth, blank_still=True)
+    verdict = critic(spec, {"shots": [blank]})
+    assert not verdict.passed and "gate still B:7 is blank" in verdict.comment
+    twitch = _path_record(tmp_path / "twitch", [0, 1, 2, 3, 4, 5, 60, 61, 62, 120, 121, 122])
+    verdict = critic(spec, {"shots": [twitch]})
+    assert not verdict.passed and "twitch" in verdict.comment and "10" in verdict.comment
+    missing = _path_record(tmp_path / "missing", smooth)
+    Path(missing["gate_stills"]["A:6"]).unlink()
+    verdict = critic(spec, {"shots": [missing]})
+    assert not verdict.passed and "gate still A:6 is missing" in verdict.comment

@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from spectracut.qa.png import solid_png
+from spectracut.providers.mock_image import solid_png
+from spectracut.qa.common import encode_png
 from spectracut.studio.departments import choreography as ch
 from spectracut.studio.departments.capture import ScreenCapture
 from spectracut.studio.departments.screens import CHROME_SIZES, CONTENT_RECTS
@@ -41,7 +42,7 @@ def _capture(
     fps: int = 24,
 ) -> ScreenCapture:
     root = tmp_path / "clip"
-    root.mkdir(exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
     clip = []
     for n, c in enumerate(colours or [0, 1, 2]):
         data = solid_png(4, 4, (c, 20, 30))
@@ -288,12 +289,10 @@ def test_cut_b_ends_on_running_not_the_reset_run(tmp_path: Path) -> None:
 
 
 def _gradient_png(offset: int) -> bytes:
-    from spectracut.qa.png import encode_png
-
     rows = []
     for _y in range(8):
-        rows.append(bytes(min(255, (x * 8 + offset) % 256) for x in range(32) for _ in range(3)))
-    return encode_png(32, 8, b"".join(rows), channels=3)
+        rows.append(bytes(x * 4 + offset for x in range(32) for _ in range(3)))
+    return encode_png(32, 8, 3, b"".join(rows))
 
 
 def test_twitch_frames_flags_an_isolated_drop_but_not_a_cut(tmp_path: Path) -> None:
@@ -316,9 +315,9 @@ def test_choreography_imports_no_producer_or_queue() -> None:
     import ast
 
     tree = ast.parse(Path(ch.__file__).read_text(encoding="utf-8"))
-    names = [
-        node.module or ""
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    ] + [a.name for node in ast.walk(tree) if isinstance(node, ast.Import) for a in node.names]
-    assert not [n for n in names if n.startswith(("spectracut.queue", "spectracut.studio.producer"))]
+    names = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)] + [
+        a.name for node in ast.walk(tree) if isinstance(node, ast.Import) for a in node.names
+    ]
+    assert not [
+        n for n in names if n.startswith(("spectracut.queue", "spectracut.studio.producer"))
+    ]
