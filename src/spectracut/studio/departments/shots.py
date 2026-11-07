@@ -770,7 +770,7 @@ class DevicePath:
 _ASPECT_RATIO = {"16:9": 16 / 9, "9:16": 9 / 16}
 
 
-def capture_events(capture: ScreenCapture) -> list[object]:
+def capture_event_log(capture: ScreenCapture) -> list[object]:
     """The capture's ``events.json`` records; :class:`ValueError` when unreadable."""
     try:
         raw = json.loads(Path(capture.events).read_text(encoding="utf-8"))
@@ -812,7 +812,7 @@ def device_path(
     aim or focus leaves the frame raises :class:`ValueError` before any farm job."""
     assert board.device is not None
     anchors = ch.resolve_anchors(path, capture)
-    screen, extra = pin_frames(ch.screen_timeline(path, capture, capture_events(capture)))
+    screen, extra = pin_frames(ch.screen_timeline(path, capture, capture_event_log(capture)))
     slots: dict[str, JsonValue] = {
         "screen_frames": [p.model_dump(mode="json") for p in screen],
         **device_lighting(kit, assets),
