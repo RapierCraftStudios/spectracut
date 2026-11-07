@@ -276,6 +276,8 @@ _BAD_ARGS: list[tuple[str, dict[str, Any]]] = [
     ("device.add", {"kind": "phone", "screen": {**_SCREEN, "movie": _HDRI}}),
     ("device.add", {"kind": "phone", "screen": {"frames": [{"path": "ui/a.png"}]}}),
     ("device.add", {"kind": "phone", "screen": _SCREEN, "grid": {"resolution": [1, 2]}}),
+    ("device.add", {"kind": "phone", "screen": _SCREEN, "bevel": 0.5}),
+    ("device.add", {"kind": "phone", "screen": _SCREEN, "finish": "chrome-logo"}),
     (
         "object.animate",
         {"object": "Box", "preset": "turntable", "frame_start": 1, "frame_end": 24, "eval": 1},
@@ -405,15 +407,20 @@ def test_device_add_builds_rig_with_sequence_screen(
     assert report == {
         "device": "Dev.body",
         "kind": kind,
-        "objects": parts + (["Dev.base"] if kind == "laptop" else []),
+        "objects": parts
+        + (["Dev.base", "Dev.keyboard", "Dev.trackpad"] if kind == "laptop" else []),
         "screen_object": "Dev.screen",
         "screen_material": "screen.Dev",
         "node_group": "SC_Screen",
         "emission_strength": 3.0,
         "frames": 3,
         "frame_offset": 4,
+        "bevel": {"phone": 0.004, "laptop": 0.003}[kind],
+        "finish": "aluminium",
     }
     calls = run.calls
+    # Higher fidelity: a bevelled shell (and deck), no text anywhere.
+    assert ["modifier", "Dev.body", "bevel", "BEVEL"] in run.state["events"]
     first = str((assets / "ui" / "home_0001.png").resolve())
     assert any(f"images.load({first!r}, check_existing=True)" in c for c in calls), calls
     assert sum("images.load" in c for c in calls) == 1

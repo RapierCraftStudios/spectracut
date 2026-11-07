@@ -68,7 +68,18 @@ HOST_ARGS: dict[str, set[str]] = {
     "camera.add_aspect": {"aspect", "name"},
     "camera.use": {"name", "long_edge"},
     "light.add": {"kind", "name", "energy", "location", "rotation"},
-    "device.add": {"kind", "name", "location", "rotation", "screen", "emission_strength", "grid"},
+    "device.add": {
+        "kind",
+        "name",
+        "location",
+        "rotation",
+        "screen",
+        "emission_strength",
+        "grid",
+        "bevel",
+        "finish",
+    },
+    "world.set_gradient": {"bottom", "top", "strength"},
     "text.add": {
         "body",
         "name",
@@ -466,8 +477,30 @@ def test_device_screen_takes_frames_or_movie_and_hdri_lighting() -> None:
     assert args_of(recipe, "world.set_hdri") == [
         {"path": "hdri/studio.hdr", "sha256": SHA_B, "strength": 1.0, "rotation": 0.0}
     ]
-    assert {a["name"] for a in args_of(recipe, "light.add")} == {"key", "rim"}
+    assert {a["name"] for a in args_of(recipe, "light.add")} == {"key", "fill", "rim"}
     assert args_of(LAPTOP.build(alterlab(), DEVICE_SLOTS), "device.add")[0]["kind"] == "laptop"
+
+
+@pytest.mark.parametrize("lighting", ["studio-soft", "studio-dark", "studio-bright"])
+def test_device_studio_lighting_without_hdri(lighting: str) -> None:
+    """#339: no pinned HDRI -> studio gradient world, preset lights, reflective floor."""
+    slots = {k: v for k, v in DEVICE_SLOTS.items() if k != "hdri"}
+    recipe = LAPTOP.build(alterlab(), {**slots, "lighting": lighting})
+    _check_host_args(recipe)
+    assert "world.set_hdri" not in tools(recipe)
+    (world,) = args_of(recipe, "world.set_gradient")
+    assert world["bottom"] < world["top"]
+    lights = args_of(recipe, "light.add")
+    assert [a["name"] for a in lights] == ["key", "fill", "rim"]
+    assert all(a["kind"] == "area" for a in lights)
+    (floor,) = args_of(recipe, "material.apply_preset")
+    assert floor["preset"] == "glossy_plastic"
+    (device,) = args_of(recipe, "device.add")
+    assert device["finish"] == "aluminium" and device["bevel"] > 0
+    # No OEM marks: nothing but the screen UI is an image, and no text is added.
+    assert "text.add" not in tools(recipe)
+    assert set(referenced_assets(recipe)) == {"ui/screen_0001.png", "ui/screen_0002.png"}
+    assert DeviceSlots.model_validate(slots).lighting == "studio-soft"
 
 
 @pytest.mark.parametrize("animation", sorted(ANIMATE_EXTRA))
