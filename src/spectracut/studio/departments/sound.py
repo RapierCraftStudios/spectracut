@@ -41,7 +41,14 @@ from spectracut.audio.generate import (
     Selection,
     generate_scene,
 )
-from spectracut.audio.music_edit import Stretcher, analyze, edited_sound, plan_edit, render_edit
+from spectracut.audio.music_edit import (
+    Stretcher,
+    analyze,
+    cut_beats,
+    edited_sound,
+    plan_edit,
+    render_edit,
+)
 from spectracut.audio.recipe import AudioRecipe, Cue, Layer, Provenance, SoundSpec, place_cues
 from spectracut.audio.render import ArdourRunner, read_wav, render_mix, write_wav
 from spectracut.audio.vo import VoiceOver, VoiceoverLine, VoiceoverTrack, VoLine
@@ -118,6 +125,10 @@ class MusicBed(StrictModel):
     end_card_s: float = Field(ge=0.0)
     plan_hash: str = Field(min_length=1)
     provenance: Provenance
+    beats_s: list[float] = Field(default_factory=list)
+    """Beat times on the cut score (seconds from its start), for cutting on the beat."""
+    tempo_bpm: float | None = None
+    """The cut score's tempo: the source tempo over the plan's stretch ratio."""
 
 
 class Mix(StrictModel):
@@ -458,9 +469,8 @@ class SoundRunner:
         )
         minutes = self._minutes(start)
         end_card = _end_card_s(edit)
-        plan = plan_edit(
-            analyze(bed.path), target_s=target, end_card_s=end_card, fps=float(edit.rate)
-        )
+        grid = analyze(bed.path)
+        plan = plan_edit(grid, target_s=target, end_card_s=end_card, fps=float(edit.rate))
         out = render_edit(
             plan, bed.path, self.workdir / "music" / "score.wav", stretcher=self.stretcher
         )
@@ -471,6 +481,8 @@ class SoundRunner:
             end_card_s=plan.hit_out_s,
             plan_hash=plan.content_hash(),
             provenance=edited_sound(plan, bed.spec.provenance).provenance,
+            beats_s=list(cut_beats(plan, grid)),
+            tempo_bpm=grid.tempo_bpm / plan.ratio if plan.ratio > 0 else None,
         )
         return self._done(ctx, music, Usage(gpu_minutes=minutes))
 

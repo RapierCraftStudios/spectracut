@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Edit timeline model, OpenTimelineIO import/export and conform.
+"""Edit timeline model, OpenTimelineIO import/export, conform and the editorial pass.
 
 The public names are resolved lazily from their defining modules, so each name
 has exactly one definition site and importing the package stays cheap.
@@ -24,6 +24,10 @@ _EXPORTS: dict[str, str] = {
     "SpeedRamp": "timeline",
     "Track": "timeline",
     "Transition": "timeline",
+    "EditorialReport": "editorial",
+    "check_editorial": "editorial",
+    "editorial_pass": "editorial",
+    "pace_cutdown": "editorial",
     "find_shot": "conform",
     "replace_shot": "conform",
     "from_otio": "otio_io",
