@@ -65,8 +65,8 @@ KIT = BrandKit.model_validate(
 )
 
 
-def calls(light: str = "key", text: str | None = "ONE BEAM") -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = [
+def calls(light: str = "key", text: str | None = "ONE BEAM") -> list[JsonValue]:
+    out: list[JsonValue] = [
         {"tool": "scene.clear", "args": {}},
         {"tool": "object.add_primitive", "args": {"kind": "cube", "name": "slab"}},
         {"tool": "material.apply_preset", "args": {"object": "slab", "preset": "matte_plastic"}},
@@ -160,7 +160,8 @@ def builder(
 
 
 def brief(**kw: Any) -> SceneBrief:
-    return SceneBrief(id="one-beam", description=DESCRIPTION, art=ART, **kw)
+    kw.setdefault("description", DESCRIPTION)
+    return SceneBrief(id="one-beam", art=ART, **kw)
 
 
 def answer(light: str = "key", text: str | None = "ONE BEAM") -> JsonValue:
@@ -192,7 +193,7 @@ def test_compiled_recipe_uses_only_harness_build_tools_and_runtime_ops() -> None
     ],
 )
 def test_query_unknown_or_bad_calls_are_refused_and_never_rendered(
-    tmp_path: Path, bad: list[dict[str, Any]]
+    tmp_path: Path, bad: list[JsonValue]
 ) -> None:
     with pytest.raises(HarnessError):
         compile_calls(bad, recipe_id="r", shot_id="s")
@@ -316,6 +317,18 @@ def test_text_copy_outside_the_brief_or_forbidden_is_refused(
 
 def test_brief_copy_defaults_to_quoted_strings_and_passes() -> None:
     assert brief().copy_lines() == ("ONE BEAM",)
+
+
+def test_brief_copy_takes_single_quoted_strings() -> None:
+    description = (
+        "Engraved readout: 'Tier used: 3' and a 'Savings' line; the frame's glow \"ONE BEAM\"."
+    )
+    assert brief(description=description).copy_lines() == ("Tier used: 3", "Savings", "ONE BEAM")
+
+
+def test_brief_copy_ignores_apostrophes_and_dedupes_in_order() -> None:
+    description = "The users' panel shows ‘Docs’, 'POST /api/v1/scrape' and ‘Docs’ again."
+    assert brief(description=description).copy_lines() == ("Docs", "POST /api/v1/scrape")
 
 
 # ---- R3: verifier prompt ---------------------------------------------------------------

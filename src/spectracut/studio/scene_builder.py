@@ -82,7 +82,13 @@ CALLS_SCHEMA: dict[str, Any] = {
     "required": ["plan", "calls"],
 }
 
-_QUOTED = re.compile(r"\"([^\"]+)\"|“([^”]+)”")
+_QUOTED = re.compile(r"\"([^\"]+)\"|“([^”]+)”|‘([^’]+)’|(?<![\w'\"])'([^']+)'(?!\w)")
+"""Brief copy in double, curly-double, curly-single or straight single quotes.
+
+A straight single quote opens only when it does not follow a word character or
+another quote, and closes only when no word character follows, so apostrophes
+("frame's", "users'") are not taken as quotes.
+"""
 
 
 class CopyRefused(ValueError):
@@ -282,7 +288,8 @@ class SceneBrief(StrictModel):
     def copy_lines(self) -> tuple[str, ...]:
         if self.allowed_copy is not None:
             return self.allowed_copy
-        return tuple(a or b for a, b in _QUOTED.findall(self.description))
+        found = (next(g for g in groups if g) for groups in _QUOTED.findall(self.description))
+        return tuple(dict.fromkeys(found))
 
     def palette(self) -> dict[str, str]:
         colours = {f"art.{k}": v for k, v in self.art.palette.swatches.items()}
@@ -470,7 +477,10 @@ class SceneBuilder:
             "Look:",
             brief.art.look.model_dump_json(),
             "",
-            "Allowed on-screen copy (text.add body must be one of these, verbatim):",
+            (
+                "Allowed on-screen copy (text.add takes the body verbatim and it must be one "
+                "of these; span lines with \\n only where the copy itself does):"
+            ),
             _dumps(list(brief.copy_lines())),
         ]
         if brief.brand_kit is not None and brief.brand_kit.forbidden_words:
