@@ -94,6 +94,9 @@ def _respond(system: str, prompt: str, schema: dict[str, Any]) -> JsonValue:
     output = instance_of(schema)
     if isinstance(output, dict) and isinstance(output.get("palette"), dict):
         output["palette"] = {"swatches": {"primary": "#1a2b3c"}}
+    if isinstance(output, dict) and "craft_refs" in schema.get("properties", {}):
+        # The production studies the default reference set (#342): cite one point.
+        output["craft_refs"] = ["base44-launch:kinetic-type-as-the-spine"]
     return output
 
 

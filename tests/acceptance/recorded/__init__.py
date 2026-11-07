@@ -323,6 +323,8 @@ def launch_film(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Film]:
         mp.setenv("SPECTRACUT_HOME", str(home))
         mp.setenv("SPECTRACUT_CONFIG", str(tmp / "config.toml"))
         mp.setenv("SPECTRACUT_PROVIDERS", "mock")
+        # No local reference store (as on CI): no keyframes, comparisons record a note.
+        mp.setenv("SPECTRACUT_REFERENCES", str(tmp / "references"))
         mp.delenv("ELEVENLABS_API_KEY", raising=False)
         mp.setattr("spectracut.qa.copy_ocr.available_reader", lambda: None)
         mp.setattr(studio_mod, "text_provider_factory", lambda: provider)

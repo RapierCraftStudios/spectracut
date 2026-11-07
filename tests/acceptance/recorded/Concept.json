@@ -12,5 +12,9 @@
   "visuals": [
     "Structured data panel",
     "AlterLab end card"
+  ],
+  "craft_refs": [
+    "base44-launch:kinetic-type-as-the-spine",
+    "base44-launch:real-ui-as-the-hero"
   ]
 }
