@@ -26,8 +26,9 @@ from spectracut.providers.local.remote import RemoteLoader
 from spectracut.providers.local.runtime import ModelRuntime
 from spectracut.queue.executors.base import GpuCard, LeasePool
 from spectracut.studio.departments import sound as sound_depts
-from spectracut.studio.graph import RunContext, RunResult
-from spectracut.studio.node import Tier
+from spectracut.studio.gates import GateMode, GatePolicy
+from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
+from spectracut.studio.node import NodeSpec
 
 pytestmark = [
     pytest.mark.e2e,
@@ -60,10 +61,27 @@ def _runner(tmp_path: Path) -> sound_depts.SoundRunner:
     return sound_depts.SoundRunner(unused, DEPARTMENTS, workdir=tmp_path, runtime=runtime)
 
 
-def _run(runner: sound_depts.SoundRunner, kind: str) -> RunResult:
+def _run(runner: sound_depts.SoundRunner, kind: str) -> tuple[RunResult, ProductionGraph]:
+    """Run the stage through a ProductionGraph so the ledger is written, as ``studio run`` does."""
     spec = next(n for n in sound_depts.sound_nodes() if n.kind == kind)
-    inputs = {spec.inputs[0]: _edit().model_dump(mode="json")}
-    return runner(RunContext(spec=spec, tier=Tier.PREVIEW, key="k", inputs=inputs, attempt=1))
+    graph = ProductionGraph(
+        "snd-legion",
+        gates=GatePolicy(defaults={"animatic": GateMode.AUTO, spec.kind: GateMode.AUTO}),
+    )
+    graph.add_nodes([NodeSpec(id="animatic", kind="animatic", department="stub"), spec])
+
+    def run(ctx: RunContext) -> RunResult:
+        if ctx.spec.kind == "animatic":
+            return RunResult(output=_edit().model_dump(mode="json"))
+        return runner(ctx)
+
+    report = graph.run(run)
+    assert report.failed == [], {n: graph.state(n).error for n in report.failed}
+    entries = graph.ledger.entries_for(spec.id)
+    assert len(entries) == 1, entries
+    assert entries[0].outcome == "accepted"
+    assert entries[0].gpu_minutes > 0, entries[0]
+    return RunResult(output=graph.output(spec.id)), graph
 
 
 def _assert_real_wav(path: str) -> wave.Wave_read:
@@ -75,7 +93,7 @@ def _assert_real_wav(path: str) -> wave.Wave_read:
 
 
 def test_sound_design_stage_generates_real_sfx_on_the_model_host(tmp_path: Path) -> None:
-    result = _run(_runner(tmp_path), sound_depts.SOUND_DESIGN)
+    result, _ = _run(_runner(tmp_path), sound_depts.SOUND_DESIGN)
     design = sound_depts.SoundDesign.model_validate(result.output)
     assert design.cues
     model = resolve_model("sfx").id
@@ -83,15 +101,13 @@ def test_sound_design_stage_generates_real_sfx_on_the_model_host(tmp_path: Path)
         _assert_real_wav(cue.media_ref)
         assert cue.provenance.origin.startswith(model), cue.provenance.origin
         assert "mock" not in cue.provenance.origin
-    assert result.usage.gpu_minutes > 0
 
 
 def test_music_stage_generates_a_real_bed_on_the_model_host(tmp_path: Path) -> None:
-    result = _run(_runner(tmp_path), sound_depts.MUSIC)
+    result, _ = _run(_runner(tmp_path), sound_depts.MUSIC)
     bed = sound_depts.MusicBed.model_validate(result.output)
     with wave.open(bed.media_ref, "rb") as w:
         seconds = w.getnframes() / w.getframerate()
     _assert_real_wav(bed.media_ref)
     assert abs(seconds - float(_edit().seconds)) <= 1 / 24 + 1e-3
     assert "mock" not in bed.provenance.origin
-    assert result.usage.gpu_minutes > 0
