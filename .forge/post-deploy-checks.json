@@ -114,6 +114,11 @@
     "pass": "/\\b2 passed\\b/",
     "timeout": 3600
   },
+  "models-hunyuan-foley-legion-e2e": {
+    "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && SPECTRACUT_E2E=1 uv run pytest -q -m e2e tests/host/test_hunyuan_foley_e2e.py",
+    "pass": "/\\b1 passed\\b/",
+    "timeout": 3600
+  },
   "cycles-gpu-device-farm-e2e": {
     "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && env -u SPECTRACUT_JOB_SIGNING_KEY SPECTRACUT_E2E=1 SPECTRACUT_FLAMENCO_URL=http://100.105.62.23:8085 SPECTRACUT_FLAMENCO_TAGS=3070laptopgpu SPECTRACUT_FLAMENCO_SHARED=/srv/flamenco uv run pytest -q -m e2e tests/host/test_host_e2e.py -k 'flamenco and gpu'",
     "pass": "/\\b[1-9]\\d* passed\\b/",
