@@ -3,7 +3,9 @@
 
 ``light.add`` adds one light, or a rig preset expanded into several ``light.add``
 steps. ``world.set_hdri``, ``world.set_gradient`` and ``world.set_haze`` set the
-world background and volumetric haze (density capped Look-safe).
+world background and volumetric haze (density capped Look-safe). A gradient's
+``brand_bottom`` / ``brand_top`` swatches are linearised here, so the recorded
+runtime step only ever carries numeric ``bottom`` / ``top``.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, model_validator
 
+from spectracut.finishing.color import hex_to_linear
 from spectracut.harness.tools import (
     HarnessTool,
     Output,
@@ -24,6 +27,7 @@ from spectracut.harness.tools import (
     build_tool,
     dump,
 )
+from spectracut.spec._base import HexColor
 
 Energy = Annotated[float, Field(ge=0, le=1e7)]
 Unit = Annotated[float, Field(ge=0, le=1)]
@@ -148,9 +152,31 @@ class SetHdri(ToolArgs):
 
 
 class SetGradient(ToolArgs):
-    bottom: Color
-    top: Color
+    """Pass bottom or brand_bottom, and top or brand_top.
+
+    Numeric colours are scene-linear; brand swatches are linearised (sRGB EOTF).
+    """
+
+    bottom: Color | None = None
+    top: Color | None = None
+    brand_bottom: HexColor | None = Field(
+        default=None, description="a brand-kit swatch '#rrggbb'; linearised and recorded as bottom"
+    )
+    brand_top: HexColor | None = Field(
+        default=None, description="a brand-kit swatch '#rrggbb'; linearised and recorded as top"
+    )
     strength: Annotated[float, Field(ge=0, le=1000)] | None = None
+
+    @model_validator(mode="after")
+    def _one_colour_per_end(self) -> SetGradient:
+        for end in ("bottom", "top"):
+            numeric = getattr(self, end) is not None
+            brand = getattr(self, f"brand_{end}") is not None
+            if numeric and brand:
+                raise ValueError(f"pass {end} or brand_{end}, not both")
+            if not numeric and not brand:
+                raise ValueError(f"pass {end} or brand_{end}")
+        return self
 
 
 class SetHaze(ToolArgs):
@@ -173,6 +199,17 @@ def light_add(session: Session, args: LightAdd) -> Output:
     return session.record_build("light.add", dump(args), steps)
 
 
+def set_gradient(session: Session, args: SetGradient) -> Output:
+    step_args = dump(args)
+    for end in ("bottom", "top"):
+        brand = step_args.pop(f"brand_{end}", None)
+        if isinstance(brand, str):
+            step_args[end] = list(hex_to_linear(brand))
+    return session.record_build(
+        "world.set_gradient", dump(args), [("world.set_gradient", step_args)]
+    )
+
+
 TOOLS = [
     HarnessTool(
         "light.add",
@@ -188,10 +225,13 @@ TOOLS = [
         "Light the world from a sha256-pinned HDRI in the host assets dir.",
         SetHdri,
     ),
-    build_tool(
+    HarnessTool(
         "world.set_gradient",
         "Set a vertical colour gradient world background (bottom to top) with a strength.",
         SetGradient,
+        "build",
+        set_gradient,
+        frozenset({"world.set_gradient"}),
     ),
     build_tool(
         "world.set_haze",

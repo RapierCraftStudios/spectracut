@@ -13,6 +13,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import JsonValue
 
+from spectracut.finishing.color import hex_to_linear
 from spectracut.providers.base import Completion, VisionScore
 from spectracut.providers.mock_image import MockImageProvider
 from spectracut.queue.flamenco import WorkerTag
@@ -69,13 +70,26 @@ def test_recipe_without_a_concept_uses_the_palette_colour(tmp_path: Path) -> Non
     tools = _tools(recipe)
     assert "material.apply_screen" not in tools
     preset = next(s for s in recipe.steps if s.tool == "material.apply_preset")
-    assert preset.args["color"] == [round(0x10 / 255, 4), round(0x18 / 255, 4), 0.1255]
+    # #101820 linearised (sRGB EOTF), so it renders back to its own hex under BRAND_PIPELINE.
+    assert preset.args["color"] == list(hex_to_linear("#101820"))
+    assert preset.args["color"] == pytest.approx([0.005182, 0.009134, 0.014444], abs=1e-6)
     assert ds.referenced_assets(recipe) == {}
 
 
 def test_recipe_ends_with_final_tier_png_output(tmp_path: Path) -> None:
     recipe = style_frame_recipe(_frame(tmp_path), ART, CONCEPT_FILE)
     tools = _tools(recipe)
+    view = {
+        s.args["property"]: s.args["value"]
+        for s in recipe.steps[-5:-1]
+        if s.tool == "render.set_property"
+    }
+    assert view == {
+        "view_settings.display_device": "sRGB",
+        "view_settings.view_transform": "Standard",
+        "view_settings.look": "None",
+        "view_settings.exposure": 0.0,
+    }
     assert tools[0] == "scene.clear"
     assert "render.set_resolution" in tools
     assert recipe.steps[-1].tool == "render.set_output"

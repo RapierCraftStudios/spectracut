@@ -241,3 +241,45 @@ def test_measure_chart_refuses_a_layout_outside_the_master() -> None:
         measure_chart(master, chart_layout(96, 64), ColorPipeline())
     with pytest.raises(ValueError, match="too small"):
         chart_layout(5, 3)
+
+
+ALTERLAB_SWATCHES = ["#0b1220", "#f5f7fa", "#2f6bff", "#18b47b", "#f2a33a", "#3a475c"]
+
+
+@pytest.mark.parametrize("swatch", ALTERLAB_SWATCHES)
+def test_hex_to_linear_round_trips_through_srgb_encode(swatch: str) -> None:
+    from spectracut.finishing.color import hex_to_linear, srgb_encode
+
+    encoded = "#" + "".join(f"{round(srgb_encode(c) * 255):02x}" for c in hex_to_linear(swatch))
+    assert encoded == swatch
+
+
+def test_hex_to_lab_matches_the_linearised_swatch() -> None:
+    from spectracut.finishing.color import hex_to_lab, hex_to_linear, linear_to_lab
+
+    assert hex_to_lab("#2f6bff") == pytest.approx(linear_to_lab(hex_to_linear("#2f6bff")), abs=1e-3)
+    assert hex_to_lab("#000000") == pytest.approx((0.0, 0.0, 0.0), abs=1e-6)
+
+
+def test_brand_pipeline_steps_pin_standard_srgb_and_exposure_zero() -> None:
+    from spectracut.finishing.color import BRAND_PIPELINE
+
+    steps = BRAND_PIPELINE.render_steps(start=2)
+    assert [s.index for s in steps] == [2, 3, 4, 5]
+    assert [(s.args["property"], s.args["value"]) for s in steps] == [
+        ("view_settings.display_device", "sRGB"),
+        ("view_settings.view_transform", "Standard"),
+        ("view_settings.look", "None"),
+        ("view_settings.exposure", 0.0),
+    ]
+
+
+def test_default_pipeline_steps_are_unchanged() -> None:
+    steps = ColorPipeline().render_steps()
+    assert len(steps) == 3
+    assert all(s.args["property"] != "view_settings.exposure" for s in steps)
+
+
+def test_pipeline_exposure_is_bounded() -> None:
+    with pytest.raises(ValueError):
+        ColorPipeline(exposure=11)

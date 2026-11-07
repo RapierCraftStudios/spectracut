@@ -31,18 +31,24 @@ Arguments (all optional except `object` and `preset`):
 
 | Argument | Range | Socket |
 | --- | --- | --- |
-| `color` | RGB/RGBA in [0, 1] | Base Color |
-| `brand_color` | `#rrggbb` brand-kit swatch; harness converts it to `color` (not with `color`) | Base Color |
+| `color` | scene-linear RGB/RGBA in [0, 1] (never hex/255) | Base Color |
+| `brand_color` | `#rrggbb` brand-kit swatch; the harness linearises it (sRGB EOTF) and records it as `color` (not with `color`) | Base Color |
 | `name` | material name | |
 | `roughness` | [0, 1] | Roughness |
 | `ior` | [1, 3] | IOR |
 | `transmission` | [0, 1] | Transmission Weight |
 | `emission_color` | RGB/RGBA in [0, 1] | Emission Color |
-| `emission_strength` | [0, 1000] | Emission Strength |
+| `emission_strength` | [0, 1000]; with `brand_color` on `emissive`, default 1 and at most 1 | Emission Strength |
 | `anisotropy` | [0, 1] | Anisotropic |
 | `metallic` | [0, 1] | Metallic |
 
 Overrides are applied after the preset, and the runtime report echoes them.
+
+Brand emissives: an `emissive` preset with `brand_color` records
+`emission_strength` 1 when none is given and refuses more than 1
+(`BRAND_EMISSION_MAX`, `args.invalid`). Under the brand view (below) a linearised
+swatch at strength 1 displays as its own hex; above 1 the brightest channel clips
+and the hue drifts to cyan or white. A numeric `color` keeps the full strength range.
 
 ```json
 {"tool": "material.apply_preset",
@@ -69,12 +75,21 @@ World tools:
 - `world.set_hdri`: `path` (in the host assets dir), `sha256` (64 lowercase hex,
   checked before Blender reads the file), `strength` [0, 1000], `rotation`
   [-360, 360] degrees. It rebuilds the whole world tree.
-- `world.set_gradient`: `bottom` and `top` colours (RGB/RGBA in [0, 1]) and
-  `strength` [0, 1000]: a vertical gradient background. It keeps any haze.
+- `world.set_gradient`: `bottom` and `top` colours (scene-linear RGB/RGBA in
+  [0, 1]) or `brand_bottom` / `brand_top` (`#rrggbb` swatches, linearised and
+  recorded as numeric `bottom` / `top`; exactly one of each pair), and `strength`
+  [0, 1000]: a vertical gradient background. It keeps any haze.
 - `world.set_haze`: `density` (0, 0.05], `color` (default white), `anisotropy`
   [-1, 1]. A Volume Scatter on the world volume only. The 0.05 ceiling is a
   Look-safe cap (clarity over atmosphere); the master is still gated by its Look's
   `haze_max` QA threshold. Call it after the background (`world.set_hdri` clears it).
+
+Scene-built style frames and shots render under `BRAND_PIPELINE`
+(`spectracut.finishing.color`): the `Standard` view transform on an `sRGB` display
+with `view_settings.exposure` 0. `tier_recipe` appends it after the scene's own
+calls, so it overrides any view transform or exposure the scene set. A brand void
+(`brand_bottom`/`brand_top` at strength 1) renders as its swatch; palette QA
+(`spectracut.qa.palette`) measures the frame against the brand swatches.
 
 ```json
 [{"tool": "world.set_gradient", "args": {"bottom": [0.01, 0.02, 0.05], "top": [0.05, 0.08, 0.15]}},

@@ -56,6 +56,12 @@ class ColorPipeline(StrictModel):
     look: NonEmptyStr | None = Field(
         default=None, description="OCIO look name, e.g. 'AgX - Base Contrast'"
     )
+    exposure: float | None = Field(
+        default=None,
+        ge=-10,
+        le=10,
+        description="view_settings.exposure in stops; unset leaves the scene's own value",
+    )
 
     @model_validator(mode="after")
     def _look_matches_view(self) -> ColorPipeline:
@@ -76,12 +82,14 @@ class ColorPipeline(StrictModel):
             )
 
     def render_steps(self, start: int = 0) -> list[RecipeStep]:
-        """Recipe steps that set the display, view transform and look on the scene."""
-        calls = [
+        """Recipe steps that set the display, view transform, look and (if set) exposure."""
+        calls: list[tuple[str, str | float]] = [
             ("view_settings.display_device", self.display),
             ("view_settings.view_transform", self.view_transform),
             ("view_settings.look", self.look or "None"),
         ]
+        if self.exposure is not None:
+            calls.append(("view_settings.exposure", self.exposure))
         return [
             RecipeStep(
                 index=start + i, tool="render.set_property", args={"property": p, "value": v}
@@ -121,6 +129,29 @@ def srgb_decode(encoded: float) -> float:
     """The piecewise sRGB EOTF (IEC 61966-2-1)."""
     v = min(max(encoded, 0.0), 1.0)
     return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+
+
+def hex_to_linear(hex_colour: str) -> RGB:
+    """``#rrggbb`` (an sRGB web swatch) to scene-linear RGB via the sRGB EOTF, 6 places."""
+    h = hex_colour.lstrip("#")
+    r, g, b = (round(srgb_decode(int(h[i : i + 2], 16) / 255.0), 6) for i in (0, 2, 4))
+    return (r, g, b)
+
+
+def hex_to_lab(hex_colour: str) -> Lab:
+    """``#rrggbb`` (an sRGB web swatch) to CIE L*a*b* (D65)."""
+    h = hex_colour.lstrip("#")
+    return linear_to_lab([srgb_decode(int(h[i : i + 2], 16) / 255.0) for i in (0, 2, 4)])
+
+
+BRAND_PIPELINE = ColorPipeline(view_transform="Standard", display="sRGB", exposure=0.0)
+"""The brand-work view: ``Standard`` on an ``sRGB`` display with exposure pinned at 0.
+
+A brand swatch linearised with :func:`hex_to_linear` and rendered as an emission
+(or world background) at strength 1 encodes straight back to its own hex, so
+emissive brand accents keep their hue and the void stays the swatch's black.
+AgX would desaturate bright saturated values toward white.
+"""
 
 
 # ---- forward view transform and screen exposure ----------------------------------
