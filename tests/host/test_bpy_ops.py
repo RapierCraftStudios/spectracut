@@ -398,6 +398,7 @@ def test_error_codes_are_stable() -> None:
             "asset.path_refused",
             "framing.subject_out_of_frame",
             "asset.hash_mismatch",
+            "font.missing",
         ],
         "args.invalid",
         True,

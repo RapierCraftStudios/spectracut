@@ -287,17 +287,20 @@ Remove every object from the scene.
 
 Add 3D text: extruded depth or engraved cutout in a plate.
 
-Rules: plate is required for mode 'cutout' and only allowed there.
+Rules: plate is required for mode 'cutout' and only allowed there; weight is not allowed with font.
 
 - `body` (required): string (len >= 1, len <= 500)
 - `name` (optional): string (len >= 1, len <= 63)
 - `size` (optional): number (>= 0.001, <= 1000)
 - `extrude` (optional): number (>= 0, <= 100)
+- `bevel` (optional): number (>= 0, <= 10). rounds the extruded edges (bevel depth)
+- `align` (optional): "left" | "center" | "right". left: location is the first glyph's left edge; use for key/value columns
+- `weight` (optional): 400 | 600. host brand font Inter weight; ignored with font
 - `mode` (optional): "depth" | "cutout". depth: extruded type; cutout: engraved through plate
 - `plate` (optional): string (len >= 1, len <= 63). mesh the cutout is cut into
 - `location` (optional): list[number][3]
 - `rotation` (optional): list[number][3]
-- `font` (optional): TextFont. sha256-pinned font; default builtin
+- `font` (optional): TextFont. sha256-pinned font in the assets dir; default is the host-shipped Inter
 
 `TextFont`:
 

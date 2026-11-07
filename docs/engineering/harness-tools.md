@@ -146,17 +146,28 @@ not already exist, and objects named in arguments must exist
 
 `text.add` (`host/bpy_runtime/ops/text.py`) adds world-space 3D text:
 
-- `body`: 1 to 500 characters.
+- `body`: 1 to 500 characters, set verbatim (punctuation, braces and quotes are
+  kept; nothing is stripped or escaped).
 - `name`, `size` [0.001, 1000], `extrude` [0, 100], `location`, `rotation`.
+- `bevel` [0, 10], default 0: rounds the extruded edges (bevel depth).
+- `align`: `left`, `center` (default) or `right`, the edge of the line that sits
+  on `location`. Use `left` for key/value columns.
+- `weight`: `400` (default) or `600`, the weight of the host-shipped Inter font.
+  Refused together with `font`.
 - `mode`:
   - `depth` (default): extruded type.
   - `cutout`: engraved. The text becomes a hidden mesh cutter, and a Boolean
     difference named `cutout.<name>` is added to the mesh `plate`. `plate` is
     required for `cutout` and refused for `depth`.
 - `font`: `{path, sha256}`, an OFL font from the brand kit in the host assets
-  dir, loaded only after its sha256 matches. Without it, Blender's built-in font
-  is used. Templates resolve a brand-kit family to this pinned font
-  (`spectracut.templates.base.font_arg`).
+  dir, loaded only after its sha256 matches. Templates resolve a brand-kit
+  family to this pinned font (`spectracut.templates.base.font_arg`). Without it,
+  text.add loads the brand font shipped with the host package: Inter 4.1
+  (`host/bpy_runtime/fonts/Inter-Regular.ttf` or `Inter-SemiBold.ttf` by
+  `weight`, SIL OFL, `OFL.txt` alongside), after its pinned sha256 matches.
+  `spectracut setup` installs it on render hosts with the spectracut-host wheel.
+  Blender's built-in font is never used. A missing shipped font fails the step
+  with `font.missing`, an altered one with `asset.hash_mismatch`.
 
 ```json
 {"tool": "text.add",

@@ -19,6 +19,7 @@ RUNTIME_CODES: frozenset[str] = frozenset(
         "scene.object_not_found",
         "asset.path_refused",
         "framing.subject_out_of_frame",
+        "font.missing",
         "runtime.error",
     }
 )

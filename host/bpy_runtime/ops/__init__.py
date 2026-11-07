@@ -20,6 +20,7 @@ ERROR_CODES = (
     "asset.path_refused",
     "framing.subject_out_of_frame",
     "asset.hash_mismatch",
+    "font.missing",
 )
 
 Report = dict[str, Any] | None
