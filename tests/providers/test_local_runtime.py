@@ -162,7 +162,8 @@ def test_host_loader_requires_installed_factory(monkeypatch: pytest.MonkeyPatch)
     from spectracut_host.models import entry_env, load_model
 
     monkeypatch.delenv(entry_env("ezaudio"), raising=False)
-    with pytest.raises(ProviderError, match="SPECTRACUT_MODEL_ENTRY_EZAUDIO"):
+    # No override: the built-in factory, which says to run setup when it is not installed.
+    with pytest.raises(ProviderError, match="spectracut setup"):
         load_model(SFX)
     monkeypatch.setenv(entry_env("ezaudio"), "os; rm:x")
     with pytest.raises(ProviderError, match="module:factory"):
