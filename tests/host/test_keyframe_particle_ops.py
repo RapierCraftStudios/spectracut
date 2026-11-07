@@ -39,6 +39,7 @@ _events = []
 class Point:
     def __init__(self, frame, value):
         self.frame, self.value = frame, value
+        self.co = (frame, value)  # bpy Keyframe.co: (frame, value)
         self.interpolation, self.easing = "BEZIER", "AUTO"
 
 
@@ -53,7 +54,9 @@ class Keyable:
         return self
 
     def _value(self, data_path):
-        v = getattr(self, data_path)
+        v = self
+        for part in data_path.split("."):  # dotted paths such as "dof.aperture_fstop"
+            v = getattr(v, part)
         return list(v) if isinstance(v, (list, tuple)) else v
 
     def keyframe_insert(self, data_path, frame):
@@ -585,3 +588,73 @@ def test_bad_particle_args_are_refused(
     run = run_steps(blender, tmp_path, steps)
     refused(run, code)
     assert run.obj("Box")["particles"] == []
+
+
+# --- camera.move: aperture keys and hard cuts ------------------------------------------------
+
+
+def camera_move(keys: list[dict[str, Any]], **extra: Any) -> list[tuple[str, dict[str, Any]]]:
+    return [("camera.add", {"name": "Cam"}), ("camera.move", {"keys": keys, **extra})]
+
+
+def test_camera_move_keys_the_aperture(blender: Path, tmp_path: Path) -> None:
+    keys = [{"frame": 1, "fstop": 2.8}, {"frame": 40, "fstop": 3.2, "lens": 60}]
+    run = ok(run_steps(blender, tmp_path, camera_move(keys)))
+    assert run.report("camera.move")["frames"] == [1, 40]
+    assert curve(run.obj("Cam")["data_curves"], "dof.aperture_fstop") == [
+        [1, 2.8, "BEZIER", "EASE_IN_OUT"],
+        [40, 3.2, "BEZIER", "EASE_IN_OUT"],
+    ]
+
+
+def test_camera_move_holds_the_key_before_a_one_frame_gap(blender: Path, tmp_path: Path) -> None:
+    # Two cuts: A on frames 1-40, B on 41-72. Frames 40 -> 41 are a hard cut.
+    keys = [
+        {"frame": 1, "location": [0, -5, 1], "lens": 50, "fstop": 2.8},
+        {"frame": 40, "location": [0, -4, 1], "lens": 60, "fstop": 2.8},
+        {"frame": 41, "location": [2, -2, 1], "lens": 85, "fstop": 4},
+        {"frame": 72, "location": [2, -1, 1], "lens": 85, "fstop": 4},
+    ]
+    run = ok(run_steps(blender, tmp_path, camera_move(keys)))
+    cam = run.obj("Cam")
+    expected = [
+        ("BEZIER", "EASE_IN_OUT"),
+        ("CONSTANT", "EASE_IN_OUT"),
+        ("BEZIER", "EASE_IN_OUT"),
+        ("BEZIER", "EASE_IN_OUT"),
+    ]
+    for points in (
+        curve(cam["curves"], "location"),
+        curve(cam["data_curves"], "lens"),
+        curve(cam["data_curves"], "dof.aperture_fstop"),
+    ):
+        assert [p[0] for p in points] == [1, 40, 41, 72]
+        assert [(p[2], p[3]) for p in points] == expected
+
+
+def test_hard_cuts_are_per_curve_and_override_any_easing(blender: Path, tmp_path: Path) -> None:
+    # lens is keyed only on frames 1 and 3: two frames apart on its own curve, so it eases.
+    keys = [
+        {"frame": 1, "location": [0, 0, 0], "lens": 35},
+        {"frame": 2, "location": [1, 0, 0]},
+        {"frame": 3, "location": [2, 0, 0], "lens": 50},
+    ]
+    run = ok(run_steps(blender, tmp_path, camera_move(keys, easing="linear")))
+    cam = run.obj("Cam")
+    assert [p[2] for p in curve(cam["curves"], "location")] == ["CONSTANT", "CONSTANT", "LINEAR"]
+    assert [p[2] for p in curve(cam["data_curves"], "lens")] == ["LINEAR", "LINEAR"]
+
+
+def test_camera_move_without_one_frame_gaps_eases_every_key(blender: Path, tmp_path: Path) -> None:
+    keys = [{"frame": 1, "focus_distance": 0.5}, {"frame": 3, "focus_distance": 1.0}]
+    run = ok(run_steps(blender, tmp_path, camera_move(keys)))
+    points = curve(run.obj("Cam")["data_curves"], "dof.focus_distance")
+    assert [(p[2], p[3]) for p in points] == [("BEZIER", "EASE_IN_OUT")] * 2
+
+
+@pytest.mark.parametrize("fstop", [0.05, 129, "2.8", True])
+def test_camera_move_refuses_an_out_of_range_fstop(
+    blender: Path, tmp_path: Path, fstop: Any
+) -> None:
+    keys = [{"frame": 1, "fstop": 2.8}, {"frame": 10, "fstop": fstop}]
+    refused(run_steps(blender, tmp_path, camera_move(keys)))

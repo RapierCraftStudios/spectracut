@@ -34,6 +34,7 @@ Keyframe a camera move with easing.
 - `rotation` (optional): list[number][3]
 - `lens` (optional): number (>= 1, <= 5000)
 - `focus_distance` (optional): number (>= 0)
+- `fstop` (optional): number (>= 0.1, <= 128)
 
 ## camera.set_dof
 
