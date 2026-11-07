@@ -12,6 +12,7 @@ host names its factory in ``SPECTRACUT_MODEL_ENTRY_<FAMILY>`` (family upper-case
 from __future__ import annotations
 
 import base64
+import binascii
 import importlib
 import json
 import os
@@ -144,6 +145,41 @@ def _reply(out: TextIO, message: dict[str, Any]) -> None:
     out.flush()
 
 
+INPUT_FILE_OPTIONS = frozenset({"video_path"})
+"""Generate options the client may send as inline files (the picture foley hears)."""
+_SUFFIX = re.compile(r"^[.A-Za-z0-9]{0,8}$")
+
+
+def _input_files(raw: Any, tmp: Path, n: int) -> dict[str, Path]:
+    """Write a generate request's ``files`` into ``tmp``; option name to written path."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("files must be an object")
+    written: dict[str, Path] = {}
+    try:
+        for key, entry in raw.items():
+            if key not in INPUT_FILE_OPTIONS:
+                raise ValueError(f"files: {key!r} is not an input file option")
+            if not isinstance(entry, dict):
+                raise ValueError(f"files: {key!r} must be an object")
+            suffix = str(entry.get("suffix", ""))
+            if not _SUFFIX.match(suffix):
+                raise ValueError(f"files: {key!r} has a bad suffix {suffix!r}")
+            try:
+                data = base64.b64decode(str(entry.get("data", "")), validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValueError(f"files: {key!r} is not base64") from exc
+            path = tmp / f"in-{n}-{key}{suffix}"
+            path.write_bytes(data)
+            written[key] = path
+    except BaseException:
+        for f in written.values():
+            f.unlink(missing_ok=True)
+        raise
+    return written
+
+
 def serve(
     inp: TextIO,
     out: TextIO,
@@ -158,9 +194,13 @@ def serve(
     registry only, never from spec fields on the wire), ``{"op": "generate",
     "prompt": ..., "options": {...}}`` and ``{"op": "close"}``. Every request gets one
     reply line, ``{"ok": true, ...}`` or ``{"ok": false, "error": ...}``; a generate
-    reply carries the output file as base64 ``data``. Returns on close or EOF, after
-    closing the loaded model. ``lock`` is held from each load until that model is
-    closed, so models never co-reside across processes on one host.
+    reply carries the output file as base64 ``data``. A generate may carry input files
+    as ``"files": {name: {"suffix": ..., "data": base64}}`` for the options in
+    :data:`INPUT_FILE_OPTIONS` only; each is written under a host-chosen name in the
+    session temp dir, the option is pointed at it, and it is deleted after generate.
+    Returns on close or EOF, after closing the loaded model. ``lock`` is held from each
+    load until that model is closed, so models never co-reside across processes on one
+    host.
     """
     from spectracut.providers.local.registry import MODELS
 
@@ -216,10 +256,16 @@ def serve(
                         if not isinstance(options, dict):
                             raise ValueError("options must be an object")
                         n += 1
-                        path = Path(tmp) / f"out-{n}"
-                        session.generate(str(req.get("prompt", "")), out_path=path, **options)
-                        data = base64.b64encode(path.read_bytes()).decode("ascii")
-                        path.unlink(missing_ok=True)
+                        inputs = _input_files(req.get("files"), Path(tmp), n)
+                        try:
+                            options = {**options, **{k: str(v) for k, v in inputs.items()}}
+                            path = Path(tmp) / f"out-{n}"
+                            session.generate(str(req.get("prompt", "")), out_path=path, **options)
+                            data = base64.b64encode(path.read_bytes()).decode("ascii")
+                            path.unlink(missing_ok=True)
+                        finally:
+                            for f in inputs.values():
+                                f.unlink(missing_ok=True)
                         _reply(out, {"ok": True, "data": data})
                     else:
                         raise ValueError(f"unknown op {op!r}")

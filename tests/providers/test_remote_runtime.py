@@ -186,3 +186,63 @@ def test_serve_refuses_unknown_ops_and_generate_before_load() -> None:
     replies = [json.loads(line) for line in out.getvalue().splitlines()]
     assert [r["ok"] for r in replies] == [False, False, False, True]
     assert "no model loaded" in replies[0]["error"] and "unknown op" in replies[1]["error"]
+
+
+# ---- #316: the picture foley hears is shipped to the host inline ---------------------
+
+FOLEY = MODELS["hunyuan-foley-xl"]
+
+
+def test_foley_video_is_sent_to_the_host_and_removed_after_generate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heard: list[tuple[str, bytes, str]] = []
+    original = FakeModel.generate
+
+    def hear(self: FakeModel, prompt: str, **options: Any) -> Any:
+        video = Path(options["video_path"])
+        heard.append((video.name, video.read_bytes(), str(video.parent)))
+        return original(self, prompt, **options)
+
+    monkeypatch.setattr(FakeModel, "generate", hear)
+    clip = tmp_path / "shot.mp4"
+    clip.write_bytes(b"\x00moov picture bytes")
+    spawn = Spawner()
+    provider = RuntimeProvider(FOLEY, _runtime(spawn))
+    out = provider.generate("steps", tmp_path / "f.wav", video_path=clip, duration_s=0.1)
+    assert out.is_file() and out.stat().st_size > 0
+    ((name, data, host_dir),) = heard
+    assert data == clip.read_bytes() and name == "in-1-video_path.mp4"
+    assert host_dir != str(tmp_path)  # the host's own copy, not the control plane's path
+    assert not (Path(host_dir) / name).exists()
+
+
+def test_a_missing_local_video_fails_before_reaching_the_host(tmp_path: Path) -> None:
+    spawn = Spawner()
+    provider = RuntimeProvider(FOLEY, _runtime(spawn))
+    with pytest.raises(ProviderError, match="video_path .* is not a local file"):
+        provider.generate("steps", tmp_path / "f.wav", video_path=tmp_path / "gone.mp4")
+    assert "generate:steps" not in spawn.log
+
+
+def _serve_files(files: object) -> dict[str, Any]:
+    load = json.dumps({"op": "load", "model": FOLEY.id})
+    gen = json.dumps({"op": "generate", "prompt": "x", "options": {}, "files": files})
+    out = io.StringIO()
+    serve(io.StringIO(f"{load}\n{gen}\n"), out, lambda spec: FakeModel(spec, []))
+    reply: dict[str, Any] = json.loads(out.getvalue().splitlines()[1])
+    return reply
+
+
+@pytest.mark.parametrize(
+    ("files", "error"),
+    [
+        ({"out_path": {"suffix": ".wav", "data": ""}}, "not an input file option"),
+        ({"video_path": {"suffix": "/../x", "data": ""}}, "bad suffix"),
+        ({"video_path": {"suffix": ".mp4", "data": "%%%"}}, "not base64"),
+        (["video_path"], "files must be an object"),
+    ],
+)
+def test_serve_refuses_input_files_it_does_not_allow(files: object, error: str) -> None:
+    reply = _serve_files(files)
+    assert reply["ok"] is False and error in reply["error"]
