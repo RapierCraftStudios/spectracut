@@ -37,6 +37,7 @@ from pydantic import Field, JsonValue
 
 from spectracut.critique.critic import OVERALL, StudioCritic
 from spectracut.critique.revise import ReviseLoop, RevisionRequest
+from spectracut.finishing.color import hex_to_linear
 from spectracut.harness.dispatch import PreviewDispatcher
 from spectracut.harness.errors import HarnessError
 from spectracut.harness.recorder import Recorder
@@ -71,6 +72,7 @@ CALLS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "plan": {"type": "string"},
+        "addressed": {"type": "array", "items": {"type": "integer"}},
         "calls": {
             "type": "array",
             "items": {
@@ -267,6 +269,108 @@ def check_recipe_copy(recipe: Recipe, allowed: Sequence[str], kit: BrandKit | No
                 raise CopyRefused(str(exc)) from None
 
 
+_NOTE_LABEL = re.compile(r"^(?:frame-\d+|contact-sheet|sequence-mid) \d+(?:\.\d+)?:\s*")
+_BELOW_BAR = re.compile(r"\bscores \d+(?:\.\d+)?, below the pass mark\b")
+_NUMBERED = re.compile(r"(?:^|\s)\d+[.)]\s+")
+
+
+def revision_items(comment: str) -> list[str]:
+    """A Critic verdict comment as its numbered revisions (item ``n`` is ``[n-1]``).
+
+    The comment is ``"<head>: <line> | <line> ..."`` (:class:`StudioCritic`); the head
+    (``pass``/``revise``) and the below-the-bar summary are dropped, each frame line
+    loses its ``frame-1 0.30:`` label, and the judge's notes split on newlines,
+    semicolons and ``1.`` numbering. Duplicates are dropped; no notes give ``[]``.
+    """
+    text = comment.strip()
+    for head in ("pass:", "revise:"):
+        if text.startswith(head):
+            text = text[len(head) :].strip()
+    items: list[str] = []
+    for part in text.split(" | "):
+        part = part.strip()
+        if not part or _BELOW_BAR.search(part):
+            continue
+        part = _NOTE_LABEL.sub("", part)
+        for line in re.split(r"[\n;]", part):
+            for piece in _NUMBERED.split(line):
+                item = piece.strip().lstrip("-*").strip()
+                if item and item.lower() != "no notes" and item not in items:
+                    items.append(item)
+    return items
+
+
+_SWATCH_TOLERANCE = 1 / 255 + 1e-6
+
+
+def _swatch_of(colour: JsonValue, swatches: Mapping[str, str]) -> str | None:
+    """The swatch ``colour`` (scene-linear RGB/RGBA) equals once linearised, within 1/255."""
+    if not isinstance(colour, list) or len(colour) < 3:
+        return None
+    rgb = colour[:3]
+    if not all(isinstance(c, int | float) for c in rgb):
+        return None
+    for name, hex_colour in swatches.items():
+        ref = hex_to_linear(hex_colour)
+        if all(
+            abs(float(cast(float, a)) - b) <= _SWATCH_TOLERANCE
+            for a, b in zip(rgb, ref, strict=True)
+        ):
+            return name
+    return None
+
+
+def lint_recipe(recipe: Recipe, brief: SceneBrief) -> list[str]:
+    """Cheap pre-render checks of a compiled recipe against the brief; ``[]`` passes.
+
+    Required elements: each quoted copy line of the description is a ``text.add`` body,
+    each :attr:`SceneBrief.elements` entry names an object. The Look: haze density at
+    most ``look.qa_thresholds.haze_max``. Colour: world gradient colours and emission
+    colours equal a palette or brand-kit swatch.
+    """
+    problems: list[str] = []
+    swatches = brief.palette()
+    names: list[str] = []
+    bodies: set[str] = set()
+    haze_max = brief.art.look.qa_thresholds.haze_max
+    for step in recipe.steps:
+        args = step.args
+        for key in ("name", "object"):
+            value = args.get(key)
+            if isinstance(value, str) and value:
+                names.append(value.lower())
+        where = f"step {step.index} {step.tool}"
+        if step.tool == "text.add":
+            bodies.add(str(args.get("body", "")).strip())
+        elif step.tool == "world.set_haze":
+            density = args.get("density")
+            if isinstance(density, int | float) and density > haze_max:
+                problems.append(
+                    f"{where}: haze density {density} exceeds the Look's haze_max {haze_max}"
+                )
+        elif step.tool == "world.set_gradient":
+            for key in ("bottom", "top"):
+                colour = args.get(key)
+                if colour is not None and _swatch_of(colour, swatches) is None:
+                    problems.append(
+                        f"{where}: {key} colour {colour} is not a palette swatch "
+                        f"({_dumps(swatches)})"
+                    )
+        colour = args.get("emission_color")
+        if colour is not None and _swatch_of(colour, swatches) is None:
+            problems.append(
+                f"{where}: emission_color {colour} is not a brand swatch ({_dumps(swatches)})"
+            )
+    for line in brief.required_copy():
+        if line.strip() not in bodies:
+            problems.append(f"required element missing: a text.add with body {line!r}")
+    for element in brief.elements:
+        wanted = element.strip().lower()
+        if not any(wanted in n for n in names):
+            problems.append(f"required element missing: no object named like {element!r}")
+    return problems
+
+
 # --------------------------------------------------------------------------- records
 
 
@@ -279,11 +383,19 @@ class SceneBrief(StrictModel):
     brand_kit: BrandKit | None = None
     allowed_copy: tuple[NonEmptyStr, ...] | None = None
     """On-screen strings sourced from the brief; ``None`` takes the description's quotes."""
+    elements: tuple[NonEmptyStr, ...] = ()
+    """Elements the frame must contain, each matched against the recipe's object names."""
 
     def copy_lines(self) -> tuple[str, ...]:
         if self.allowed_copy is not None:
             return self.allowed_copy
         return tuple(a or b for a, b in _QUOTED.findall(self.description))
+
+    def required_copy(self) -> tuple[str, ...]:
+        """The description's quoted strings that are allowed copy: each must be on screen."""
+        allowed = {c.strip() for c in self.copy_lines()}
+        quoted = (a or b for a, b in _QUOTED.findall(self.description))
+        return tuple(q for q in dict.fromkeys(quoted) if q.strip() in allowed)
 
     def palette(self) -> dict[str, str]:
         colours = {f"art.{k}": v for k, v in self.art.palette.swatches.items()}
@@ -320,6 +432,10 @@ class SceneIteration(StrictModel):
     """The attempt's winner and it became the best so far."""
     repairs: list[SceneRepair] = Field(default_factory=list)
     """Repair turns spent on this candidate before it compiled (or ran out)."""
+    revisions: list[str] = Field(default_factory=list)
+    """The numbered revision checklist this candidate was given (item ``n`` is ``[n-1]``)."""
+    addressed: list[int] = Field(default_factory=list)
+    """The checklist numbers the builder reports it addressed."""
 
 
 class SceneBuild(StrictModel):
@@ -416,6 +532,8 @@ class _Candidate:
     repairs: list[SceneRepair] = field(default_factory=list)
     prompt: str = ""
     calls: JsonValue = None
+    revisions: list[str] = field(default_factory=list)
+    addressed: list[int] = field(default_factory=list)
 
 
 HOST_REFUSAL = re.compile(r"^.*\brefused: .*$", re.MULTILINE)
@@ -509,6 +627,22 @@ class SceneBuilder:
                 "Critic notes on it:",
                 request.notes or "(none)",
             ]
+            frame = (
+                self.workdir
+                / brief.id
+                / f"a{state.get('attempt')}-c{state.get('candidate')}"
+                / "frame.png"
+            )
+            if state.get("recipe") is not None:
+                parts += ["", "Previous frame:", str(frame)]
+            revisions = revision_items(request.notes)
+            if revisions:
+                parts += [
+                    "",
+                    "Revisions to address (numbered; fix every one and list the numbers "
+                    'you addressed in "addressed"):',
+                    *(f"{n}. {r}" for n, r in enumerate(revisions, start=1)),
+                ]
         if request.window:
             parts += ["", "Recent iterations (oldest first):"]
             for it in request.window:
@@ -526,7 +660,11 @@ class SceneBuilder:
                     "kept": it.kept,
                 }
                 parts.append(_dumps(entry))
-        parts += ["", 'Answer as JSON: {"plan": "...", "calls": [{"tool": ..., "args": {...}}]}.']
+        parts += [
+            "",
+            'Answer as JSON: {"plan": "...", "addressed": [1, 2], '
+            '"calls": [{"tool": ..., "args": {...}}]}.',
+        ]
         return "\n".join(parts)
 
     def repair_prompt(
@@ -563,6 +701,32 @@ class SceneBuilder:
             ]
         )
 
+    def _loop(
+        self,
+        generate: Callable[[RevisionRequest], JsonValue],
+        render: Callable[[JsonValue], JsonValue],
+        critic: StudioCritic,
+        spec: NodeSpec,
+    ) -> ReviseLoop:
+        """The revise loop's budget for one frame.
+
+        A profile that lists the ``scene_build`` stage keeps its revision budget and
+        best-of-N; otherwise (every shipped profile) a frame gets
+        ``critique.scene_iterations`` render iterations of one candidate each (#334).
+        """
+        if SCENE_BUILD in self.profile.revision_budget:
+            return ReviseLoop.from_profile(generate, render, critic, spec, self.profile)
+        critique = self.profile.critique
+        return ReviseLoop(
+            generate,
+            render,
+            critic,
+            spec,
+            revision_budget=critique.scene_iterations - 1,
+            best_of_n=critique.best_of_n.get(SCENE_BUILD, 1),
+            window=critique.window,
+        )
+
     def build(self, brief: SceneBrief) -> SceneBuild:
         root = self.workdir / brief.id
         spec = NodeSpec(id=brief.id, kind=SCENE_BUILD, department=DEPARTMENT)
@@ -570,10 +734,22 @@ class SceneBuilder:
         system = self.system_prompt()
         candidates: dict[tuple[int, int], _Candidate] = {}
 
-        def answer(out: JsonValue) -> tuple[str, JsonValue]:
-            if isinstance(out, Mapping):
-                return str(out.get("plan") or ""), out.get("calls")
-            return "", None
+        def answer(cand: _Candidate, out: JsonValue) -> None:
+            if not isinstance(out, Mapping):
+                cand.plan, cand.calls = "", None
+                return
+            cand.plan, cand.calls = str(out.get("plan") or ""), out.get("calls")
+            addressed = out.get("addressed")
+            if isinstance(addressed, list) and addressed:
+                cand.addressed = sorted(
+                    {
+                        n
+                        for n in addressed
+                        if isinstance(n, int)
+                        and not isinstance(n, bool)
+                        and 1 <= n <= len(cand.revisions)
+                    }
+                )
 
         def folder_of(cand: _Candidate) -> Path:
             folder = root / f"a{cand.attempt}-c{cand.candidate}"
@@ -594,7 +770,7 @@ class SceneBuilder:
                 schema=CALLS_SCHEMA,
             )
             cand.usage = _add(cand.usage, _prefixed(completion.usage))
-            cand.plan, cand.calls = answer(completion.output)
+            answer(cand, completion.output)
 
         def settle(cand: _Candidate) -> None:
             """Compile the candidate's calls, repairing validation errors within the budget."""
@@ -607,8 +783,12 @@ class SceneBuilder:
                         shot_id=brief.id,
                     )
                     check_recipe_copy(recipe, brief.copy_lines(), brief.brand_kit)
-                    cand.recipe, cand.error = recipe, ""
-                    break
+                    lint = lint_recipe(recipe, brief)
+                    if not lint:
+                        cand.recipe, cand.error = recipe, ""
+                        break
+                    cand.recipe, cand.error = None, "; ".join(lint)
+                    errors = [f"pre-render check: {e}" for e in lint]
                 except HarnessError as exc:
                     cand.recipe, cand.error = None, str(exc)
                     problems = exc.details.get("problems")
@@ -649,10 +829,11 @@ class SceneBuilder:
         def generate(request: RevisionRequest) -> JsonValue:
             cand = _Candidate(attempt=request.attempt, candidate=request.candidate)
             candidates[(cand.attempt, cand.candidate)] = cand
+            cand.revisions = revision_items(request.notes) if request.state is not None else []
             cand.prompt = self.prompt(brief, request)
             completion = self.text.complete(system, cand.prompt, schema=CALLS_SCHEMA)
             cand.usage = _prefixed(completion.usage)
-            cand.plan, cand.calls = answer(completion.output)
+            answer(cand, completion.output)
             settle(cand)
             return state_of(cand)
 
@@ -685,7 +866,7 @@ class SceneBuilder:
             cand.output = {"frames": [], "error": cand.error, "candidate": dict(state)}
             return cand.output
 
-        loop = ReviseLoop.from_profile(generate, render, critic, spec, self.profile)
+        loop = self._loop(generate, render, critic, spec)
         outcome = loop.run()
 
         kept = {
@@ -714,6 +895,8 @@ class SceneBuilder:
                     notes=verdict.comment if verdict else cand.error,
                     kept=key in kept,
                     repairs=list(cand.repairs),
+                    revisions=list(cand.revisions),
+                    addressed=list(cand.addressed),
                 )
             )
         best = outcome.recipe if isinstance(outcome.recipe, Mapping) else {}
@@ -758,12 +941,14 @@ def scene_build_runner(builder: SceneBuilder) -> Runner:
         params = ctx.spec.params
         kit = params.get("brand_kit")
         copy = params.get("copy")
+        elements = params.get("elements")
         brief = SceneBrief(
             id=ctx.spec.id,
             description=str(params.get("description") or ""),
             art=_art_direction(ctx.inputs),
             brand_kit=BrandKit.model_validate(kit) if kit is not None else None,
             allowed_copy=tuple(str(c) for c in copy) if isinstance(copy, list) else None,
+            elements=tuple(str(e) for e in elements) if isinstance(elements, list) else (),
         )
         build = builder.build(brief)
         output: JsonValue = build.model_dump(mode="json")
@@ -788,7 +973,9 @@ __all__ = [
     "check_recipe_copy",
     "compile_calls",
     "host_error_lines",
+    "lint_recipe",
     "problem_lines",
+    "revision_items",
     "scene_build_runner",
     "tool_cheat_sheet",
 ]

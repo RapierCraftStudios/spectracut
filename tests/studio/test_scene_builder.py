@@ -9,6 +9,7 @@ candidate, and that the two never coincide.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from spectracut_host.guard import runtime_tool_names
 
 from spectracut.critique.revise import RevisionRequest
 from spectracut.critique.scene_verifier import scene_critic, scene_verifier_prompt
+from spectracut.finishing.color import hex_to_linear
 from spectracut.harness.errors import HarnessError
 from spectracut.harness.tools import build_tools, get_tool
 from spectracut.providers.base import Completion, VisionScore
@@ -29,13 +31,15 @@ from spectracut.storyboard.models import ArtDirection, ImageRecord
 from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
 from spectracut.studio.ledger import Usage
 from spectracut.studio.node import NodeSpec, Tier
-from spectracut.studio.profiles import CritiqueSettings, QualityProfile
+from spectracut.studio.profiles import CritiqueSettings, QualityProfile, load_profile
 from spectracut.studio.scene_builder import (
     SCENE_BUILD,
     SceneBrief,
     SceneBuild,
     SceneBuilder,
     compile_calls,
+    lint_recipe,
+    revision_items,
     scene_build_runner,
 )
 
@@ -638,3 +642,252 @@ def test_non_png_frames_skip_palette_qa(tmp_path: Path) -> None:
     build = b.build(brief())
     assert build.status == "accepted" and build.attempts == 1
     assert "palette" not in build.iterations[0].notes
+
+
+# ---- #334: convergence: more iterations, revision checklist, pre-render lint ----------
+
+
+def stageless_profile(iterations: int = 5, window: int = 2) -> QualityProfile:
+    """Like every shipped profile: no ``scene_build`` stage, so ``scene_iterations`` rules."""
+    return QualityProfile(
+        name="stageless",
+        description="profile without a scene_build stage",
+        stages=("art_direction",),
+        revision_budget={"art_direction": 0},
+        tier={"art_direction": Tier.PREVIEW},
+        critique=CritiqueSettings(pass_score=0.6, window=window, scene_iterations=iterations),
+    )
+
+
+def stageless_builder(
+    tmp: Path, text: Any, vision: Any, prof: QualityProfile, renderer: Any = None
+) -> tuple[SceneBuilder, Any]:
+    critic = scene_critic(vision, profile=prof, description=DESCRIPTION, art=ART)
+    renderer = renderer or FakeRenderer()
+    return SceneBuilder(text, renderer, critic, prof, tmp / "work"), renderer
+
+
+FIX = re.compile(r"^\d+\. add a light named fix(\d+)$", re.MULTILINE)
+
+
+class RevisingText(FakeText):
+    """Applies the checklist: emits a ``fixN`` light per revision asked for, reports it."""
+
+    def __init__(self, *, apply: bool = True) -> None:
+        super().__init__([answer()])
+        self.apply = apply
+
+    def complete(self, system: str, prompt: str, *, schema: dict[str, Any]) -> Completion:
+        assert set(schema["required"]) == {"plan", "calls"}
+        assert schema["properties"]["addressed"]["items"]["type"] == "integer"
+        self.prompts.append(prompt)
+        wanted = [int(m) for m in FIX.findall(prompt)] if self.apply else []
+        fixes = max(wanted, default=0)
+        out = calls()
+        out[4:4] = [
+            {"tool": "light.add", "args": {"kind": "area", "name": f"fix{i}", "energy": 100}}
+            for i in range(1, fixes + 1)
+        ]
+        addressed = [1] if wanted else []
+        return Completion(
+            output={"plan": f"{fixes} fixes", "addressed": addressed, "calls": out},
+            usage={"claude_requests": 1},
+        )
+
+
+class FrameRenderer(FakeRenderer):
+    """Remembers which recipe each frame path came from."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.by_path: dict[Path, Recipe] = {}
+
+    def __call__(self, recipe: Recipe, path: Path) -> tuple[ImageRecord, Usage]:
+        self.by_path[Path(path)] = recipe
+        return super().__call__(recipe, path)
+
+
+class RevisionVision(FakeVision):
+    """Scores 0.2 + 0.15 per ``fixN`` light; always asks for the next one."""
+
+    def __init__(self, renderer: FrameRenderer) -> None:
+        super().__init__({})
+        self.renderer = renderer
+
+    def score(self, frame_path: Path, rubric: str) -> VisionScore:
+        self.calls.append((Path(frame_path), rubric))
+        self.last_usage = {"input_tokens": 100, "output_tokens": 10}
+        recipe = self.renderer.by_path[Path(frame_path)]
+        fixes = sum(
+            1
+            for s in recipe.steps
+            if s.tool == "light.add" and str(s.args.get("name", "")).startswith("fix")
+        )
+        return VisionScore(score=0.2 + 0.15 * fixes, notes=f"add a light named fix{fixes + 1}")
+
+
+def test_builder_converges_when_it_applies_the_numbered_revisions(tmp_path: Path) -> None:
+    renderer = FrameRenderer()
+    text = RevisingText()
+    b, _ = stageless_builder(
+        tmp_path, text, RevisionVision(renderer), stageless_profile(), renderer
+    )
+    build = b.build(brief())
+    assert build.status == "accepted" and build.attempts == 4
+    assert [round(it.scores["overall"], 2) for it in build.iterations] == [0.2, 0.35, 0.5, 0.65]
+    assert "Revisions to address" not in text.prompts[0]
+    assert "1. add a light named fix1" in text.prompts[1]
+    assert str(tmp_path / "work/one-beam/a1-c0/frame.png") in text.prompts[1]
+    first, second = build.iterations[:2]
+    assert first.revisions == [] and first.addressed == []
+    assert second.revisions == ["add a light named fix1"] and second.addressed == [1]
+    stored = build.model_dump(mode="json")["iterations"][3]
+    assert stored["revisions"] == ["add a light named fix3"] and stored["addressed"] == [1]
+
+
+def test_ignoring_revisions_spends_the_standard_budget_and_records_every_score(
+    tmp_path: Path,
+) -> None:
+    renderer = FrameRenderer()
+    prof = load_profile("standard")
+    assert SCENE_BUILD not in prof.stages and prof.critique.scene_iterations == 5
+    text = RevisingText(apply=False)
+    b, _ = stageless_builder(tmp_path, text, RevisionVision(renderer), prof, renderer)
+    build = b.build(brief())
+    assert build.status == "escalated" and build.attempts == 5
+    assert [(it.attempt, it.candidate) for it in build.iterations] == [(n, 0) for n in range(1, 6)]
+    assert all("overall" in it.scores for it in build.iterations)
+    assert len(renderer.recipes) == 5 and len(text.prompts) == 5
+
+
+def test_best_candidate_is_kept_when_later_iterations_score_lower(tmp_path: Path) -> None:
+    text = FakeText([answer("a"), answer("b"), answer("c")])
+    vision = FakeVision({"a1-c0": 0.3, "a2-c0": 0.5, "a3-c0": 0.2})
+    b, _ = stageless_builder(tmp_path, text, vision, stageless_profile(iterations=3))
+    build = b.build(brief())
+    assert build.status == "escalated" and build.attempts == 3
+    assert [it.kept for it in build.iterations] == [True, True, False]
+    assert build.recipe is not None
+    assert build.recipe.content_hash == build.iterations[1].recipe_hash
+    assert build.render is not None and build.render.path.endswith("a2-c0/frame.png")
+
+
+def test_scene_iterations_override_sets_the_budget(tmp_path: Path) -> None:
+    text = FakeText([answer("a")])
+    b, renderer = stageless_builder(tmp_path, text, FakeVision({}), stageless_profile(2))
+    build = b.build(brief())
+    assert build.status == "escalated" and build.attempts == 2 and len(renderer.recipes) == 2
+
+
+HAZY_ART = ArtDirection.model_validate(
+    {**ART.model_dump(mode="json"), "look": {"id": "clean", "qa_thresholds": {"haze_max": 0.01}}}
+)
+
+
+RED = [1, 0, 0]
+
+
+def _with(extra: list[dict[str, Any]], *, text: str | None = "ONE BEAM") -> JsonValue:
+    out = calls(text=text)
+    out[1:1] = extra
+    return {"plan": "p", "calls": out}
+
+
+@pytest.mark.parametrize(
+    ("bad", "art", "expected"),
+    [
+        (_with([], text=None), ART, "required element missing: a text.add with body 'ONE BEAM'"),
+        (
+            _with([{"tool": "world.set_haze", "args": {"density": 0.03}}]),
+            HAZY_ART,
+            "haze density 0.03 exceeds the Look's haze_max 0.01",
+        ),
+        (
+            _with(
+                [{"tool": "world.set_gradient", "args": {"bottom": [1, 0, 0], "top": [0, 0, 0]}}]
+            ),
+            ART,
+            "bottom colour [1.0, 0.0, 0.0] is not a palette swatch",
+        ),
+        (
+            _with(
+                [
+                    {"tool": "object.add_primitive", "args": {"kind": "cube", "name": "beam"}},
+                    {
+                        "tool": "material.apply_preset",
+                        "args": {
+                            "object": "beam",
+                            "preset": "emissive",
+                            "emission_color": [1, 0, 0],
+                        },
+                    },
+                ]
+            ),
+            ART,
+            "emission_color [1.0, 0.0, 0.0] is not a brand swatch",
+        ),
+    ],
+)
+def test_pre_render_lint_repairs_before_rendering(
+    tmp_path: Path, bad: JsonValue, art: ArtDirection, expected: str
+) -> None:
+    text = FakeText([bad, answer()])
+    critic = scene_critic(
+        FakeVision({}), profile=stageless_profile(1), description=DESCRIPTION, art=art
+    )
+    renderer = FakeRenderer()
+    b = SceneBuilder(text, renderer, critic, stageless_profile(1), tmp_path / "work")
+    build = b.build(SceneBrief(id="one-beam", description=DESCRIPTION, art=art))
+    (it,) = build.iterations
+    assert len(it.repairs) == 1 and any(expected in e for e in it.repairs[0].errors)
+    assert it.repairs[0].errors[0].startswith("pre-render check: ")
+    assert "Validation errors" in text.prompts[1] and expected in text.prompts[1]
+    assert len(renderer.recipes) == 1 and it.render is not None
+
+
+def test_lint_passes_swatch_colours_and_named_elements() -> None:
+    beam = list(hex_to_linear("#00c2a8"))
+    void = list(hex_to_linear("#101820"))
+    good = compile_calls(
+        _with(
+            [
+                {
+                    "tool": "world.set_gradient",
+                    "args": {"bottom": void, "top": beam},
+                },
+                {"tool": "world.set_haze", "args": {"density": 0.01}},
+                {"tool": "object.add_primitive", "args": {"kind": "cube", "name": "Beam-Core"}},
+                {
+                    "tool": "material.apply_preset",
+                    "args": {"object": "Beam-Core", "preset": "emissive", "emission_color": beam},
+                },
+                {
+                    "tool": "material.apply_preset",
+                    "args": {"object": "slab", "preset": "emissive", "brand_color": "#ff5500"},
+                },
+            ]
+        )["calls"],  # type: ignore[index]
+        recipe_id="r",
+        shot_id="one-beam",
+    )
+    assert lint_recipe(good, brief(brand_kit=KIT, elements=("beam",))) == []
+    assert lint_recipe(good, brief(elements=("plinth",))) == [
+        "required element missing: no object named like 'plinth'"
+    ]
+    # Explicit copy that leaves out the quoted line does not make it required.
+    no_text = compile_calls(calls(text=None), recipe_id="r", shot_id="one-beam")
+    assert lint_recipe(no_text, brief(allowed_copy=("OTHER",))) == []
+
+
+def test_revision_items_number_the_critic_notes() -> None:
+    comment = (
+        "revise: scene_build scores 0.30, below the pass mark 0.60; address the frame notes "
+        "against the rubric | frame-1 0.30: 1. add a rim light behind the stack 2. move the "
+        "camera closer; warm the key\n- add a rim light behind the stack"
+    )
+    assert revision_items(comment) == [
+        "add a rim light behind the stack",
+        "move the camera closer",
+        "warm the key",
+    ]
+    assert revision_items("") == [] and revision_items("pass: frame-1 0.90: no notes") == []

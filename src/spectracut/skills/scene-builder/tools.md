@@ -97,7 +97,7 @@ Rules: Either one light or a preset rig, never both. One light: kind, energy, lo
 
 ## material.apply_preset
 
-Give a mesh a material preset (plastics, metals, glass incl. clear/frosted/smoked, emissive, anodised metal) with a colour or brand colour and optional roughness, ior, transmission, emission, anisotropy and metallic overrides.
+Give a mesh a material preset (plastics, metals, glass incl. clear/frosted/smoked, emissive, anodised metal) with a colour or brand colour and optional roughness, ior, transmission, emission, anisotropy and metallic overrides, plus seeded surface detail (noise/voronoi bump, brushing, scratches, edge wear).
 
 Rules: Pass color or brand_color, not both. brand_color is linearised (sRGB EOTF) and recorded as a scene-linear color; numeric colors are scene-linear already, never hex/255. An emissive preset with brand_color defaults emission_strength to 1.0 and refuses more than 1.0.
 
@@ -113,6 +113,14 @@ Rules: Pass color or brand_color, not both. brand_color is linearised (sRGB EOTF
 - `emission_strength` (optional): number (>= 0, <= 1000). emissive strength; with brand_color it defaults to 1 and is at most 1
 - `anisotropy` (optional): number (>= 0, <= 1)
 - `metallic` (optional): number (>= 0, <= 1)
+- `bump_kind` (optional): "noise" | "voronoi". micro-texture pattern for bump_strength (default noise)
+- `bump_strength` (optional): number (>= 0, <= 1). micro-texture bump amount
+- `bump_scale` (optional): number (> 0, <= 1000). micro-texture frequency per object unit (default 150)
+- `brushing` (optional): number (>= 0, <= 1). brushed streaks + anisotropy
+- `brushing_angle` (optional): number (>= 0, < 360). streak direction in degrees
+- `scratches` (optional): number (>= 0, <= 1). fine scratch lines
+- `edge_wear` (optional): number (>= 0, <= 1). bevel edge highlight (Cycles)
+- `seed` (optional): integer (>= 0, <= 2147483647). pattern seed; same seed, same surface
 
 ## object.add_primitive
 
