@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: hsl(222 47% 11%);
+    --primary: #2563eb;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: oklch(10% 0 0);
+    --foreground: oklch(98% 0 0);
+    --primary: oklch(62.8% 0.2577 29.23);
+    --card: #111;
+    --muted-foreground: 0 0% 60%;
+    --border: hsl(0, 0%, 20%);
+  }
+}
+
+.hero {
+  --background: #ff00ff;
+}
