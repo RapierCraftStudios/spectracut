@@ -152,6 +152,19 @@ def component_lines() -> list[str]:
     return [redact(line) for line in report()] if callable(report) else [NO_MANIFEST]
 
 
+def model_disk_lines() -> list[str]:
+    """Free disk at the model root on the model host, probed live; empty without one."""
+    if importlib.util.find_spec("spectracut.setup") is None:
+        return []
+    from spectracut.cli.studio import model_host_name
+    from spectracut.setup import model_disk_lines as disk_lines
+    from spectracut.setup.plan import CommandRunner
+    from spectracut.studio.store import spectracut_home
+
+    home = spectracut_home()
+    return [redact(line) for line in disk_lines(model_host_name(home), CommandRunner(), home)]
+
+
 def doctor(
     as_json: Annotated[bool, typer.Option("--json", help="Print machine-readable JSON.")] = False,
 ) -> None:
@@ -162,7 +175,7 @@ def doctor(
         typer.echo(redact(f"error: {exc}"), err=True)
         raise typer.Exit(2) from exc
     reports = integration_reports(config)
-    components = component_lines()
+    components = component_lines() + model_disk_lines()
     if as_json:
         payload = {
             "integrations": [{**asdict(r), "detail": redact(r.detail)} for r in reports],

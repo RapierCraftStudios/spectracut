@@ -33,6 +33,7 @@ from spectracut.setup.plan import (
     build_plan,
     load_state,
     probe_hosts,
+    probe_model_disk,
     save_state,
     worker_credentials_reset_step,
 )
@@ -46,6 +47,7 @@ from spectracut.setup.storage import (
     normalize_storage_path,
     parse_storage_host,
 )
+from spectracut.setup.model_assets import resolve_models
 from spectracut.setup.wheels import build_wheels
 from spectracut.setup.worker_tags import TagApi, desired_tags, sync_worker_tags
 
@@ -141,6 +143,33 @@ def setup_cmd(
             ),
         ),
     ] = False,
+    models: Annotated[
+        str | None,
+        typer.Option(
+            "--models",
+            help=(
+                "Model weights for the model host: essential (sfx, music, temp VO, ASR, "
+                "CLAP; the default), all, or comma-separated model ids. Kept for later runs."
+            ),
+        ),
+    ] = None,
+    models_dir: Annotated[
+        str | None,
+        typer.Option(
+            "--models-dir",
+            help=(
+                "Folder on the model host for model weights, e.g. D:/spectracut/models "
+                "(default: SPECTRACUT_MODEL_ROOT, else the per-OS default). Kept for later runs."
+            ),
+        ),
+    ] = None,
+    skip_models: Annotated[
+        bool,
+        typer.Option(
+            "--skip-models",
+            help="Update hosts and runtimes without downloading or checking model weights.",
+        ),
+    ] = False,
     home: HomeOpt = None,
 ) -> None:
     """Install and configure every bundled component on the control plane and render hosts."""
@@ -163,6 +192,14 @@ def setup_cmd(
             settings["storage_path"] = normalize_storage_path(storage_path)
         if windows_drive is not None:
             settings["windows_drive"] = normalize_drive(windows_drive)
+        if models is not None:
+            resolve_models(models)  # unknown ids fail before any host is touched
+            settings["models"] = models.strip()
+        if models_dir is not None:
+            try:
+                settings["models_dir"] = normalize_storage_path(models_dir)
+            except StorageError as exc:
+                raise ValueError(f"--models-dir: {exc}".replace("storage path", "path")) from exc
         if settings:
             state = state.model_copy(update=settings)
         runner: StepRunner = CommandRunner()
@@ -181,6 +218,11 @@ def setup_cmd(
             public_key = read_public_key(root) or PENDING_PUBLIC_KEY
         else:
             public_key = ensure_signing_key(root)
+        model_host = _model_host(root)
+        disk = None
+        if model_host is not None and model_host in workers and not skip_models:
+            # Read-only: free and total space at the model root, measured up front.
+            disk = probe_model_disk(runner, facts[model_host], state.models_dir)
         plan = build_plan(
             manifest,
             set_id,
@@ -191,7 +233,9 @@ def setup_cmd(
             target,
             wheels=wheels,
             signing_public_key=public_key,
-            model_host=_model_host(root),
+            model_host=model_host,
+            model_disk=disk,
+            skip_models=skip_models,
         )
         if settings and not dry_run:
             save_state(state, root)  # valid for this farm; kept even if a later step stops
