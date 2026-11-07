@@ -27,6 +27,8 @@ When you plan shots, each storyboard board gets exactly one of `template` or `sc
 
 Motion within a template (a camera move, a reveal) is chosen by its variant and slots, not by a new id. If no template fits a board (a scene, character, environment or abstract shot), leave `template` unset and set `scene_builder` to a concrete description of the shot: subject, setting, camera, motion and mood. The scene builder renders it. Never force a board into a template that does not fit it.
 
+`slots` follow the chosen template's slot schema exactly: only its listed fields, every required one set (`typography` needs `body`, the line set as type; `end-card` needs `cta`; `device-laptop` and `device-phone` need a pinned `hdri`). Never put brief fields, ids, sources or notes in slots.
+
 ## Guardrails (every department)
 
 - No real third-party brands, logos, customer names or OEM marks in anything you make unless the brief owner supplied and licensed them. A named film, franchise or artist in the brief is a style reference: translate it into concrete attributes and make original material.

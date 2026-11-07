@@ -40,9 +40,18 @@ _UPRIGHT = [1.570796, 0, 0]
 class EndCardSlots(StrictModel):
     """The CTA line, the pinned file of the kit's logo (if it has one) and pinned fonts."""
 
-    cta: NonEmptyStr = Field(max_length=80)
-    logo: PinnedAsset | None = None
-    fonts: Mapping[str, FontFile] = Field(default_factory=dict)
+    cta: NonEmptyStr = Field(
+        max_length=80,
+        description="The closing call-to-action line shown under the logo, never a note or id.",
+    )
+    logo: PinnedAsset | None = Field(
+        default=None,
+        description="The kit logo's pinned file; leave unset unless given its path and sha256.",
+    )
+    fonts: Mapping[str, FontFile] = Field(
+        default_factory=dict,
+        description="Pinned brand font files by role; leave empty unless given font files.",
+    )
 
 
 def kit_logo(kit: BrandKit, logo: PinnedAsset | None) -> PinnedAsset | None:
