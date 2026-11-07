@@ -16,7 +16,9 @@ import pytest
 from pydantic import JsonValue, ValidationError
 
 from spectracut.providers.base import VisionScore
+from spectracut.providers.mock_image import solid_png
 from spectracut.providers.schema import claude_output_schema
+from spectracut.qa.common import encode_png
 from spectracut.queue.flamenco import WorkerTag
 from spectracut.queue.signing import (
     generate_keypair,
@@ -26,6 +28,7 @@ from spectracut.queue.signing import (
     verify_job,
 )
 from spectracut.spec.brand import load_brand_kit
+from spectracut.spec.recipe import Recipe
 from spectracut.storyboard.models import Board, Storyboard
 from spectracut.studio import device_shot as ds
 from spectracut.studio.departments import STAGE_DEPARTMENTS, all_departments
@@ -35,6 +38,7 @@ from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
 from spectracut.studio.ledger import Usage
 from spectracut.studio.node import NodeSpec, NodeStatus, Tier
 from spectracut.studio.profiles import load_profile
+from spectracut.studio.scene_builder import SceneBrief, SceneBuild, compile_calls
 from spectracut.templates import TEMPLATES
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -488,11 +492,150 @@ def test_motion_designer_prompt_lists_every_template() -> None:
     assert "scene_builder" in prompt
 
 
-def test_shot_critic_passes_a_scene_builder_only_record() -> None:
+def test_shot_critic_fails_a_scene_builder_only_record() -> None:
+    """Boards only pending for the scene builder leave nothing to review: not a pass."""
     record: JsonValue = {
         "shots": [],
         "scene_builder": [{"shot_id": "open", "description": "a city"}],
     }
-    assert sd.shot_critic(0.6)(sd.shot_nodes()[0], record).passed
+    verdict = sd.shot_critic(0.6)(sd.shot_nodes()[0], record)
+    assert not verdict.passed and "pending for the scene builder" in verdict.comment
     with pytest.raises(ValidationError):
         sd.RenderedShots.model_validate({"shots": []})
+
+
+# ---- scene-built shots (#281) ----------------------------------------------------------
+
+
+def _shot_record(output_dir: Path, score: float = 0.95) -> dict[str, JsonValue]:
+    return {
+        "shot_id": "open",
+        "template": sd.SCENE_BUILDER,
+        "recipe": {},
+        "recipe_hash": "sha256:" + "0" * 64,
+        "tier": "preview",
+        "scene_graph_hash": "sha256:" + "1" * 64,
+        "frames": {"frame_0001.png": "a", "frame_0048.png": "b"},
+        "output_dir": str(output_dir),
+        "job_id": "j",
+        "worker_tag": TAG,
+        "qa": {"passed": True, "failures": []},
+        "vision_qa": {"score": score},
+        "frame_end": 48,
+        "description": "a glowing product on a plinth",
+    }
+
+
+def test_shot_critic_fails_a_blank_first_frame_whatever_its_score(tmp_path: Path) -> None:
+    """Regression: a flat frame does not depict its description, even if the judge says so."""
+    blank, busy = tmp_path / "blank", tmp_path / "busy"
+    blank.mkdir()
+    busy.mkdir()
+    (blank / "frame_0001.png").write_bytes(solid_png(16, 16, (40, 40, 40)))
+    (busy / "frame_0001.png").write_bytes(_checker_png())
+    critic = sd.shot_critic(0.6)
+    spec = sd.shot_nodes()[0]
+    verdict = critic(spec, {"shots": [_shot_record(blank)]})
+    assert not verdict.passed and "first frame is blank" in verdict.comment
+    assert critic(spec, {"shots": [_shot_record(busy)]}).passed
+
+
+def _checker_png(size: int = 16) -> bytes:
+    pixels = bytes(255 if (x // 4 + y // 4) % 2 else 0 for y in range(size) for x in range(size))
+    return encode_png(size, size, 1, pixels)
+
+
+SCENE_CALLS: list[JsonValue] = [
+    {"tool": "scene.clear", "args": {}},
+    {"tool": "object.add_primitive", "args": {"kind": "cube", "name": "slab"}},
+    {"tool": "light.add", "args": {"kind": "area", "name": "key", "energy": 500}},
+    {"tool": "camera.add", "args": {"name": "cam", "location": [0, -6, 1]}},
+    {"tool": "camera.use", "args": {"name": "cam"}},
+]
+
+
+class FakeSceneBuilder:
+    """The scene builder: records each brief, returns a fixed recipe and usage."""
+
+    def __init__(self, recipe: bool = True) -> None:
+        self.briefs: list[SceneBrief] = []
+        self.recipe = recipe
+
+    def __call__(self, brief: SceneBrief) -> SceneBuild:
+        self.briefs.append(brief)
+        recipe = compile_calls(SCENE_CALLS, recipe_id=f"{brief.id}-r", shot_id=brief.id)
+        return SceneBuild(
+            id=brief.id,
+            status="accepted" if self.recipe else "escalated",
+            attempts=1,
+            recipe=recipe if self.recipe else None,
+            usage=Usage(gpu_minutes=1.0, ai_usage={"scene_builder_claude_requests": 2}),
+        )
+
+
+def _scene_rig(tmp_path: Path, builder: FakeSceneBuilder) -> Rig:
+    plan = _plan(close={"template": None, "variant": None, "slots": {}})
+    plan["shots"][1]["scene_builder"] = "slow orbit around the glowing product"  # type: ignore[index, call-overload]
+    rig = Rig(tmp_path, plan)
+    rig.runner.scene_builder = builder
+    return rig
+
+
+def test_scene_builder_shot_renders_as_an_animated_sequence_at_the_board_timing(
+    tmp_path: Path,
+) -> None:
+    builder = FakeSceneBuilder()
+    rig = _scene_rig(tmp_path, builder)
+    report = rig.run()
+    assert not report.failed, {n: rig.graph.state(n).error for n in report.failed}
+    out = sd.RenderedShots.model_validate(rig.graph.output("template_shots"))
+    assert [s.shot_id for s in out.shots] == ["open", "close"] and out.scene_builder == []
+    scene = out.shots[1]
+    assert scene.template == sd.SCENE_BUILDER
+    # The storyboard's close board runs 2.0 s: 48 frames at 24 fps.
+    assert scene.frame_end == 48 == sd.shot_frames(Board(shot_id="x", action="a", duration_s=2.0))
+    assert scene.description is not None and "slow orbit" in scene.description
+    tools = [step.tool for step in Recipe.model_validate(scene.recipe).steps]
+    # The storyboard's board is static: lens and frame range, no camera move.
+    assert tools[-2:] == ["camera.set_lens", "render.set_frame_range"]
+    assert "camera.move" not in tools
+    # The brief carries the board: lens, move and duration.
+    [brief] = builder.briefs
+    assert brief.id == "close" and "50 mm lens" in brief.description and "2 s" in brief.description
+    jobs = [j for j in rig.fake.submitted if "close" in j["name"]]
+    assert [j["settings"]["frames"] for j in jobs] == ["1-48", "1-48"]
+    final = sd.RenderedShots.model_validate(rig.graph.output("shots"))
+    assert [(s.template, s.frame_end) for s in final.shots][1] == (sd.SCENE_BUILDER, 48)
+    entry = next(e for e in rig.graph.ledger.entries() if e.node_id == "template_shots")
+    assert entry.ai_usage["scene_builder_claude_requests"] == 2
+
+
+def test_scene_builder_with_no_recipe_fails_the_shot_node(tmp_path: Path) -> None:
+    rig = _scene_rig(tmp_path, FakeSceneBuilder(recipe=False))
+    report = rig.run()
+    assert "template_shots" in report.failed
+    assert "produced no recipe" in (rig.graph.state("template_shots").error or "")
+
+
+@pytest.mark.parametrize(
+    ("move", "keyed"),
+    [("static", False), ("push", True), ("orbit", True), ("handheld", True)],
+)
+def test_motion_steps_key_the_board_move_lens_and_frame_range(move: str, keyed: bool) -> None:
+    board = Board.model_validate(
+        {"shot_id": "s", "action": "a", "duration_s": 1.5, "move": move, "lens_mm": 50}
+    )
+    recipe = compile_calls(SCENE_CALLS, recipe_id="r", shot_id="s")
+    calls = dict(sd.motion_steps(board, recipe))
+    assert calls["camera.set_lens"] == {"mm": 50}
+    assert calls["render.set_frame_range"] == {"frame_start": 1, "frame_end": 36}
+    assert ("camera.move" in calls) is keyed
+    if keyed:
+        move_args: Any = calls["camera.move"]
+        keys = move_args["keys"]
+        assert keys[0]["frame"] == 1 and keys[0] != keys[-1]
+    # A recipe that already keys its camera keeps its own move.
+    moved = sd.with_motion(recipe, board)
+    assert [s.tool for s in moved.steps].count("camera.move") == int(keyed)
+    again = dict(sd.motion_steps(board, moved))
+    assert "camera.move" not in again
