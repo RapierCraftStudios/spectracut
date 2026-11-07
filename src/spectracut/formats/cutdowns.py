@@ -122,6 +122,17 @@ class CutDownSpec(StrictModel):
     platform: Slug
     shots: list[Slug] = Field(min_length=1)
     variant_id: Slug | None = None
+    frames: list[int] | None = None
+    """Frames per shot, in ``shots`` order (a re-paced cut); unset splits proportionally."""
+
+    @model_validator(mode="after")
+    def _frames_match_shots(self) -> CutDownSpec:
+        if self.frames is not None:
+            if len(self.frames) != len(self.shots):
+                raise ValueError("cut-down frames must give one length per shot")
+            if any(f <= 0 for f in self.frames):
+                raise ValueError("cut-down frames must all be positive")
+        return self
 
     @classmethod
     def for_variant(
@@ -204,7 +215,15 @@ def cut_down(master: Edit, library: RenderLibrary, spec: CutDownSpec) -> Edit:
         raise MissingRender(missing)
     sources = _sources(master, spec)
     target = master.rate.frames(spec.length_s)
-    shares = _shares(target, [c.duration for c in sources])
+    if spec.frames is not None:
+        if sum(spec.frames) != target:
+            raise ValueError(
+                f"cut-down {spec.id!r}: frames sum to {sum(spec.frames)}, "
+                f"{spec.length_s} s is {target}"
+            )
+        shares = list(spec.frames)
+    else:
+        shares = _shares(target, [c.duration for c in sources])
     items: list[Clip] = []
     for n, (clip, share) in enumerate(zip(sources, shares, strict=True), 1):
         assert clip.shot_id is not None and clip.shot_hash is not None

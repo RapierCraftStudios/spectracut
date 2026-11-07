@@ -150,3 +150,21 @@ def test_spec_for_variant_orders_hook_visual_cta() -> None:
     assert s.shots == ["hook", "product", "cta"]
     assert s.variant_id == v.id
     assert s.id == "h01-v01-c01-15s-9x16"
+
+
+def test_spec_frames_set_each_shot_length_and_must_fill_the_cut_down() -> None:
+    paced = spec(15).model_copy(update={"frames": [96, 120, 144]})
+    edit = cut_down(master(), library(), paced)
+    assert [c.duration for c in edit.tracks[0].clips()] == [96, 120, 144]
+    assert [c.source_in for c in edit.tracks[0].clips()] == [24, 24, 24]
+    with pytest.raises(ValueError, match="frames sum"):
+        cut_down(master(), library(), spec(15).model_copy(update={"frames": [96, 120, 100]}))
+
+
+def test_spec_frames_need_one_positive_length_per_shot() -> None:
+    base = spec(15).model_dump()
+    with pytest.raises(ValueError, match="one length per shot"):
+        CutDownSpec.model_validate({**base, "frames": [180, 180]})
+    with pytest.raises(ValueError, match="positive"):
+        CutDownSpec.model_validate({**base, "frames": [180, 180, 0]})
+    assert CutDownSpec.model_validate(base).frames is None

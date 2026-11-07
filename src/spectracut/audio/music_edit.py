@@ -311,6 +311,25 @@ def plan_edit(
 # --------------------------------------------------------------------------- rendering
 
 
+def cut_beats(plan: EditPlan, grid: BeatGrid) -> tuple[float, ...]:
+    """Every source beat inside the plan's bars, placed on the cut score (seconds).
+
+    A beat at ``b`` in segment ``(start, end)`` lands at the segment's output offset plus
+    ``b - start``, times ``plan.ratio``. Beats past ``out_duration_s`` are dropped; the
+    result is sorted with duplicates (shared bar boundaries) removed.
+    """
+    placed: set[float] = set()
+    offset = 0.0
+    for start, end in plan.segments:
+        for beat in grid.beats:
+            if start <= beat < end:
+                at = (offset + beat - start) * plan.ratio
+                if at <= plan.out_duration_s + 1e-9:
+                    placed.add(round(min(at, plan.out_duration_s), 6))
+        offset += end - start
+    return tuple(sorted(placed))
+
+
 class Stretcher(Protocol):
     def stretch(self, channels: Channels, rate: int, ratio: float) -> Channels:
         """Return ``channels`` with their length multiplied by ``ratio``, pitch kept."""

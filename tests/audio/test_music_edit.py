@@ -17,6 +17,7 @@ from spectracut.audio.music_edit import (
     MusicEditError,
     RubberBandStretcher,
     analyze,
+    cut_beats,
     edited_sound,
     plan_edit,
     render_edit,
@@ -203,3 +204,21 @@ def test_rubberband_and_demucs_are_run_with_the_expected_arguments(
     assert calls[0][1:4] == ["--quiet", "--time", "1.05000000"]
     stems = DemucsSeparator(binary="dm").separate(tmp_path / "t.wav", tmp_path)
     assert list(stems) == ["drums"] and calls[1][1:3] == ["-n", "htdemucs"]
+
+
+def test_cut_beats_map_source_beats_through_the_plan(grid: BeatGrid) -> None:
+    plan = plan_edit(grid, target_s=30.0, fps=FPS)
+    beats = cut_beats(plan, grid)
+    assert list(beats) == sorted(set(beats))
+    assert all(0.0 <= b <= plan.out_duration_s for b in beats)
+    # Every beat inside a kept bar is on the cut, offset by the bars before it.
+    offset = 0.0
+    for start, end in plan.segments:
+        for b in grid.beats:
+            if start <= b < end and (offset + b - start) * plan.ratio <= plan.out_duration_s:
+                at = (offset + b - start) * plan.ratio
+                assert any(abs(at - c) < 1e-5 for c in beats)
+        offset += end - start
+    # At 120 BPM the cut's beats are half a second apart (stretched by the ratio).
+    gaps = [b - a for a, b in zip(beats, beats[1:], strict=False)]
+    assert sorted(gaps)[len(gaps) // 2] == pytest.approx(0.5 * plan.ratio, abs=0.02)

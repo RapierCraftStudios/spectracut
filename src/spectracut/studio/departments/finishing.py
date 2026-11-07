@@ -2,10 +2,15 @@
 """Finishing: the edit, the graded master and the delivery set, built in code.
 
 - ``edit`` (:class:`Editor`): conforms the animatic to the rendered shots. Every
-  picture clip keeps the animatic's record position and length and points at its
-  rendered shot (``edit.conform.replace_shot``); the ``vo`` track is rebuilt from the
-  voiceover lines at the frames the mix places them, and the ``music`` track from the
-  music bed when a music node is wired in. The edit is written as OTIO. With a
+  picture clip points at its rendered shot (``edit.conform.replace_shot``); the ``vo``
+  track is rebuilt from the voiceover lines at the frames the mix places them, and the
+  ``music`` track from the music bed when a music node is wired in. When the music bed
+  carries beats, ``edit.editorial.editorial_pass`` then re-cuts the picture on the beat
+  (J/L cuts around VO, match cuts and speed ramps between device shots and abstract
+  interludes, clip labels and title holds from the storyboard when it is wired) and the
+  cut records its ``editorial`` report; total length and VO frames never move. Without
+  beats every picture clip keeps the animatic's record position and length. The edit
+  is written as OTIO. With a
   ``references`` input the cut records ``reference_comparison``: its measured pace
   (average picture clip length vs the range of the references the storyboard cites)
   and the first frame of each used shot scored against their keyframes by the
@@ -18,7 +23,9 @@
   submitted.
 - ``delivery`` (:class:`Delivery`): renders each shot again per delivery aspect (the
   template's vertical camera for 9:16, 1:1 and 4:5), cuts 15 s and 30 s cut-downs in
-  16:9, 9:16, 1:1 and 4:5 from the master (``formats.cutdowns.cut_down``), writes
+  16:9, 9:16, 1:1 and 4:5 from the master (``formats.cutdowns.cut_down``), re-paced on
+  the music's beats (``edit.editorial.pace_cutdown``) when the music bed has them and
+  otherwise trimmed in proportion (:func:`cutdown_shots`), writes
   every deliverable's OTIO and runs ``qa.report.run_qa`` on each. Every deliverable
   must pass QA or the node fails. Temp VO and non-commercial music are listed as temp
   items, and any temp item marks the report not passed, so it never ships.
@@ -48,6 +55,7 @@ from spectracut.critique.references import (
     measure_pace,
 )
 from spectracut.edit.conform import replace_shot
+from spectracut.edit.editorial import EditorialReport, editorial_pass, pace_cutdown
 from spectracut.edit.otio_io import write_otio
 from spectracut.edit.timeline import Clip, Edit, Gap, Track
 from spectracut.finishing.color import ColorPipeline
@@ -137,6 +145,8 @@ class EditCut(StrictModel):
     """The rendered shots behind the picture clips (their recipes are re-rendered)."""
     reference_comparison: ReferenceComparison | None = None
     """The cut's pace and shot frames scored against the cited references."""
+    editorial: EditorialReport | None = None
+    """The beat-synced editorial pass, when the music bed carried beats."""
 
 
 class EndCardRecord(StrictModel):
@@ -522,6 +532,14 @@ class FinishingRunner:
             frames = min(total, max(1, animatic.rate.frames(Fraction(music.duration_s))))
             bed = Clip(id="music-bed", media_ref=music.media_ref, source_out=frames)
             edit = _with_track(edit, _audio_track("music", [(0, bed)], total))
+        editorial: EditorialReport | None = None
+        if music is not None and music.beats_s:
+            edit, editorial = editorial_pass(
+                edit,
+                music.beats_s,
+                storyboard=_input(ctx, STORYBOARD, Storyboard),
+                vo_track=next((t for t in edit.tracks if t.id == "vo"), None),
+            )
         ref, sha = _write(edit, self.workdir / f"{ctx.spec.id}.otio")
         cut = EditCut(
             edit=edit,
@@ -529,6 +547,7 @@ class FinishingRunner:
             otio_sha256=sha,
             shots=used,
             reference_comparison=self._reference_comparison(ctx, edit, used),
+            editorial=editorial,
         )
         return self._validated(ctx, cut, Usage())
 
@@ -704,8 +723,14 @@ class FinishingRunner:
             audio,
         )
         cutdowns: list[Deliverable] = []
+        music = _input(ctx, MUSIC, MusicBed)
         for length in CUTDOWN_LENGTHS:
-            picked = cutdown_shots(master.edit, master.end_card.shot_id, length)
+            frames: list[int] | None = None
+            if music is not None and music.beats_s:
+                paced = pace_cutdown(master.edit, music.beats_s, length, master.end_card.shot_id)
+                picked, frames = [s for s, _ in paced], [f for _, f in paced]
+            else:
+                picked = cutdown_shots(master.edit, master.end_card.shot_id, length)
             for aspect in DELIVERY_ASPECTS:
                 spec = CutDownSpec(
                     id=f"cutdown-{length}s-{aspect.replace(':', 'x')}",
@@ -713,6 +738,7 @@ class FinishingRunner:
                     aspect=aspect,
                     platform=PLATFORMS[aspect],
                     shots=picked,
+                    frames=frames,
                 )
                 edit = cut_down(master.edit, library, spec)
                 cutdowns.append(

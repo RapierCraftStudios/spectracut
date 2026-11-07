@@ -19,6 +19,7 @@ from pydantic import JsonValue
 
 from spectracut.audio.recipe import Provenance
 from spectracut.audio.vo import VoiceoverLine, VoiceoverTrack
+from spectracut.edit import check_editorial
 from spectracut.edit.otio_io import read_otio
 from spectracut.edit.timeline import Clip, Edit, Marker, Track
 from spectracut.formats.safe_areas import RESOLUTIONS
@@ -177,9 +178,15 @@ def _vo(temp: bool = False) -> VoiceoverTrack:
     )
 
 
-def _music(commercial: bool = True) -> MusicBed:
+BEATS = [0.1 + 0.5 * k for k in range(80)]
+"""120 BPM, a tenth of a second off the animatic's 5 s board grid."""
+
+
+def _music(commercial: bool = True, beats: list[float] | None = None) -> MusicBed:
     licence = "commercial" if commercial else "CC-BY-NC-4.0"
     return MusicBed(
+        beats_s=beats or [],
+        tempo_bpm=120.0 if beats else None,
         media_ref="/music/bed.wav",
         duration_s=40.0,
         end_card_s=5.0,
@@ -246,29 +253,36 @@ class Rig:
         ctx = RunContext(spec=spec, tier=Tier.FINAL, key="k", inputs=inputs, attempt=1)
         return self.runner(ctx)
 
-    def edit(self, nodes: dict[str, NodeSpec], *, music: bool = True) -> JsonValue:
+    def edit(
+        self, nodes: dict[str, NodeSpec], *, music: bool = True, beats: list[float] | None = None
+    ) -> JsonValue:
         inputs: dict[str, JsonValue] = {
             "animatic": _dump(_animatic()),
             "shots": _dump(_shots()),
             "voiceover": _dump(_vo()),
         }
         if music:
-            inputs["music"] = _dump(_music())
+            inputs["music"] = _dump(_music(beats=beats))
         return self.call(nodes["edit"], inputs).output
 
-    def render(self, nodes: dict[str, NodeSpec]) -> RunResult:
-        edit = self.edit(nodes)
+    def render(self, nodes: dict[str, NodeSpec], beats: list[float] | None = None) -> RunResult:
+        edit = self.edit(nodes, beats=beats)
         return self.call(nodes["render"], {"edit": edit, "mix": _dump(_mix(self.tmp))})
 
     def delivery(
-        self, nodes: dict[str, NodeSpec], *, temp_vo: bool = False, commercial: bool = True
+        self,
+        nodes: dict[str, NodeSpec],
+        *,
+        temp_vo: bool = False,
+        commercial: bool = True,
+        beats: list[float] | None = None,
     ) -> RunResult:
-        master = self.render(nodes).output
+        master = self.render(nodes, beats).output
         inputs: dict[str, JsonValue] = {
             "render": master,
             "voiceover": _dump(_vo(temp_vo)),
             "mix": _dump(_mix(self.tmp)),
-            "music": _dump(_music(commercial)),
+            "music": _dump(_music(commercial, beats)),
         }
         return self.call(nodes["delivery"], inputs)
 
@@ -459,3 +473,36 @@ def test_edit_names_the_scene_builder_for_a_board_it_has_not_rendered(tmp_path: 
     with pytest.raises(ValueError, match="planned for the scene builder"):
         rig.call(nodes["edit"], inputs)
     assert rig.fake.submitted == []
+
+
+def test_edit_cuts_on_the_music_beats_and_keeps_vo_and_length(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    cut = fd.EditCut.model_validate(rig.edit(rig.nodes(), beats=BEATS))
+    assert cut.editorial is not None
+    beat_frames = {round(b * 24) for b in BEATS}
+    picture = next(t for t in cut.edit.tracks if t.id == "picture")
+    starts = [picture.record_start(c.id) for c in picture.clips()[1:]]
+    assert all(min(abs(s - b) for b in beat_frames) <= 1 for s in starts)
+    assert starts != [SHOT_FRAMES * n for n in range(1, len(SHOT_IDS))]  # really moved
+    assert check_editorial(cut.edit, cut.editorial) == []
+    assert cut.edit.duration == _animatic().duration
+    vo = next(t for t in cut.edit.tracks if t.id == "vo")
+    assert [vo.record_start(c.id) for c in vo.clips()] == [0, 600]
+    for clip in vo.clips():
+        assert clip.link is not None and abs(cut.edit.audio_offset(clip.id)) <= 12
+
+
+def test_delivery_re_paces_the_cutdowns_on_the_beat(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    report = fd.DeliveryReport.model_validate(rig.delivery(rig.nodes(), beats=BEATS).output)
+    assert len(report.cutdowns) == 8 and all(d.qa_passed for d in report.cutdowns)
+    per_shot: dict[float, list[int]] = {}
+    for d in report.cutdowns:
+        assert d.length_s is not None
+        edit = read_otio(Path(d.otio_ref))
+        clips = edit.tracks[0].clips()
+        assert edit.duration == edit.rate.frames(int(d.length_s))
+        assert clips[0].shot_id == "s0" and clips[-1].shot_id == fd.END_CARD_ID
+        assert all(c.duration % 12 == 0 for c in clips[:-1])  # whole beats, end card closes
+        per_shot[d.length_s] = [c.duration for c in clips[:-1]]
+    assert per_shot[15][0] < per_shot[30][0]

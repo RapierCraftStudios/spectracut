@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import struct
 import tomllib
@@ -188,13 +189,23 @@ class RuntimeProvider:
 _RATE = 16000
 
 
-def _wav(prompt: str, seconds: float) -> bytes:
+_MOCK_BEAT_S = 0.5
+"""The mock music's beat (120 BPM): a decaying pulse, so beat tracking finds a grid."""
+
+
+def _wav(prompt: str, seconds: float, *, beat: bool = False) -> bytes:
     import io
 
     digest = hashlib.sha256(prompt.encode()).digest()
     freq = 200 + digest[0] * 4
+    period = round(_MOCK_BEAT_S * _RATE)
+    decay = 0.06 * _RATE
+
+    def gain(i: int) -> float:
+        return 0.1 + 0.9 * math.exp(-(i % period) / decay) if beat else 1.0
+
     frames = b"".join(
-        struct.pack("<h", int(8000 * ((i * freq // _RATE) % 2 * 2 - 1)))
+        struct.pack("<h", int(8000 * gain(i) * ((i * freq // _RATE) % 2 * 2 - 1)))
         for i in range(int(_RATE * seconds))
     )
     buf = io.BytesIO()
@@ -225,7 +236,8 @@ class MockLocalProvider:
         elif self.kind in ("critic", "asr", "clap"):
             out_path.write_text(json.dumps({"kind": self.kind, "text": prompt}), encoding="utf-8")
         else:
-            out_path.write_bytes(_wav(prompt, float(options.get("duration_s", 0.1))))
+            seconds = float(options.get("duration_s", 0.1))
+            out_path.write_bytes(_wav(prompt, seconds, beat=self.kind == "music"))
         return out_path
 
 

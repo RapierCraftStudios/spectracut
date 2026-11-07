@@ -68,8 +68,17 @@ def test_standard_estimate_lists_the_missing_departments_before_any_spend() -> N
     assert set(est.unknown_departments) == UNIMPLEMENTED & set(profile.stages)
     assert graph.spec("script").inputs == ("brief", "concept")
     assert graph.spec("style_frames").inputs == ("brief", "concept", "art_direction")
-    # Finishing (#252) is wired from its departments' declared inputs; standard has
-    # no music stage, so music is not an input here.
-    assert graph.spec("edit").inputs == ("animatic", "template_shots", "shots", "voiceover")
+    # Finishing (#252) is wired from its departments' declared inputs; standard scores
+    # the film (#340), so the Composer reads the animatic and the editor, mixer and
+    # delivery read the music bed.
+    assert graph.spec("music").inputs == ("animatic",)
+    assert graph.spec("edit").inputs == (
+        "animatic",
+        "template_shots",
+        "shots",
+        "voiceover",
+        "music",
+    )
+    assert graph.spec("mix").inputs == ("animatic", "voiceover", "sound_design", "music")
     assert graph.spec("render").inputs == ("edit", "mix")
-    assert graph.spec("delivery").inputs == ("render", "voiceover", "mix")
+    assert graph.spec("delivery").inputs == ("render", "voiceover", "mix", "music")
