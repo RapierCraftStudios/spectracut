@@ -7,7 +7,12 @@ from a fixed allowlist with bounded parameters:
 * screen ops apply only inside the device-screen cryptomatte matte
   (``screen_matte``, the ``device_screen`` object by default):
   ``screen_grade`` (ASC CDL), ``ui_sharpen`` and ``screen_glow``;
-* scene ops always apply outside it: ``glints``, ``light_wrap`` and ``lens``.
+* scene ops always apply outside it: ``bloom``, ``glints``, ``light_wrap`` and
+  ``lens``.
+
+A graph for an abstract shot has no screen (``screen_matte: null``): its scene
+ops apply to the whole frame, and screen ops and ``light_wrap`` (which wraps the
+matte's edge) are refused.
 
 They build on SpectraCut's finishing node groups (glare, lens distortion with
 dispersion, the CDL grade) and run in Blender's compositor on a render host
@@ -108,6 +113,16 @@ class ScreenGlow(StrictModel):
     threshold: Annotated[float, Field(ge=0.0, le=2.0)] = 0.9
 
 
+class Bloom(StrictModel):
+    """Glare (fog glow or bloom) of scene highlights above ``threshold``, outside the screen."""
+
+    op: Literal["bloom"] = "bloom"
+    glare_type: Literal["FOG_GLOW", "BLOOM"] = "FOG_GLOW"
+    threshold: Annotated[float, Field(ge=0.0, le=10.0)] = 1.0
+    strength: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
+    size: Annotated[int, Field(ge=1, le=9)] = 6
+
+
 class Glints(StrictModel):
     """Streak glints on scene highlights (outside the screen)."""
 
@@ -134,10 +149,13 @@ class LensOp(StrictModel):
 
 
 CompOp = Annotated[
-    ScreenGrade | UiSharpen | ScreenGlow | Glints | LightWrap | LensOp, Field(discriminator="op")
+    ScreenGrade | UiSharpen | ScreenGlow | Bloom | Glints | LightWrap | LensOp,
+    Field(discriminator="op"),
 ]
 SCREEN_OPS = frozenset({"screen_grade", "ui_sharpen", "screen_glow"})
-SCENE_OPS = frozenset({"glints", "light_wrap", "lens"})
+SCENE_OPS = frozenset({"bloom", "glints", "light_wrap", "lens"})
+MATTE_OPS = SCREEN_OPS | {"light_wrap"}
+"""Ops that need a screen matte; a graph with ``screen_matte: null`` refuses them."""
 
 
 class CompGraph(StrictModel):
@@ -145,7 +163,9 @@ class CompGraph(StrictModel):
 
     id: Slug
     version: Version = 1
-    screen_matte: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]{1,63}$")] = DEFAULT_SCREEN_MATTE
+    screen_matte: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]{1,63}$")] | None = (
+        DEFAULT_SCREEN_MATTE
+    )
     ops: list[CompOp] = Field(default_factory=list, max_length=16)
 
     def model_post_init(self, _context: Any) -> None:
@@ -153,6 +173,12 @@ class CompGraph(StrictModel):
         repeated = sorted({n for n in names if names.count(n) > 1})
         if repeated:
             raise ValueError(f"comp graph {self.id!r} repeats op(s) {repeated}")
+        if self.screen_matte is None:
+            matted = sorted(n for n in names if n in MATTE_OPS)
+            if matted:
+                raise ValueError(
+                    f"comp graph {self.id!r} has no screen matte; op(s) {matted} need one"
+                )
 
 
 # ---- the library -----------------------------------------------------------------
