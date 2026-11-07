@@ -278,6 +278,9 @@ class RenderedShot(StrictModel):
     """The brief a scene-built shot was built and vision-scored against."""
     capture: str | None = Field(default=None, exclude_if=lambda v: v is None)
     """A device shot's UI capture key (``beat:<beat>`` / ``proof:<claim>``); omitted otherwise."""
+    screen_state: dict[str, str] | None = Field(default=None, exclude_if=lambda v: v is None)
+    """The designed screen state a device shot shows: ``{state, beat, chrome, clip_sha256}``
+    (see :func:`screen_state_record`); omitted when the capture has none."""
 
 
 class SceneBuilderShot(StrictModel):
@@ -551,7 +554,7 @@ def with_motion(recipe: Recipe, board: Board, *, fps: int = FPS) -> Recipe:
 
 # ---- device shots (#339) -----------------------------------------------------------------
 
-DEVICE_VARIANTS = ("front", "three-quarter")
+DEVICE_VARIANTS = ("front", "three-quarter", "wide", "close")
 DEVICE_FSTOP = 2.8
 DEVICE_PIPELINE = ColorPipeline(
     view_transform="AgX", display="sRGB", look="AgX - Medium High Contrast"
@@ -581,7 +584,7 @@ def capture_frames(
     host plays numbered sequences) and the staging map relpath -> capture file.
     A clip that holds one image for the whole shot is a single still frame.
     """
-    clip = capture.clip
+    clip = capture.screen.clip if capture.screen is not None else capture.clip
     picks = [clip[min(i * capture.fps // fps, len(clip) - 1)] for i in range(frames)]
     if len({f.sha256 for f in picks}) == 1:
         picks = picks[:1]
@@ -593,6 +596,24 @@ def capture_frames(
         pinned.append(PinnedAsset(path=rel, sha256=frame.sha256))
         extra[rel] = Path(frame.path)
     return pinned, extra
+
+
+def screen_state_record(capture: ScreenCapture) -> dict[str, str] | None:
+    """The beat -> screen state mapping of a composited capture, or ``None``.
+
+    ``clip_sha256`` is the sha256 of the newline-joined frame sha256s of the
+    composited clip, in order.
+    """
+    screen = capture.screen
+    if screen is None:
+        return None
+    digest = hashlib.sha256("\n".join(f.sha256 for f in screen.clip).encode()).hexdigest()
+    return {
+        "state": screen.state,
+        "beat": screen.beat,
+        "chrome": screen.chrome,
+        "clip_sha256": digest,
+    }
 
 
 def device_lighting(kit: BrandKit, assets: str | None) -> dict[str, JsonValue]:
@@ -835,7 +856,9 @@ class ShotRunner:
         storyboard = Storyboard.model_validate(ctx.inputs[STORYBOARD])
         boards = {b.shot_id: b for b in storyboard.boards}
         captures = _captures(ctx)
-        devices: list[tuple[TemplateShot, Recipe, Recipe, int, str, dict[str, Path]]] = []
+        devices: list[
+            tuple[TemplateShot, Recipe, Recipe, int, str, dict[str, Path], dict[str, str] | None]
+        ] = []
         if captures is not None:
             share = storyboard.device_share()
             if share < DEVICE_RUNTIME_SHARE:
@@ -875,10 +898,18 @@ class ShotRunner:
             self._render(ctx, s, base, rendered, Tier.PREVIEW, TEMPLATES[str(s.template)].frames)
             for s, base, rendered in builds
         ]
-        for s, base, rendered, frame_end, key, extra in devices:
+        for s, base, rendered, frame_end, key, extra, record in devices:
             done.append(
                 self._render(
-                    ctx, s, base, rendered, Tier.PREVIEW, frame_end, capture=key, extra=extra
+                    ctx,
+                    s,
+                    base,
+                    rendered,
+                    Tier.PREVIEW,
+                    frame_end,
+                    capture=key,
+                    extra=extra,
+                    screen_state=record,
                 )
             )
         for shot, board in scene:
@@ -896,7 +927,7 @@ class ShotRunner:
         board: Board,
         kit: BrandKit,
         captures: UICaptures,
-    ) -> tuple[TemplateShot, Recipe, Recipe, int, str, dict[str, Path]]:
+    ) -> tuple[TemplateShot, Recipe, Recipe, int, str, dict[str, Path], dict[str, str] | None]:
         """A device board on ``device-<kind>`` with its capture on the screen (#339)."""
         assert board.device is not None
         template = f"device-{board.device}"
@@ -919,7 +950,8 @@ class ShotRunner:
             update={"template": template, "scene_builder": None, "variant": variant, "slots": slots}
         )
         rendered = tier_recipe(base, Tier.PREVIEW, shot.aspect, DEVICE_PIPELINE)
-        return planned, base, rendered, shot_frames(board), board.capture_key, extra
+        record = screen_state_record(capture)
+        return planned, base, rendered, shot_frames(board), board.capture_key, extra, record
 
     def _art(self, ctx: RunContext, kit: BrandKit) -> ArtDirection:
         art = self.art_for(ctx.spec) if self.art_for is not None else None
@@ -983,6 +1015,7 @@ class ShotRunner:
                         frames,
                         capture=prior.capture,
                         extra=extra,
+                        screen_state=prior.screen_state,
                     )
                 )
                 continue
@@ -1023,6 +1056,7 @@ class ShotRunner:
         art: ArtDirection | None = None,
         capture: str | None = None,
         extra: Mapping[str, Path] | None = None,
+        screen_state: dict[str, str] | None = None,
     ) -> tuple[RenderedShot, Usage]:
         """Render one shot as one signed Blender job pinned to the config's worker tag.
 
@@ -1085,6 +1119,7 @@ class ShotRunner:
             frame_end=frame_end if template == SCENE_BUILDER or capture is not None else None,
             description=description if template == SCENE_BUILDER else None,
             capture=capture,
+            screen_state=screen_state,
         )
         return rendered, usage
 
@@ -1114,6 +1149,9 @@ def _restage(ctx: RunContext, prior: RenderedShot, base: Recipe) -> dict[str, Pa
             f"{ctx.spec.id!r} has no {UI_CAPTURE} input"
         )
     by_sha = {f.sha256: Path(f.path) for c in captures.captures for f in c.clip}
+    for c in captures.captures:
+        if c.screen is not None:
+            by_sha.update({f.sha256: Path(f.path) for f in c.screen.clip})
     extra: dict[str, Path] = {}
     for rel, sha in ds.referenced_assets(base).items():
         if rel.startswith("captures/"):

@@ -1,0 +1,60 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Phone chrome: 402x874, status bar, island clearance, floating URL pill, home indicator. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>screen</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 402px; height: 874px; overflow: hidden; background: #000; position: relative; font: 600 17px/54px "SF Pro Text", "Inter", sans-serif; color: #fff; }
+  #statusbar { position: absolute; left: 0; top: 0; width: 402px; height: 54px; background: #000; }
+  #time { position: absolute; left: 48px; top: 0; width: 70px; text-align: center; }
+  #island { position: absolute; left: 138px; top: 0; width: 126px; height: 37px; }
+  #icons { position: absolute; right: 32px; top: 0; height: 54px; display: flex; gap: 7px; align-items: center; }
+  #icons .bars { width: 18px; height: 12px; background: linear-gradient(90deg, #fff 0 3px, transparent 3px 5px, #fff 5px 8px, transparent 8px 10px, #fff 10px 13px, transparent 13px 15px, #fff 15px 18px); }
+  #icons .wifi { width: 17px; height: 12px; border-radius: 9px 9px 2px 2px; background: #fff; }
+  #icons .battery { width: 27px; height: 13px; border-radius: 4px; background: #fff; }
+  #frame { position: absolute; left: 0; top: 54px; width: 402px; height: 820px; object-fit: fill; display: block; background: #000; }
+  #urlpill { position: absolute; left: 21px; top: 790px; width: 360px; height: 50px; border-radius: 25px; background: rgba(40, 40, 46, 0.92); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4); text-align: center; font: 500 16px/50px "SF Pro Text", "Inter", sans-serif; color: #f2f2f7; }
+  #home { position: absolute; left: 134px; top: 862px; width: 134px; height: 5px; border-radius: 3px; background: #fff; }
+</style>
+</head>
+<body>
+<img id="frame" alt="">
+<div id="statusbar">
+  <span id="time">9:41</span>
+  <div id="island"></div>
+  <div id="icons"><span class="bars"></span><span class="wifi"></span><span class="battery"></span></div>
+</div>
+<div id="urlpill"></div>
+<div id="home"></div>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var frames = JSON.parse(q.get("frames") || "[]");
+  var fps = Number(q.get("fps")) || 30;
+  var t = q.get("t");
+  var img = document.getElementById("frame");
+  document.getElementById("urlpill").textContent = q.get("host") || "";
+  function show(i) {
+    if (frames.length) img.src = frames[Math.max(0, Math.min(frames.length - 1, i))];
+  }
+  if (t !== null && t !== "") {
+    var tv = Math.max(0, Math.min(1, Number(t) || 0));
+    show(Math.min(frames.length - 1, Math.floor(tv * frames.length)));
+  } else {
+    var start = null, last = -1;
+    var tick = function () {
+      var now = performance.now();
+      if (start === null) start = now;
+      var i = Math.floor(((now - start) * fps) / 1000);
+      if (i !== last) { last = i; show(i); }
+      requestAnimationFrame(tick);
+    };
+    show(0);
+    requestAnimationFrame(tick);
+  }
+})();
+</script>
+</body>
+</html>

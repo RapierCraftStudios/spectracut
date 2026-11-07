@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from spectracut.qa.common import encode_png
 from spectracut.queue.executors.capture import CaptureExecutor, CaptureRun
 from spectracut.spec.brief import AudienceProfile, Brief, ClaimSource, Persona, ProofPoint
 from spectracut.spec.product import DemoData, DemoLogin, ProductRun, ProductSource
@@ -99,6 +100,18 @@ def _ctx(node: NodeSpec, notes: dict[str, Any]) -> RunContext:
     return RunContext(spec=node, tier=Tier.PREVIEW, key="k", inputs={PRODUCT: notes}, attempt=1)
 
 
+_PNGS: dict[tuple[int, int], bytes] = {}
+
+
+def _black_png(spec: dict[str, Any]) -> bytes:
+    """A black PNG of the chrome page's device-pixel size."""
+    scale = spec["deviceScaleFactor"]
+    size = (round(spec["viewport"]["width"] * scale), round(spec["viewport"]["height"] * scale))
+    if size not in _PNGS:
+        _PNGS[size] = encode_png(size[0], size[1], 3, bytes(size[0] * size[1] * 3))
+    return _PNGS[size]
+
+
 class FakeCli:
     """Stands in for ``spectracut-capture``: writes frames, manifest and text.json."""
 
@@ -116,9 +129,11 @@ class FakeCli:
         out = Path(spec["outDir"])
         (out / "frames").mkdir(parents=True, exist_ok=True)
         salt = str(len(self.specs)) if self.drift else ""
+        chrome = spec["url"].startswith("file://")
         frames = []
-        for i in range(3):
-            (out / "frames" / f"{i:06d}.png").write_bytes(f"{spec['url']}|{i}|{salt}".encode())
+        for i in range(spec["script"][0]["frames"] if chrome else 3):
+            data = _black_png(spec) if chrome else f"{spec['url']}|{i}|{salt}".encode()
+            (out / "frames" / f"{i:06d}.png").write_bytes(data)
             frames.append({"index": i})
         (out / "manifest.json").write_text(json.dumps({"fps": spec["fps"], "frames": frames}))
         (out / "events.json").write_text("[]")
@@ -159,11 +174,11 @@ def test_ui_capture_is_a_registered_department() -> None:
 
 
 def test_devices_match_the_kit_macbook_and_iphone_screens() -> None:
-    # #362: 1512x982 at 2x (MacBook Pro aspect) and 393x852 at 3x (iPhone).
+    # #363: 1234x771 at 2.8x fills 1728x1080 under the notch; iPhone 17 Pro 402x874 at 3x.
     laptop, phone = DEVICES["laptop"], DEVICES["phone"]
-    assert (laptop.width, laptop.height, laptop.device_scale_factor) == (1512, 982, 2)
-    assert (laptop.width * 2, laptop.height * 2) == (3024, 1964)
-    assert (phone.width, phone.height, phone.device_scale_factor) == (393, 852, 3)
+    assert (laptop.width, laptop.height, laptop.device_scale_factor) == (1234, 771, 2.8)
+    assert round(laptop.width * 2.8) == 3455 and round(laptop.height * 2.8) == 2159
+    assert (phone.width, phone.height, phone.device_scale_factor) == (402, 874, 3)
     assert phone.height / phone.width == pytest.approx(19.5 / 9, abs=0.01)
 
 
@@ -243,9 +258,9 @@ def test_runner_captures_every_mapped_screen_per_device_with_provenance(tmp_path
     hashes = "\n".join(f.sha256 for f in laptop.clip)
     assert prov.frames_sha256 == hashlib.sha256(hashes.encode()).hexdigest()
     # Each capture ran twice (determinism) and logs in through env-var names only.
-    assert len(cli.specs) == 4
+    assert len([sp for sp in cli.specs if not sp["url"].startswith("file://")]) == 4
     spec = cli.specs[0]
-    assert spec["viewport"] == {"width": 1512, "height": 982} and spec["deviceScaleFactor"] == 2
+    assert spec["viewport"] == {"width": 1234, "height": 771} and spec["deviceScaleFactor"] == 2.8
     assert spec["colorScheme"] == "dark"
     typed = [a for a in spec["setup"] if a["do"] == "type"]
     assert [a["textEnv"] for a in typed] == [EMAIL_ENV, PASSWORD_ENV]
@@ -429,3 +444,112 @@ def test_e2e_capture_fails_on_a_page_with_customer_data(
     with pytest.raises(DepartmentOutputError, match="customer.example") as err:
         runner(_ctx(node, _leak_notes()))
     assert "jane@" not in str(err.value)
+
+
+# ---- #363: promo handling, reveal, cache, screen states ------------------------------
+
+
+def _raw_specs(cli: FakeCli) -> list[dict[str, Any]]:
+    return [sp for sp in cli.specs if not sp["url"].startswith("file://")]
+
+
+def _anchored(anchor: str = "#result", chrome: str = "fullscreen") -> dict[str, Any]:
+    notes = _notes()
+    notes["screens"][0].update({"anchor": anchor, "chrome": chrome})
+    return notes
+
+
+def _run(tmp_path: Path, cli: FakeCli, source: ProductSource, notes: dict[str, Any]) -> Any:
+    return _runner(tmp_path, cli)(_ctx(capture_node(source, PRODUCT), notes))
+
+
+def test_spec_dismisses_promo_and_hides_banners(tmp_path: Path) -> None:
+    source = _source().model_copy(update={"dismiss": ["#promo .close"], "hide": [".promo-nav"]})
+    cli = FakeCli()
+    _run(tmp_path, cli, source, _notes())
+    spec = _raw_specs(cli)[0]
+    assert spec["clean"] == {
+        "cookieBanners": True,
+        "bannerSelectors": [".promo-nav"],
+        "secretSelectors": ["input[type=password]"],
+    }
+    setup = spec["setup"]
+    # The promo's own close button is clicked after login, unrecorded (setup).
+    # optional: a no-op when the promo is absent.
+    assert setup[-1] == {"do": "click", "at": {"selector": "#promo .close"}, "optional": True}
+    assert [a["textEnv"] for a in setup if a["do"] == "type"] == [EMAIL_ENV, PASSWORD_ENV]
+    assert "#promo .close" not in json.dumps(spec["script"])
+
+
+def test_spec_reveals_anchor_and_gates_legibility(tmp_path: Path) -> None:
+    cli = FakeCli()
+    _run(tmp_path, cli, _source(), _anchored())
+    spec = _raw_specs(cli)[0]
+    assert spec["script"][-2:] == [
+        {"do": "reveal", "selector": "#result"},
+        {"do": "wait", "ms": 500},
+    ]
+    assert spec["legibility"] == {
+        "screenHeightPx": 1080,
+        "checks": [
+            {"selector": "#result", "minTextHeightPx": 20},
+            {"selector": "#result pre, #result code", "minTextHeightPx": 21},
+        ],
+    }
+    plain = FakeCli()
+    _run(tmp_path / "plain", plain, _source(), _notes())
+    assert _raw_specs(plain)[0]["legibility"] is False
+
+
+def test_custom_extraction_rejection_fails_node(tmp_path: Path) -> None:
+    cli = FakeCli(texts=["Error: Demo does not support custom extraction"])
+    with pytest.raises(DepartmentOutputError, match="custom extraction") as err:
+        _run(tmp_path, cli, _source(), _notes())
+    assert "demo_login" in str(err.value)
+
+
+def test_run_cache_reuses_frames_without_executor(tmp_path: Path) -> None:
+    first = FakeCli()
+    _run(tmp_path, first, _source(), _notes())
+    assert len(_raw_specs(first)) == 4
+    again = FakeCli()
+    result = _run(tmp_path, again, _source(), _notes())
+    assert _raw_specs(again) == []  # no product run
+    assert UICaptures.model_validate(result.output).captures[0].provenance.deterministic is True
+    # A tampered frame no longer verifies, so the capture runs again.
+    run_dir = next(d for d in (tmp_path / "capture" / "runs").iterdir() if len(d.name) == 64)
+    (run_dir / "frames" / "000000.png").write_bytes(b"tampered")
+    third = FakeCli()
+    _run(tmp_path, third, _source(), _notes())
+    assert len(_raw_specs(third)) >= 1
+
+
+def test_max_runs_budget_skips_verify_and_refuses_overrun(tmp_path: Path) -> None:
+    source = _source()
+    source = source.model_copy(update={"run": source.run.model_copy(update={"max_runs": 2})})
+    cli = FakeCli()
+    result = _run(tmp_path, cli, source, _notes())
+    assert len(_raw_specs(cli)) == 2  # one per device, no determinism re-capture
+    caps = UICaptures.model_validate(result.output).captures
+    assert all(c.provenance.deterministic is False for c in caps)
+    tight = source.model_copy(update={"run": source.run.model_copy(update={"max_runs": 1})})
+    refused = FakeCli()
+    with pytest.raises(DepartmentOutputError, match="max_runs"):
+        _run(tmp_path / "other", refused, tight, _notes())
+    assert refused.specs == []  # failed before any capture
+
+
+def test_capture_records_screen_state(tmp_path: Path) -> None:
+    result = _run(tmp_path, FakeCli(), _source(), _anchored(chrome="windowed"))
+    caps = UICaptures.model_validate(result.output).captures
+    laptop = next(c for c in caps if c.device == "laptop")
+    phone = next(c for c in caps if c.device == "phone")
+    assert laptop.screen is not None and phone.screen is not None
+    assert (laptop.screen.chrome, phone.screen.chrome) == ("windowed", "iphone")
+    assert (
+        laptop.screen.state == laptop.key and laptop.screen.raw_still_sha256 == laptop.still.sha256
+    )
+    assert (phone.screen.size.width, phone.screen.size.height) == (402, 874)
+    assert laptop.screen.values == ["Demo Person"]
+    assert "screen" in laptop.model_dump(mode="json")
+    assert "screen" not in laptop.model_copy(update={"screen": None}).model_dump(mode="json")

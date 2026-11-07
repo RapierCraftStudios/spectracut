@@ -163,6 +163,81 @@ def test_kit_camera_frames_the_whole_device_at_70mm() -> None:
     assert dk.KIT_DISTANCE <= wide.distance <= 1.35 * dk.KIT_DISTANCE
 
 
+def _bounds_centre(entry: dk.DeviceAsset) -> tuple[float, float, float]:
+    lo, hi = entry.bounds
+    return ((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2)
+
+
+def _forward(rotation: tuple[float, float, float]) -> tuple[float, float, float]:
+    """The camera's view axis (-Z) for XYZ Euler ``rotation`` (Blender)."""
+    import math
+
+    rx, ry, rz = rotation
+    x = -(math.cos(rx) * math.sin(ry) * math.cos(rz) + math.sin(rx) * math.sin(rz))
+    y = -(math.cos(rx) * math.sin(ry) * math.sin(rz) - math.sin(rx) * math.cos(rz))
+    z = -(math.cos(rx) * math.cos(ry))
+    return (x, y, z)
+
+
+def _aim_point(cam: dk.KitCamera, centre: tuple[float, float, float]) -> float:
+    """Distance from ``centre`` to the camera's view ray."""
+    import math
+
+    f = _forward(cam.rotation)
+    v = [c - p for c, p in zip(centre, cam.location, strict=True)]
+    t = sum(a * b for a, b in zip(v, f, strict=True))
+    return math.dist(v, [t * a for a in f])
+
+
+def test_wide_aims_at_bounds_centre() -> None:
+    for entry in REAL:
+        cam = dk.kit_camera(entry, yaw=0, elevation=8, aspect=16 / 9, target="bounds")
+        centre = _bounds_centre(entry)
+        assert _aim_point(cam, centre) < 1e-3
+        assert _aim_point(cam, entry.frame.centre) > 1e-4 or centre == entry.frame.centre
+        lo, hi = entry.bounds
+        corners = [
+            (x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])
+        ]
+        assert dk.in_frame(cam.location, centre, 70.0, 16 / 9, corners)
+
+
+def test_close_is_0_62_of_fitted_distance_at_screen_centre() -> None:
+    import math
+
+    for entry in REAL:
+        fitted = dk.kit_camera(entry, yaw=0, elevation=8, aspect=16 / 9)
+        close = dk.kit_camera(entry, yaw=0, elevation=8, aspect=16 / 9, scale=0.62)
+        assert close.distance == pytest.approx(0.62 * fitted.distance, abs=1e-3)
+        assert math.dist(close.location, entry.frame.centre) == pytest.approx(
+            close.distance, abs=1e-3
+        )
+        assert _aim_point(close, entry.frame.centre) < 1e-3
+
+
+def test_default_kit_camera_unchanged() -> None:
+    for entry in REAL:
+        for yaw, el in ((0, 8), (35, 12)):
+            a = dk.kit_camera(entry, yaw=yaw, elevation=el, aspect=16 / 9)
+            b = dk.kit_camera(
+                entry, yaw=yaw, elevation=el, aspect=16 / 9, target="screen", scale=1.0
+            )
+            assert a == b
+    # Values recorded before the target and scale options existed.
+    front = dk.kit_camera(MACBOOK_PRO, yaw=0, elevation=8, aspect=16 / 9)
+    assert (front.location, front.rotation, front.distance) == (
+        (0.0, -1.1454, 0.2934),
+        (1.43117, 0.0, 0.0),
+        1.2979,
+    )
+    quarter = dk.kit_camera(MACBOOK_PRO, yaw=35, elevation=12, aspect=16 / 9)
+    assert (quarter.location, quarter.rotation, quarter.distance) == (
+        (0.8519, -1.0767, 0.4284),
+        (1.361357, 0.0, 0.610865),
+        1.5184,
+    )
+
+
 # ---- ensure_device_asset -------------------------------------------------------------------
 
 

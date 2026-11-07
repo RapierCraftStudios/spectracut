@@ -33,9 +33,9 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Final, Literal
+from typing import Any, ClassVar, Final, Literal
 
-from pydantic import Field, JsonValue, StringConstraints
+from pydantic import Field, JsonValue
 
 from spectracut.queue.executors.capture import CaptureExecutor
 from spectracut.queue.queue import Job
@@ -52,6 +52,16 @@ from spectracut.studio.departments.discovery import (
     ProductNotes,
     ScreenMapping,
     ScreenStep,
+)
+from spectracut.studio.departments.screens import (
+    Chrome,
+    DeviceId,
+    ScreenState,
+    Sha256,
+    compose,
+)
+from spectracut.studio.departments.screens import (
+    ScreenFrame as CaptureFrame,
 )
 from spectracut.studio.graph import RunContext, Runner, RunResult
 from spectracut.studio.ledger import Usage
@@ -91,9 +101,6 @@ END_HOLD_MS: Final = 500
 LOGIN_SETTLE_MS: Final = 1000
 READY_TIMEOUT_S: Final = 120.0
 
-DeviceId = Literal["laptop", "phone"]
-Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
-
 
 class DeviceProfile(StrictModel):
     """A capture device: CSS viewport and pixel ratio."""
@@ -105,21 +112,18 @@ class DeviceProfile(StrictModel):
 
 
 DEVICES: Final[Mapping[str, DeviceProfile]] = {
-    "laptop": DeviceProfile(id="laptop", width=1512, height=982, device_scale_factor=2),
-    "phone": DeviceProfile(id="phone", width=393, height=852, device_scale_factor=3),
+    "laptop": DeviceProfile(id="laptop", width=1234, height=771, device_scale_factor=2.8),
+    "phone": DeviceProfile(id="phone", width=402, height=874, device_scale_factor=3),
 }
-"""Laptop at the MacBook Pro display aspect (3024x1964 px) and phone at the iPhone
-aspect (1179x2556 px), the device kit's screens (#362)."""
+"""Laptop: a 1234x771 CSS viewport at 2.8x fills the 1728x1080 area under the notch at
+about 1.4x UI scale (#363); phone: iPhone 17 Pro, 402x874 at 3x."""
+DEMO_REJECTION: Final = "Demo does not support custom extraction"
+PANEL_MIN_TEXT_PX: Final = 20
+CODE_MIN_TEXT_PX: Final = 21
+SCREEN_HEIGHT_PX: Final = 1080
 COLOR_SCHEME: Final = "dark"
 """Captures run in the product's dark scheme (#362); cookie banners stay hidden by the
 capture package's default clean rules."""
-
-
-class CaptureFrame(StrictModel):
-    """One PNG and its sha256."""
-
-    path: NonEmptyStr
-    sha256: Sha256
 
 
 class CaptureProvenance(StrictModel):
@@ -162,6 +166,8 @@ class ScreenCapture(StrictModel):
     events: NonEmptyStr
     text: NonEmptyStr
     provenance: CaptureProvenance
+    screen: ScreenState | None = Field(default=None, exclude_if=lambda v: v is None)
+    """The capture composited into device chrome (absent on older outputs)."""
 
 
 class UICaptures(StrictModel):
@@ -426,13 +432,18 @@ def check_demo_data(
 # --------------------------------------------------------------------- runner
 
 
+CACHE_FILE: Final = "run.json"
+"""Marks a verified run in ``<workdir>/runs/<spec sha256>/``: its frame hashes."""
+
+
+def _spec_sha256(spec: Mapping[str, JsonValue]) -> str:
+    return hashlib.sha256(
+        json.dumps(spec, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _slug(key: str) -> str:
-    base = re.sub(r"[^a-z0-9]+", "-", key.casefold()).strip("-")[:60] or "capture"
-    return f"{base}-{hashlib.sha1(key.encode()).hexdigest()[:8]}"  # noqa: S324 - dir name
 
 
 def default_capture_command(env: Mapping[str, str] | None = None) -> list[str]:
@@ -610,10 +621,23 @@ class CaptureRunner:
                 server = self.launcher(shlex.split(source.run.command), source.frontend)
             if base_url:
                 self._wait_ready(ctx, base_url, server)
+            plans = []
+            for mapping in mappings:
+                for device in devices:
+                    try:
+                        spec = self._spec(source, mapping, DEVICES[device], base_url, fps)
+                    except ValueError as exc:
+                        raise self._fail(ctx, f"{capture_key(mapping)} ({device}): {exc}") from None
+                    plans.append((mapping, DEVICES[device], spec))
+            budget = source.run.max_runs
+            if budget is not None:
+                verify = False  # a second capture would double the live runs
+                fresh = sum(1 for _, _, spec in plans if self._cached(self._run_dir(spec)) is None)
+                if fresh > budget:
+                    raise self._fail(ctx, f"{fresh} uncached captures exceed run.max_runs={budget}")
             captures = [
-                self._one(ctx, source, mapping, DEVICES[device], base_url, fps, verify)
-                for mapping in mappings
-                for device in devices
+                self._one(ctx, source, mapping, device, base_url, fps, verify, spec)
+                for mapping, device, spec in plans
             ]
         finally:
             if server is not None:
@@ -650,6 +674,21 @@ class CaptureRunner:
         fps: int,
     ) -> dict[str, JsonValue]:
         script = steps_to_actions(mapping.steps, base_url)
+        anchor = mapping.anchor
+        if anchor:
+            script += [{"do": "reveal", "selector": anchor}, {"do": "wait", "ms": END_HOLD_MS}]
+        legibility: JsonValue = False
+        if anchor:
+            legibility = {
+                "screenHeightPx": SCREEN_HEIGHT_PX,
+                "checks": [
+                    {"selector": anchor, "minTextHeightPx": PANEL_MIN_TEXT_PX},
+                    {
+                        "selector": f"{anchor} pre, {anchor} code",
+                        "minTextHeightPx": CODE_MIN_TEXT_PX,
+                    },
+                ],
+            }
         spec: dict[str, JsonValue] = {
             "url": _url(base_url, mapping.route),
             "viewport": {"width": device.width, "height": device.height},
@@ -657,25 +696,33 @@ class CaptureRunner:
             "colorScheme": COLOR_SCHEME,
             "fps": fps,
             "script": list(script),
-            "clean": {"secretSelectors": ["input[type=password]"]},
-            "legibility": False,
-            "textSelectors": list(source.demo_data.name_selectors),
+            "clean": {
+                "cookieBanners": True,
+                "bannerSelectors": list(source.hide),
+                "secretSelectors": ["input[type=password]"],
+            },
+            "legibility": legibility,
+            "textSelectors": [*source.demo_data.name_selectors, *([anchor] if anchor else [])],
         }
         main = _main_selector(mapping.steps)
         if main is not None:
             spec["layers"] = [{"name": "main", "selector": main}]
         setup = login_actions(source, base_url)
+        for selector in source.dismiss:  # the promo's own close button, unrecorded
+            setup.append({"do": "click", "at": {"selector": _selector(selector)}, "optional": True})
         if setup:
             spec["setup"] = list(setup)
         return spec
+
+    def _executor(self) -> CaptureExecutor:
+        return self.executor_factory(self.command or default_capture_command(self.env))
 
     def _run_capture(
         self, ctx: RunContext, spec: dict[str, JsonValue], out: Path
     ) -> tuple[Path, list[Path], list[str]]:
         if out.exists():
             shutil.rmtree(out)
-        command = self.command or default_capture_command(self.env)
-        executor = self.executor_factory(command)
+        executor = self._executor()
         job = Job(
             id=f"{ctx.spec.id}-{out.parent.name}-{out.name}",
             kind="capture",
@@ -699,15 +746,17 @@ class CaptureRunner:
         base_url: str,
         fps: int,
         verify: bool,
+        spec: dict[str, JsonValue],
     ) -> ScreenCapture:
         key = capture_key(mapping)
         name = f"{key} ({device.id})"
-        try:
-            spec = self._spec(source, mapping, device, base_url, fps)
-        except ValueError as exc:
-            raise self._fail(ctx, f"{name}: {exc}") from None
-        root = self.workdir / _slug(key)
-        out, frames, hashes = self._run_capture(ctx, spec, root / device.id)
+        out = self._run_dir(spec)
+        cached = self._cached(out)
+        if cached is not None:
+            frames, hashes, verified = cached  # reuse the recorded run: no executor call
+            verify = verified
+        else:
+            out, frames, hashes = self._run_capture(ctx, spec, out)
         text_path = out / "text.json"
         try:
             records = json.loads(text_path.read_text(encoding="utf-8"))
@@ -723,10 +772,18 @@ class CaptureRunner:
         )
         if problems:
             raise self._fail(ctx, f"{name} shows non-demo data: {'; '.join(problems)}")
-        if verify:
-            _, _, again = self._run_capture(ctx, spec, root / f"{device.id}-verify")
+        if DEMO_REJECTION in json.dumps(records):
+            raise self._fail(
+                ctx, f"{name}: the demo rejected the run ({DEMO_REJECTION!r}); set demo_login"
+            )
+        if verify and cached is None:
+            _, _, again = self._run_capture(ctx, spec, out.with_name(f"{out.name}-verify"))
             if again != hashes:
                 raise self._fail(ctx, f"{name}: a second capture gave different frames")
+        if cached is None:
+            (out / CACHE_FILE).write_text(
+                json.dumps({"hashes": hashes, "deterministic": verify}), encoding="utf-8"
+            )
         layers: list[CaptureFrame] = []
         layers_dir = out / "layers"
         if layers_dir.is_dir():
@@ -735,8 +792,7 @@ class CaptureRunner:
                 if last.is_file():
                     layers.append(CaptureFrame(path=str(last), sha256=_sha256_file(last)))
         clip = [CaptureFrame(path=str(f), sha256=h) for f, h in zip(frames, hashes, strict=True)]
-        canonical = json.dumps(spec, sort_keys=True, separators=(",", ":")).encode()
-        return ScreenCapture(
+        raw = ScreenCapture(
             key=key,
             proof_point=mapping.proof_point,
             beat=mapping.beat,
@@ -756,10 +812,31 @@ class CaptureRunner:
                 url=str(spec["url"]),
                 steps=list(mapping.steps),
                 device=device.id,
-                spec_sha256=hashlib.sha256(canonical).hexdigest(),
+                spec_sha256=_spec_sha256(spec),
                 frames_sha256=hashlib.sha256("\n".join(hashes).encode()).hexdigest(),
                 rig=rig_version(),
                 demo_check="passed",
                 deterministic=verify,
             ),
         )
+        chrome: Chrome = "iphone" if device.id == "phone" else mapping.chrome
+        try:
+            screen = compose(self._executor(), raw, chrome, out.with_name(f"{out.name}-{chrome}"))
+        except Exception as exc:  # noqa: BLE001 - ValueError or executor failure: a node failure
+            raise self._fail(ctx, f"{name}: screen composite failed: {exc}") from exc
+        return raw.model_copy(update={"screen": screen})
+
+    def _run_dir(self, spec: Mapping[str, JsonValue]) -> Path:
+        return self.workdir / "runs" / _spec_sha256(spec)
+
+    def _cached(self, out: Path) -> tuple[list[Path], list[str], bool] | None:
+        """Frames, hashes and determinism of a recorded run whose files still verify."""
+        try:
+            meta = json.loads((out / CACHE_FILE).read_text(encoding="utf-8"))
+            manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+            frames = [out / "frames" / f"{int(f['index']):06d}.png" for f in manifest["frames"]]
+            hashes = [_sha256_file(f) for f in frames]
+            ok = frames and hashes == meta["hashes"] and (out / "text.json").is_file()
+            return (frames, hashes, bool(meta["deterministic"])) if ok else None
+        except (OSError, ValueError, KeyError, TypeError):
+            return None

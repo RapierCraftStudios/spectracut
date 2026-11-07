@@ -107,6 +107,10 @@ class ScreenMapping(StrictModel):
     source_id: Slug | None = None
     interlude: bool = False
     """The beat is an abstract interlude: no screen, no route."""
+    anchor: str = ""
+    """CSS selector of the beat's panel to place under the site header."""
+    chrome: Literal["fullscreen", "windowed"] = "fullscreen"
+    """Laptop chrome around the capture (the phone always uses the iPhone chrome)."""
 
     @model_validator(mode="after")
     def _shape(self) -> ScreenMapping:
@@ -117,6 +121,8 @@ class ScreenMapping(StrictModel):
                 raise ValueError("a proof point cannot be an interlude; it needs a screen")
             if self.route or self.steps:
                 raise ValueError("an interlude has no route or steps")
+            if self.anchor:
+                raise ValueError("an interlude has no anchor")
         elif not self.route or not self.steps:
             raise ValueError("a screen mapping needs a route and at least one step")
         return self

@@ -102,6 +102,9 @@ class FakePage implements CapturePage {
   elements: ElementInfo[] = [];
   text: TextBox[] = [{ text: "Dashboard", heightCss: 40 }];
   shots: ScreenshotOptions[] = [];
+  reveals: [string, string, number][] = [];
+  missing = new Set<string>();
+  textBySelector: Record<string, TextBox[]> = {};
   boxes: Record<string, Rect> = { "#card": { x: 100, y: 100, width: 400, height: 225 } };
 
   async installClock(epochMs: number) {
@@ -158,8 +161,12 @@ class FakePage implements CapturePage {
   async redactText() {
     return 0;
   }
-  async measureText() {
-    return this.text;
+  async measureText(selector?: string | null) {
+    return (selector != null && this.textBySelector[selector]) || this.text;
+  }
+  async reveal(selector: string, below: string, margin: number) {
+    this.reveals.push([selector, below, margin]);
+    return !this.missing.has(selector);
   }
   async isolateLayer(selector: string | null) {
     this.calls.push(`isolate:${selector}`);
@@ -269,6 +276,82 @@ describe("legibility after device compositing", () => {
     expect(clip.width / clip.height).toBeCloseTo(16 / 9, 1);
     expect(clip.x + clip.width).toBeLessThanOrEqual(1920);
     expect(clip.y).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("per-selector legibility checks", () => {
+  const checks = [
+    { selector: ".body", minTextHeightPx: 16 },
+    { selector: ".fine", minTextHeightPx: 30 },
+  ];
+
+  it("fails on a small selector, naming it and its minimum", async () => {
+    const page = new FakePage();
+    page.textBySelector = { ".body": [{ text: "Body", heightCss: 40 }], ".fine": [{ text: "Fine", heightCss: 20 }] };
+    const err = await run(page, { legibility: { checks } }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LegibilityError);
+    expect((err as Error).message).toMatch(/^\.fine: /);
+    expect((err as Error).message).toContain("30");
+  });
+
+  it("passes when every selector clears its own minimum", async () => {
+    const page = new FakePage();
+    page.textBySelector = { ".body": [{ text: "Body", heightCss: 20 }], ".fine": [{ text: "Fine", heightCss: 40 }] };
+    await expect(run(page, { legibility: { checks } })).resolves.toBeTruthy();
+  });
+
+  it("keeps the whole-page check when no checks are given", async () => {
+    const page = new FakePage();
+    page.text = [{ text: "Fine print", heightCss: 14 }];
+    page.textBySelector = { ".fine": [{ text: "Fine", heightCss: 400 }] };
+    await expect(run(page, { legibility: { screenHeightPx: 600 } })).rejects.toThrow(/Fine print|legib|px/i);
+  });
+});
+
+describe("reveal action", () => {
+  async function reveal(page: FakePage, action: Action) {
+    return capture(page, { script: [action], fps: 25, outDir: await outDir() });
+  }
+
+  it("scrolls the selector under the header by default and captures a frame", async () => {
+    const page = new FakePage();
+    const r = await reveal(page, { do: "reveal", selector: "#pricing" });
+    expect(page.reveals).toEqual([["#pricing", "header", 16]]);
+    expect(r.manifest.frames.length).toBeGreaterThan(0);
+  });
+
+  it("passes explicit below and margin through", async () => {
+    const page = new FakePage();
+    await reveal(page, { do: "reveal", selector: "#pricing", below: "#nav", margin: 0 });
+    expect(page.reveals).toEqual([["#pricing", "#nav", 0]]);
+  });
+
+  it("throws naming a selector that matches nothing", async () => {
+    const page = new FakePage();
+    page.missing.add("#nope");
+    await expect(reveal(page, { do: "reveal", selector: "#nope" })).rejects.toThrow(/#nope/);
+  });
+});
+
+describe("optional click", () => {
+  it("skips a click whose selector matches nothing", async () => {
+    const page = new FakePage();
+    const r = await capture(page, {
+      script: [{ do: "click", at: { selector: "#promo-close" }, optional: true }],
+      fps: 25,
+      outDir: await outDir(),
+    });
+    expect(r.events.filter((e) => e.type === "click")).toEqual([]);
+  });
+
+  it("clicks when the selector matches", async () => {
+    const page = new FakePage();
+    const r = await capture(page, {
+      script: [{ do: "click", at: { selector: "#card" }, optional: true }],
+      fps: 25,
+      outDir: await outDir(),
+    });
+    expect(r.events.filter((e) => e.type === "click").length).toBe(1);
   });
 });
 

@@ -28,7 +28,7 @@ from spectracut.queue.signing import (
     parse_signed_job,
     verify_job,
 )
-from spectracut.spec.brand import load_brand_kit
+from spectracut.spec.brand import Look, load_brand_kit
 from spectracut.spec.recipe import Recipe
 from spectracut.storyboard.models import Board, Storyboard
 from spectracut.studio import device_shot as ds
@@ -719,8 +719,37 @@ class DeviceText(Text):
         return super().__call__(ctx)
 
 
-def _device_rig(tmp_path: Path, close_s: float = 1.0) -> tuple[Rig, UICaptures]:
+def _with_screen(tmp_path: Path, captures: UICaptures) -> UICaptures:
+    """``captures`` with a composited screen state (distinct frames) on its capture."""
+    root = tmp_path / "screens"
+    root.mkdir(exist_ok=True)
+    clip = []
+    for n in range(2):
+        path = root / f"hero_{n:04d}.png"
+        path.write_bytes(solid_png(8, 8, (200, 10 * n, 90)))
+        clip.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    raw = captures.captures[0]
+    screen = {
+        "state": raw.key,
+        "beat": raw.beat,
+        "device": "laptop",
+        "chrome": "windowed",
+        "size": {"width": 1728, "height": 1117, "scale": 2},
+        "content_rect": {"x": 0, "y": 0, "width": 1728, "height": 1117},
+        "clip": clip,
+        "raw_still_sha256": raw.still.sha256,
+    }
+    dumped = captures.model_dump(mode="json")
+    dumped["captures"][0]["screen"] = screen
+    return UICaptures.model_validate(dumped)
+
+
+def _device_rig(
+    tmp_path: Path, close_s: float = 1.0, *, screen: bool = False
+) -> tuple[Rig, UICaptures]:
     captures = _capture(tmp_path)
+    if screen:
+        captures = _with_screen(tmp_path, captures)
     rig = Rig(tmp_path, _plan())
     rig.text = DeviceText(rig.text.plan, captures, close_s)
     rig.runner.inner = rig.text
@@ -855,3 +884,72 @@ def test_stage_assets_extra_files_join_the_manifest_and_default_is_unchanged(
     assert (tmp_path / "s3" / "assets" / staged / "captures/x/0001.png").read_bytes() == b"cap"
     with pytest.raises(ValueError, match="relative"):
         ds.stage_assets(src, tmp_path / "s4", {}, {"../x.png": capture})
+
+
+def test_device_shot_uses_composited_screen(tmp_path: Path) -> None:
+    raw = _capture(tmp_path)
+    composited = _with_screen(tmp_path, raw).captures[0]
+    assert composited.screen is not None
+    pinned, extra = sd.capture_frames(composited, 24)
+    assert {p.sha256 for p in pinned} == {f.sha256 for f in composited.screen.clip}
+    assert not {p.sha256 for p in pinned} & {f.sha256 for f in raw.captures[0].clip}
+    assert {Path(f.path) for f in composited.screen.clip} >= set(extra.values())
+    # Without a screen the raw clip plays (older stored outputs).
+    old, _ = sd.capture_frames(raw.captures[0], 24)
+    assert {p.sha256 for p in old} == {f.sha256 for f in raw.captures[0].clip}
+
+
+def _device_board() -> Board:
+    return Board.model_validate(
+        {
+            "shot_id": "s",
+            "beat": "dashboard",
+            "action": "push in",
+            "duration_s": 1.0,
+            "move": "push",
+            "device": "laptop",
+        }
+    )
+
+
+def test_close_preset_focus_and_fstop(tmp_path: Path) -> None:
+    capture = _capture(tmp_path).captures[0]
+    assert sd.DEVICE_VARIANTS == ("front", "three-quarter", "wide", "close")
+    look = Look(id="close", motion_blur=False, depth_of_field=True)
+    recipes = {
+        v: sd.device_recipe(
+            load_brand_kit(KIT), _device_board(), capture, variant=v, aspect="16:9", look=look
+        )[0]
+        for v in ("front", "close")
+    }
+    mac = kit_for("laptop")
+    close = recipes["close"]
+    assert sd.screen_centre(close) == mac.frame.centre
+    cam, front = sd._camera_state(close), sd._camera_state(recipes["front"])
+    assert cam is not None and front is not None
+    dof = next(s.args for s in close.steps if s.tool == "camera.set_dof")
+    assert dof == {"focus_distance": round(math.dist(cam[1], mac.frame.centre), 4), "fstop": 2.8}
+    # Closer than the front framing, so the focus distance is shorter.
+    assert math.dist(cam[1], mac.frame.centre) < 0.7 * math.dist(front[1], mac.frame.centre)
+
+
+def test_rendered_shot_records_screen_state(tmp_path: Path) -> None:
+    raw = _capture(tmp_path)
+    assert sd.screen_state_record(raw.captures[0]) is None
+    composited = _with_screen(tmp_path, raw).captures[0]
+    assert composited.screen is not None
+    record = sd.screen_state_record(composited)
+    digest = hashlib.sha256("\n".join(f.sha256 for f in composited.screen.clip).encode())
+    assert record == {
+        "state": "beat:dashboard",
+        "beat": "dashboard",
+        "chrome": "windowed",
+        "clip_sha256": digest.hexdigest(),
+    }
+    fields = sd.RenderedShot.model_fields["screen_state"]
+    assert fields.default is None
+    # Older stored outputs (no screen_state) keep their dump: the key is excluded.
+    dumped = sd.RenderedShot.model_construct(screen_state=None).model_dump(mode="json")  # type: ignore[call-arg]
+    assert "screen_state" not in dumped
+    dumped = sd.RenderedShot.model_construct(screen_state=record).model_dump(mode="json")  # type: ignore[call-arg]
+    assert dumped["screen_state"] == record

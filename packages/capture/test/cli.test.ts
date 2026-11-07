@@ -95,4 +95,40 @@ describe("capture cli spec", () => {
   it("names a missing environment variable, never a value", () => {
     expect(() => resolveTextEnv([{ do: "type", textEnv: "MISSING_VAR", bpm: 120 }], {})).toThrow(/MISSING_VAR/);
   });
+
+  it("accepts valid reveal actions and legibility checks", () => {
+    const script = [{ do: "reveal", selector: "#a" }, { do: "reveal", selector: "#a", below: "#nav", margin: 0 }];
+    const legibility = { checks: [{ selector: ".x", minTextHeightPx: 16 }] };
+    const spec = parseSpec({ ...SPEC, script, legibility });
+    expect(spec.script).toEqual(script);
+  });
+
+  it.each([
+    [{ do: "reveal" }, TypeError],
+    [{ do: "reveal", selector: "" }, TypeError],
+    [{ do: "reveal", selector: "#a", below: 3 }, TypeError],
+    [{ do: "reveal", selector: "#a", margin: -1 }, RangeError],
+    [{ do: "reveal", selector: "#a", margin: Infinity }, RangeError],
+    [{ do: "reveal", selector: "#a", margin: "8" }, RangeError],
+  ])("rejects a malformed reveal %#", (action, error) => {
+    expect(() => parseSpec({ ...SPEC, script: [action] })).toThrow(error);
+  });
+
+  it("accepts an optional click and rejects a non-boolean optional", () => {
+    const script = [{ do: "click", at: { selector: "#x" }, optional: true }];
+    expect(parseSpec({ ...SPEC, script }).script).toEqual(script);
+    expect(() => parseSpec({ ...SPEC, script: [{ do: "click", optional: "yes" }] })).toThrow(TypeError);
+  });
+
+  it.each([
+    [{ checks: "x" }, TypeError],
+    [{ checks: [{ minTextHeightPx: 16 }] }, TypeError],
+    [{ checks: [{ selector: "", minTextHeightPx: 16 }] }, TypeError],
+    [{ checks: [{ selector: ".x", minTextHeightPx: 0 }] }, RangeError],
+    [{ checks: [{ selector: ".x", minTextHeightPx: -4 }] }, RangeError],
+    [{ checks: [{ selector: ".x", minTextHeightPx: NaN }] }, RangeError],
+    [{ checks: [{ selector: ".x" }] }, RangeError],
+  ])("rejects malformed legibility checks %#", (legibility, error) => {
+    expect(() => parseSpec({ ...SPEC, legibility })).toThrow(error);
+  });
 });

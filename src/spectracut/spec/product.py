@@ -67,6 +67,8 @@ class ProductRun(StrictModel):
 
     command: str = ""
     url: str = ""
+    max_runs: int | None = Field(default=None, gt=0)
+    """The live demo's per-visitor run budget (e.g. 10); captures are cached and not repeated."""
 
     @model_validator(mode="after")
     def _one_way(self) -> ProductRun:
@@ -105,6 +107,10 @@ class ProductSource(StrictModel):
     """Demo-data allow-list for captures."""
     routes: list[FrontendRoute] = Field(default_factory=list)
     """Route map override; empty means scan the front end."""
+    dismiss: list[str] = Field(default_factory=list)
+    """Selectors of a promo or banner's own close buttons, clicked in setup."""
+    hide: list[str] = Field(default_factory=list)
+    """Extra banner or promotional-nav selectors hidden in every capture."""
 
     @property
     def frontend(self) -> Path:

@@ -30,7 +30,13 @@ export type Target = Point | { selector: string };
 export type Action =
   | { do: "goto"; url: string }
   | { do: "move"; to: Target; durationMs: number; easing?: EasingName }
-  | { do: "click"; at?: Target; holdMs?: number }
+  | {
+      do: "click";
+      at?: Target;
+      holdMs?: number;
+      /** Skip the click when `at` is a selector that matches nothing (e.g. an absent promo close button). */
+      optional?: boolean;
+    }
   | { do: "drag"; from: Target; to: Target; durationMs: number; easing?: EasingName }
   | {
       do: "type";
@@ -57,6 +63,15 @@ export type Action =
       friction?: number;
       /** Stop once speed falls below this, px per second. */
       minVelocity?: number;
+    }
+  | {
+      do: "reveal";
+      /** Element whose top is placed just under the `below` element. */
+      selector: string;
+      /** Fixed or sticky header to sit under (default "header"); the viewport top when absent. */
+      below?: string;
+      /** CSS px between the header's bottom and the element's top (default 16). */
+      margin?: number;
     }
   | { do: "wait"; ms?: number; frames?: number };
 
@@ -87,6 +102,12 @@ export interface InputPage {
   /** Wheel at a point; scrolls the nearest scrollable ancestor synchronously. */
   wheel(x: number, y: number, deltaX: number, deltaY: number): Promise<void>;
   boundingBox(selector: string): Promise<{ x: number; y: number; width: number; height: number } | null>;
+  /**
+   * Instantly scroll the window so `selector`'s top sits `margin` CSS px under the
+   * bottom of `below` (a fixed or sticky element; else the viewport top). False when
+   * no element matches `selector`.
+   */
+  reveal?(selector: string, below: string, margin: number): Promise<boolean>;
 }
 
 export interface ScriptContext {
@@ -165,6 +186,9 @@ async function runAction(ctx: ScriptContext, action: Action): Promise<void> {
       await path(ctx, await resolve(page, action.to), action.durationMs, action.easing ?? "easeInOutCubic");
       return;
     case "click": {
+      if (action.optional && action.at && "selector" in action.at && !(await page.boundingBox(action.at.selector))) {
+        return;
+      }
       if (action.at) await moveTo(ctx, await resolve(page, action.at));
       await page.mouseDown();
       ctx.emit({ type: "click", x: ctx.cursor.x, y: ctx.cursor.y });
@@ -215,6 +239,13 @@ async function runAction(ctx: ScriptContext, action: Action): Promise<void> {
         ctx.emit({ type: "scroll", deltaY: d, phase, x: ctx.cursor.x, y: ctx.cursor.y });
         await ctx.captureFrame();
       }
+      return;
+    }
+    case "reveal": {
+      if (!page.reveal) throw new Error("this page cannot run reveal actions");
+      const found = await page.reveal(action.selector, action.below ?? "header", action.margin ?? 16);
+      if (!found) throw new Error(`reveal: no element matches ${action.selector}`);
+      await ctx.captureFrame();
       return;
     }
     case "wait": {

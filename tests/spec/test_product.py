@@ -101,3 +101,26 @@ def test_alterlab_product_source_has_no_secrets() -> None:
     assert source.demo_login.username_env == "ALTERLAB_DEMO_EMAIL"
     assert source.demo_login.password_env == "ALTERLAB_DEMO_PASSWORD"
     assert raw["repo"] == "~/Projects/AlterLab/web"
+
+
+def test_dismiss_hide_and_max_runs_parse_with_defaults() -> None:
+    base = {"id": "x", "repo": "/r", "run": {"url": "http://x"}}
+    plain = ProductSource.model_validate(base)
+    assert plain.dismiss == [] and plain.hide == [] and plain.run.max_runs is None
+    full = ProductSource.model_validate(
+        {
+            **base,
+            "run": {"url": "http://x", "max_runs": 10},
+            "dismiss": ["#promo .close"],
+            "hide": [".top-banner"],
+        }
+    )
+    assert (full.dismiss, full.hide, full.run.max_runs) == (["#promo .close"], [".top-banner"], 10)
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_max_runs_must_be_positive(bad: int) -> None:
+    with pytest.raises(ValueError, match="max_runs"):
+        ProductSource.model_validate(
+            {"id": "x", "repo": "/r", "run": {"url": "http://x", "max_runs": bad}}
+        )
