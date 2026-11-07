@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""``studio new --product --brand-kit`` reports brand drift; the stored kit is the corrected one (#356)."""
+"""``studio new --product --brand-kit`` reports brand drift; the stored kit is corrected (#356)."""
 
 from __future__ import annotations
 
@@ -77,6 +77,7 @@ def test_new_without_product_prints_no_drift(home: Path) -> None:
 def test_unreadable_theme_is_a_warning(home: Path, tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     (empty / "app").mkdir(parents=True)
+    (empty / "app" / "page.tsx").write_text("export default function P() { return null; }\n")
     path = tmp_path / "product.yaml"
     doc = {"id": "empty", "repo": str(empty), "run": {"url": "http://localhost:3000"}}
     path.write_text(yaml.safe_dump(doc), encoding="utf-8")

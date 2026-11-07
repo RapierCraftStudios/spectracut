@@ -13,6 +13,7 @@ from spectracut.spec.product import ProductRun, ProductSource
 from spectracut.spec.theme import (
     active_scheme,
     css_colour_to_hex,
+    dark_scheme,
     delta_e,
     kit_drift,
     propose_kit_values,
@@ -88,7 +89,7 @@ def test_derives_kit_from_fixture_app_css_variables(tmp_path: Path) -> None:
         ("Inter", LAYOUT, 2),
         ("JetBrains Mono", LAYOUT, 2),
     ]
-    assert theme.dark_forced and active_scheme(theme) == "dark"
+    assert theme.dark_forced and dark_scheme(theme) and active_scheme(theme) == "dark"
 
     proposed = propose_kit_values(theme)
     assert proposed.swatches == {
@@ -110,7 +111,7 @@ def test_light_scheme_is_proposed_when_dark_is_not_forced(tmp_path: Path) -> Non
     layout = repo / LAYOUT
     layout.write_text(layout.read_text().replace(' className="dark"', ""), encoding="utf-8")
     theme = read_product_theme(_source(repo))
-    assert active_scheme(theme) == "light"
+    assert not dark_scheme(theme) and active_scheme(theme) == "light"
     assert propose_kit_values(theme).swatches["ink"] == "#ffffff"
 
 

@@ -281,11 +281,14 @@ def read_product_theme(source: ProductSource) -> ProductTheme:
     return ProductTheme(frontend=frontend, tokens=tokens, fonts=fonts, dark_forced=dark)
 
 
+def dark_scheme(theme: ProductTheme) -> bool:
+    """Whether the dark tokens apply: the layout forces ``dark`` or there are no light tokens."""
+    return theme.dark_forced or not theme.scheme("light")
+
+
 def active_scheme(theme: ProductTheme) -> Scheme:
-    """``dark`` when the layout forces it or the theme has no light tokens."""
-    if theme.dark_forced or not theme.scheme("light"):
-        return "dark"
-    return "light"
+    """``dark`` when :func:`dark_scheme` holds, else ``light``."""
+    return "dark" if dark_scheme(theme) else "light"
 
 
 def propose_kit_values(theme: ProductTheme) -> ProposedKit:

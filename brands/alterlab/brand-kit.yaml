@@ -19,7 +19,7 @@ typography:
     display: Inter
     body: Inter
     mono: JetBrains Mono
-  weights: [400, 500]
+  weights: [400, 500, 600]
 tone: Clear, precise and calm; a near-black monochrome interface with white type is the hero and stays legible.
 looks:
   - id: clean
