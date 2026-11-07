@@ -20,9 +20,9 @@ from spectracut_host.guard import runtime_tool_names
 
 from spectracut.critique.revise import RevisionRequest
 from spectracut.critique.scene_verifier import scene_critic, scene_verifier_prompt
+from spectracut.finishing.color import hex_to_linear
 from spectracut.harness.errors import HarnessError
 from spectracut.harness.tools import build_tools, get_tool
-from spectracut.harness.tools.material import hex_rgb
 from spectracut.providers.base import Completion, VisionScore
 from spectracut.spec.brand import BrandKit
 from spectracut.spec.recipe import Recipe
@@ -591,6 +591,72 @@ def test_host_error_lines_keep_refusals_or_the_whole_message() -> None:
     ]
 
 
+# ---- palette QA in the build critic (#333) --------------------------------------------
+
+
+def disc_png(background: str, disc: str = "#00c2a8", w: int = 64, h: int = 36) -> bytes:
+    from spectracut.qa.common import encode_png
+
+    def rgb(hex_colour: str) -> bytes:
+        return bytes(int(hex_colour[i : i + 2], 16) for i in (1, 3, 5))
+
+    rows = [
+        rgb(disc) if (x - w / 2) ** 2 + (y - h / 2) ** 2 < 100 else rgb(background)
+        for y in range(h)
+        for x in range(w)
+    ]
+    return encode_png(w, h, 3, b"".join(rows))
+
+
+class PngRenderer(FakeRenderer):
+    """A farm that writes real PNG frames, one per render from ``frames`` (last repeats)."""
+
+    def __init__(self, frames: list[bytes]) -> None:
+        super().__init__()
+        self.frames = list(frames)
+
+    def __call__(self, recipe: Recipe, path: Path) -> tuple[ImageRecord, Usage]:
+        record, usage = super().__call__(recipe, path)
+        path.write_bytes(self.frames.pop(0) if len(self.frames) > 1 else self.frames[0])
+        return record_image(path, "fake-farm"), usage
+
+
+def png_builder(tmp: Path, text: FakeText, vision: FakeVision, frames: list[bytes]) -> SceneBuilder:
+    prof = profile(2, 1)
+    critic = scene_critic(vision, profile=prof, description=DESCRIPTION, art=ART)
+    return SceneBuilder(text, PngRenderer(frames), critic, prof, tmp / "work")
+
+
+def test_lifted_void_fails_palette_qa_although_the_judge_passes_it(tmp_path: Path) -> None:
+    text = FakeText([answer("a"), answer("b")])
+    vision = FakeVision({"a1-c0": 0.9, "a2-c0": 0.9})
+    lifted, on_palette = disc_png("#3a4b63"), disc_png("#101820")
+    build = png_builder(tmp_path, text, vision, [lifted, on_palette]).build(brief())
+    assert build.status == "accepted" and build.attempts == 2
+    first, second = build.iterations
+    assert "palette background: measured #3a4b63 vs art.ink #101820" in first.notes
+    assert "palette lifted_blacks:" in first.notes
+    assert "palette" not in second.notes
+    assert "palette lifted_blacks: measured #3a4b63" in text.prompts[1]
+
+
+def test_on_palette_frame_keeps_the_critic_verdict(tmp_path: Path) -> None:
+    text = FakeText([answer("a")])
+    vision = FakeVision({"a1-c0": 0.9})
+    build = png_builder(tmp_path, text, vision, [disc_png("#101820")]).build(brief())
+    assert build.status == "accepted" and build.attempts == 1
+    assert "palette" not in build.iterations[0].notes
+
+
+def test_non_png_frames_skip_palette_qa(tmp_path: Path) -> None:
+    text = FakeText([answer("a")])
+    vision = FakeVision({"a1-c0": 0.9})
+    b, _ = builder(tmp_path, text, vision)
+    build = b.build(brief())
+    assert build.status == "accepted" and build.attempts == 1
+    assert "palette" not in build.iterations[0].notes
+
+
 # ---- #334: convergence: more iterations, revision checklist, pre-render lint ----------
 
 
@@ -793,11 +859,15 @@ def test_pre_render_lint_repairs_before_rendering(
 
 
 def test_lint_passes_swatch_colours_and_named_elements() -> None:
-    beam = hex_rgb("#00c2a8")
+    beam = list(hex_to_linear("#00c2a8"))
+    void = list(hex_to_linear("#101820"))
     good = compile_calls(
         _with(
             [
-                {"tool": "world.set_gradient", "args": {"bottom": hex_rgb("#101820"), "top": beam}},
+                {
+                    "tool": "world.set_gradient",
+                    "args": {"bottom": void, "top": beam},
+                },
                 {"tool": "world.set_haze", "args": {"density": 0.01}},
                 {"tool": "object.add_primitive", "args": {"kind": "cube", "name": "Beam-Core"}},
                 {

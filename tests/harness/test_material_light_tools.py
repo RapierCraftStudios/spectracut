@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from spectracut_host.guard import runtime_tool_names
 
+from spectracut.finishing.color import srgb_encode
 from spectracut.harness.errors import HarnessError
 from spectracut.harness.recorder import Recorder
 from spectracut.harness.server import call
@@ -69,8 +70,64 @@ def test_brand_colour_is_recorded_as_a_numeric_colour(session: Session) -> None:
         {"object": "Slab", "preset": "anodised_metal", "brand_color": "#3366FF"},
     )
     [(_, recorded)] = steps_of(session)
-    assert recorded == {"object": "Slab", "preset": "anodised_metal", "color": [0.2, 0.4, 1.0]}
+    assert recorded == {
+        "object": "Slab",
+        "preset": "anodised_metal",
+        "color": [0.033105, 0.132868, 1.0],
+    }
     assert session.recorder.calls[-1].args["brand_color"] == "#3366FF"
+
+
+def test_brand_colour_is_linearised_so_the_swatch_round_trips(session: Session) -> None:
+    call(
+        session,
+        "material.apply_preset",
+        {"object": "Backdrop", "preset": "matte_plastic", "brand_color": "#0b1220"},
+    )
+    [(_, recorded)] = steps_of(session)
+    colour = recorded["color"]
+    assert colour == pytest.approx([0.003347, 0.006049, 0.014444], abs=1e-4)
+    assert [round(srgb_encode(c) * 255) for c in colour] == [0x0B, 0x12, 0x20]
+
+
+def test_brand_emissive_defaults_to_strength_one(session: Session) -> None:
+    call(
+        session,
+        "material.apply_preset",
+        {"object": "Beam", "preset": "emissive", "brand_color": "#2f6bff"},
+    )
+    [(_, recorded)] = steps_of(session)
+    assert recorded == {
+        "object": "Beam",
+        "preset": "emissive",
+        "color": [0.028426, 0.147027, 1.0],
+        "emission_strength": 1.0,
+    }
+
+
+def test_brand_emissive_refuses_strength_above_one(session: Session) -> None:
+    args = {
+        "object": "Beam",
+        "preset": "emissive",
+        "brand_color": "#2f6bff",
+        "emission_strength": 1.5,
+    }
+    error = error_of(session, "material.apply_preset", args)
+    assert error.code == "args.invalid"
+    assert "emission_strength" in str(error)
+    assert session.recorder.steps == []
+
+
+def test_numeric_emissive_colour_keeps_its_strength_unbounded(session: Session) -> None:
+    args = {
+        "object": "Beam",
+        "preset": "emissive",
+        "color": [0.1, 0.4, 1.0],
+        "emission_strength": 40,
+    }
+    call(session, "material.apply_preset", args)
+    [(_, recorded)] = steps_of(session)
+    assert recorded["emission_strength"] == 40.0
 
 
 @pytest.mark.parametrize(
@@ -178,9 +235,29 @@ def test_world_tools_record_one_runtime_step_each(session: Session) -> None:
     ]
 
 
+def test_gradient_brand_ends_record_linear_numeric_colours(session: Session) -> None:
+    call(session, "world.set_gradient", {"brand_bottom": "#0b1220", "top": [0.1, 0.2, 0.4]})
+    call(
+        session, "world.set_gradient", {"bottom": [0, 0, 0], "brand_top": "#1a2b3c", "strength": 1}
+    )
+    assert steps_of(session) == [
+        ("world.set_gradient", {"bottom": [0.003347, 0.006049, 0.014444], "top": [0.1, 0.2, 0.4]}),
+        (
+            "world.set_gradient",
+            {"bottom": [0.0, 0.0, 0.0], "top": [0.01033, 0.024158, 0.045186], "strength": 1.0},
+        ),
+    ]
+    assert session.recorder.calls[0].args["brand_bottom"] == "#0b1220"
+
+
 @pytest.mark.parametrize(
     ("tool", "args"),
     [
+        ("world.set_gradient", {"bottom": [0, 0, 0], "brand_bottom": "#000000", "top": [0, 0, 0]}),
+        ("world.set_gradient", {"bottom": [0, 0, 0], "top": [0, 0, 0], "brand_top": "#000000"}),
+        ("world.set_gradient", {"top": [0, 0, 0]}),
+        ("world.set_gradient", {"brand_bottom": "#000000"}),
+        ("world.set_gradient", {"brand_bottom": "navy", "brand_top": "#000000"}),
         ("world.set_haze", {"density": HAZE_DENSITY_MAX * 2}),
         ("world.set_haze", {"density": 0}),
         ("world.set_gradient", {"bottom": [0, 0, 0]}),

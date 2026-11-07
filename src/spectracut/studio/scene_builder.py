@@ -37,12 +37,13 @@ from pydantic import Field, JsonValue
 
 from spectracut.critique.critic import OVERALL, StudioCritic
 from spectracut.critique.revise import ReviseLoop, RevisionRequest
+from spectracut.finishing.color import hex_to_linear
 from spectracut.harness.dispatch import PreviewDispatcher
 from spectracut.harness.errors import HarnessError
 from spectracut.harness.recorder import Recorder
 from spectracut.harness.tools import Session, build_tools, get_tool
-from spectracut.harness.tools.material import hex_rgb
 from spectracut.providers.base import TextProvider
+from spectracut.qa.palette import load_rgb, palette_qa
 from spectracut.queue.queue import JobFailed
 from spectracut.skills import pack_dir
 from spectracut.spec._base import NonEmptyStr, Slug, StrictModel, content_hash
@@ -309,16 +310,16 @@ _SWATCH_TOLERANCE = 1 / 255 + 1e-6
 
 
 def _swatch_of(colour: JsonValue, swatches: Mapping[str, str]) -> str | None:
-    """The swatch name ``colour`` (RGB or RGBA in [0, 1]) equals, within 1/255 per channel."""
+    """The swatch ``colour`` (scene-linear RGB/RGBA) equals once linearised, within 1/255."""
     if not isinstance(colour, list) or len(colour) < 3:
         return None
     rgb = colour[:3]
     if not all(isinstance(c, int | float) for c in rgb):
         return None
     for name, hex_colour in swatches.items():
-        ref = hex_rgb(hex_colour)
+        ref = hex_to_linear(hex_colour)
         if all(
-            abs(float(cast(float, a)) - float(cast(float, b))) <= _SWATCH_TOLERANCE
+            abs(float(cast(float, a)) - b) <= _SWATCH_TOLERANCE
             for a, b in zip(rgb, ref, strict=True)
         ):
             return name
@@ -464,9 +465,13 @@ class _BuildCritic(StudioCritic):
     """A per-build copy of the Critic that remembers each first verdict (with its usage).
 
     Candidates that never rendered (``{"error": ...}``) score 0 with the error as notes.
+    With a ``palette``, the first frame is measured by palette QA; a failing frame
+    fails the verdict and its measurements are appended to the comment, so the
+    revise loop asks the builder for the exact fix. Unreadable frames are not measured.
     """
 
-    def __init__(self, inner: StudioCritic) -> None:
+    def __init__(self, inner: StudioCritic, palette: Mapping[str, str] | None = None) -> None:
+        self.palette = dict(palette) if palette else None
         fallback = inner.text_judge
 
         def failed(spec: NodeSpec, prompt: str, output: JsonValue) -> CriticVerdict:
@@ -495,9 +500,27 @@ class _BuildCritic(StudioCritic):
         self.verdicts: dict[str, CriticVerdict] = {}
 
     def review(self, spec: NodeSpec, output: JsonValue) -> CriticVerdict:
-        verdict = super().review(spec, output)
+        verdict = self._palette_verdict(super().review(spec, output), output)
         self.verdicts.setdefault(content_hash(output), verdict)
         return verdict
+
+    def _palette_verdict(self, verdict: CriticVerdict, output: JsonValue) -> CriticVerdict:
+        if not self.palette or not isinstance(output, Mapping):
+            return verdict
+        frames = output.get("frames")
+        if not isinstance(frames, list) or not frames or not isinstance(frames[0], str):
+            return verdict
+        try:
+            frame = load_rgb(Path(frames[0]).read_bytes())
+        except OSError:
+            return verdict
+        if frame is None:
+            return verdict
+        report = palette_qa(frame, self.palette)
+        if report.passed:
+            return verdict
+        comment = "\n".join([verdict.comment, *report.lines()]).lstrip("\n")
+        return verdict.model_copy(update={"passed": False, "comment": comment})
 
 
 # --------------------------------------------------------------------------- builder
@@ -717,7 +740,7 @@ class SceneBuilder:
     def build(self, brief: SceneBrief) -> SceneBuild:
         root = self.workdir / brief.id
         spec = NodeSpec(id=brief.id, kind=SCENE_BUILD, department=DEPARTMENT)
-        critic = _BuildCritic(self.critic)
+        critic = _BuildCritic(self.critic, brief.palette())
         system = self.system_prompt()
         candidates: dict[tuple[int, int], _Candidate] = {}
 

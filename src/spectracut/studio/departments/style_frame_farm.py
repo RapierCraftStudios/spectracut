@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import JsonValue
 
 from spectracut.critique.scene_verifier import scene_critic
+from spectracut.finishing.color import hex_to_linear
 from spectracut.providers.base import TextProvider, VisionJudge
 from spectracut.queue.executors.base import JobStatus
 from spectracut.queue.queue import JobFailed, JobQueue
@@ -86,11 +87,6 @@ class FarmDeps(Protocol):
     def options(self) -> ds.ExecutorOptions | None: ...
 
 
-def _rgb(hex_colour: str) -> list[JsonValue]:
-    h = hex_colour.lstrip("#")
-    return [round(int(h[i : i + 2], 16) / 255.0, 4) for i in (0, 2, 4)]
-
-
 def style_frame_recipe(
     frame: StyleFrame,
     art: ArtDirection,
@@ -125,7 +121,11 @@ def style_frame_recipe(
         calls.append(
             (
                 "material.apply_preset",
-                {"object": BACKDROP, "preset": "matte_plastic", "color": _rgb(colour)},
+                {
+                    "object": BACKDROP,
+                    "preset": "matte_plastic",
+                    "color": list(hex_to_linear(colour)),
+                },
             )
         )
     calls += camera_calls(CAMERA, "16:9")
