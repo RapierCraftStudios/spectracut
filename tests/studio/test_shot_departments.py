@@ -189,7 +189,7 @@ def test_departments_are_registered_with_their_stage() -> None:
         assert dept.skill_pack is not None and dept.skill_pack.name == "motion-designer"
     assert depts["template-shots"] is sd.TemplateShotsDepartment
     assert depts["shots"] is sd.ShotsDepartment
-    assert set(sd.TemplateShotsDepartment.inputs) == {"storyboard", "animatic"}
+    assert set(sd.TemplateShotsDepartment.inputs) == {"storyboard", "animatic", "ui_capture"}
     assert set(sd.ShotsDepartment.inputs) == {sd.TEMPLATE_SHOTS, "ui_capture"}
 
 

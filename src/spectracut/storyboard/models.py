@@ -12,6 +12,9 @@ from spectracut.spec._base import ContentHash, NonEmptyStr, Slug, StrictModel, e
 from spectracut.spec.brand import Look, Palette
 from spectracut.spec.spec import CameraMove
 
+DEVICE_RUNTIME_SHARE = 0.6
+"""Minimum share of a product film's runtime shown on device shots (#339)."""
+
 
 class MoodEntry(StrictModel):
     """One mood-board entry: a reference, what to take from it and what to avoid."""
@@ -88,6 +91,25 @@ class Board(StrictModel):
     text: str = ""
     duration_s: float = Field(gt=0)
     image: str = ""
+    device: Literal["laptop", "phone"] | None = Field(
+        default=None,
+        description=(
+            "Show the real product screen on a generic, logo-free laptop or phone; "
+            "null for an abstract interlude."
+        ),
+    )
+    capture: str = Field(
+        default="",
+        description=(
+            "The product capture on the device screen: 'beat:<beat>' or 'proof:<claim>'; "
+            "empty means 'beat:<this board's beat>'."
+        ),
+    )
+
+    @property
+    def capture_key(self) -> str:
+        """The capture this board's device screen shows (``beat:<beat>`` by default)."""
+        return self.capture or f"beat:{self.beat}"
 
 
 class Storyboard(StrictModel):
@@ -102,3 +124,8 @@ class Storyboard(StrictModel):
         if len(set(ids)) != len(ids):
             raise ValueError("a storyboard has one board per shot")
         return v
+
+    def device_share(self) -> float:
+        """Share of the storyboard's runtime spent on device boards (0..1)."""
+        total = sum(b.duration_s for b in self.boards)
+        return sum(b.duration_s for b in self.boards if b.device is not None) / total
