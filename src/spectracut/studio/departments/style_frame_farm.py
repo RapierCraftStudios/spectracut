@@ -10,7 +10,15 @@ pinned to the config's worker tag (the same path as
 :class:`~spectracut.studio.departments.shots.ShotRunner`), copies the frame to the
 requested path and returns its :class:`ImageRecord` with the GPU minutes used. It is
 the ``renderer`` :class:`~spectracut.studio.departments.art.PreproductionRunner`
-takes; the control plane never imports ``bpy``.
+takes for the animatic's boards (at the preview tier).
+
+:class:`SceneStyleFrameRenderer` is the style-frame renderer in production: per frame
+the :class:`~spectracut.studio.scene_builder.SceneBuilder` builds a CGI scene from the
+frame's description at the preview tier (:class:`FarmRecipeRenderer`), the vision
+verifier scores each candidate against the description
+(:func:`~spectracut.critique.scene_verifier.scene_critic`), and the best recipe is
+re-rendered at the final tier to the requested path. The control plane never imports
+``bpy``.
 """
 
 from __future__ import annotations
@@ -23,8 +31,11 @@ from typing import TYPE_CHECKING, Protocol
 
 from pydantic import JsonValue
 
+from spectracut.critique.scene_verifier import scene_critic
+from spectracut.providers.base import TextProvider, VisionJudge
 from spectracut.queue.executors.base import JobStatus
 from spectracut.queue.queue import JobFailed, JobQueue
+from spectracut.spec.brand import BrandKit
 from spectracut.spec.recipe import Recipe
 from spectracut.storyboard.explore import record_image
 from spectracut.storyboard.models import ArtDirection, ImageRecord, StyleFrame
@@ -33,6 +44,8 @@ from spectracut.studio.departments.art import STYLE_FRAMES
 from spectracut.studio.departments.shots import tier_recipe
 from spectracut.studio.ledger import Usage
 from spectracut.studio.node import Tier
+from spectracut.studio.profiles import QualityProfile
+from spectracut.studio.scene_builder import SceneBrief, SceneBuilder
 from spectracut.templates.base import Call, CameraVariant, camera_calls, steps
 
 if TYPE_CHECKING:
@@ -276,3 +289,95 @@ class FarmRecipeRenderer:
             node_id=self.node_id,
             label=f"scene recipe {recipe.id!r}",
         )
+
+
+def _add_usage(a: Usage, b: Usage) -> Usage:
+    ai = dict(a.ai_usage)
+    for key, value in b.ai_usage.items():
+        ai[key] = ai.get(key, 0) + value
+    return Usage(
+        gpu_minutes=a.gpu_minutes + b.gpu_minutes,
+        ai_usage=ai,
+        elevenlabs_characters=a.elevenlabs_characters + b.elevenlabs_characters,
+    )
+
+
+class SceneStyleFrameRenderer:
+    """Style frames built by the scene builder, then rendered at the final tier.
+
+    Per frame: a :class:`SceneBrief` from the frame's description and prompt, the art
+    direction and the brand kit; one :class:`SceneBuilder` (its critic is bound to the
+    description) rendering candidates at the preview tier on the farm; the build is
+    written to ``workdir/scene/<frame>/build.json``; the best recipe re-renders at the
+    final tier under the ``style_frames`` node to the requested path. Returns the
+    final :class:`ImageRecord` and the build's usage plus the final GPU minutes. A
+    build with no recipe raises :class:`ValueError` naming the frame.
+
+    ``text``, ``vision`` and ``deps`` are factories called on the first frame, so
+    text-only runs never touch the farm or a model.
+    """
+
+    def __init__(
+        self,
+        text: Callable[[], TextProvider],
+        vision: Callable[[], VisionJudge],
+        profile: QualityProfile,
+        deps: Callable[[], FarmDeps],
+        production_id: str,
+        workdir: Path,
+        *,
+        brand_kit: Callable[[], BrandKit | None] = lambda: None,
+        node_id: str = STYLE_FRAMES,
+    ) -> None:
+        self._text_factory = text
+        self._vision_factory = vision
+        self._text: TextProvider | None = None
+        self._vision: VisionJudge | None = None
+        self._lock = threading.Lock()
+        self.profile = profile
+        self.brand_kit = brand_kit
+        self.production_id = production_id
+        self.workdir = Path(workdir)
+        self.node_id = node_id
+        self.preview = FarmRecipeRenderer(deps, production_id, self.workdir / "scene")
+        self.final = FarmRecipeRenderer(
+            self.preview.deps,
+            production_id,
+            self.workdir / "final",
+            tier=Tier.FINAL,
+            node_id=node_id,
+        )
+
+    def _models(self) -> tuple[TextProvider, VisionJudge]:
+        with self._lock:
+            if self._text is None:
+                self._text = self._text_factory()
+            if self._vision is None:
+                self._vision = self._vision_factory()
+            return self._text, self._vision
+
+    def __call__(
+        self, frame: StyleFrame, art: ArtDirection, path: Path
+    ) -> tuple[ImageRecord, Usage]:
+        text, vision = self._models()
+        kit = self.brand_kit()
+        description = frame.description.strip()
+        if frame.prompt.strip() and frame.prompt.strip() != description:
+            description = f"{description}\n\n{frame.prompt.strip()}"
+        brief = SceneBrief(id=frame.id, description=description, art=art, brand_kit=kit)
+        critic = scene_critic(
+            vision, profile=self.profile, description=description, art=art, brand_kit=kit
+        )
+        scene_dir = self.workdir / "scene"
+        builder = SceneBuilder(text, self.preview, critic, self.profile, scene_dir)
+        build = builder.build(brief)
+        out = scene_dir / frame.id / "build.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(build.model_dump_json(indent=1), encoding="utf-8")
+        if build.recipe is None:
+            raise ValueError(
+                f"style frame {frame.id!r}: the scene builder produced no recipe "
+                f"({build.status}: {build.notes or 'no candidate rendered'})"
+            )
+        record, final = self.final(build.recipe, Path(path))
+        return record, _add_usage(build.usage, final)

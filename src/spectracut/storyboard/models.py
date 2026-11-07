@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, JsonValue, field_validator
 
 from spectracut.spec._base import ContentHash, NonEmptyStr, Slug, StrictModel, ensure_unique_ids
 from spectracut.spec.brand import Look, Palette
@@ -55,6 +55,8 @@ class StyleFrame(StrictModel):
 
 class StyleFrames(StrictModel):
     frames: list[StyleFrame] = Field(min_length=1)
+    review_media: dict[str, JsonValue] | None = None
+    """The review page's player descriptor for the gate (every rendered frame)."""
 
     @field_validator("frames")
     @classmethod

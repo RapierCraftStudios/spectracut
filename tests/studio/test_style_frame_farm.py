@@ -9,8 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from pydantic import JsonValue
 
+from spectracut.providers.base import Completion, VisionScore
 from spectracut.providers.mock_image import MockImageProvider
 from spectracut.queue.flamenco import WorkerTag
 from spectracut.queue.signing import generate_keypair, load_private_key
@@ -22,6 +25,7 @@ from spectracut.studio.departments.style_frame_farm import (
     PROVIDER,
     FarmRecipeRenderer,
     FarmStyleFrameRenderer,
+    SceneStyleFrameRenderer,
     style_frame_recipe,
 )
 
@@ -192,3 +196,104 @@ def test_recipe_renderer_runs_any_recipe_as_one_preview_farm_job(tmp_path: Path)
     assert [s["tool"] for s in sent["steps"]] == _tools(expected)
     assert signed["envelope"]["recipe_hash"] == expected.content_hash
     assert fake.submitted[0]["worker_tag"] == "tag-1"
+
+
+class SceneText:
+    """The builder's text model: one fixed build, records the prompts."""
+
+    name = "scene-text"
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def complete(self, system: str, prompt: str, *, schema: dict[str, Any]) -> Completion:
+        self.prompts.append(prompt)
+        calls: list[JsonValue] = [
+            {"tool": "scene.clear", "args": {}},
+            {"tool": "object.add_primitive", "args": {"kind": "cube", "name": "slab"}},
+            {"tool": "camera.add", "args": {"name": "cam", "location": [0, -6, 1]}},
+            {"tool": "camera.use", "args": {"name": "cam"}},
+        ]
+        return Completion(output={"plan": "slab", "calls": calls}, usage={"claude_requests": 1})
+
+
+class SceneJudge:
+    name = "scene-judge"
+    last_usage: dict[str, int] = {}
+
+    def __init__(self, score: float) -> None:
+        self.value = score
+        self.rubrics: list[str] = []
+
+    def score(self, frame_path: Path, rubric: str) -> VisionScore:
+        self.rubrics.append(rubric)
+        return VisionScore(score=self.value, notes="needs more beam")
+
+
+def _scene_deps(tmp_path: Path, fake: FakeFlamenco, built: list[int]) -> Any:
+    private, _public = generate_keypair()
+
+    def deps() -> Deps:
+        built.append(1)
+        config = ds.DeviceShotConfig(
+            flamenco_url="http://fake", shared=tmp_path / "shared", worker_tag=TAG
+        )
+        opts = ds.ExecutorOptions(clock=Ticks(), sleep=lambda _s: None, poll_interval=0.0)
+        return Deps(config, fake, load_private_key(private), opts)
+
+    return deps
+
+
+def test_scene_renderer_builds_at_preview_then_renders_the_best_at_final(tmp_path: Path) -> None:
+    from spectracut.studio.departments.shots import tier_recipe
+    from spectracut.studio.node import Tier
+    from spectracut.studio.profiles import load_profile
+    from spectracut.studio.scene_builder import SceneBuild
+
+    fake, text, judge = FakeFlamenco(), SceneText(), SceneJudge(0.95)
+    built: list[int] = []
+    render = SceneStyleFrameRenderer(
+        lambda: text,
+        lambda: judge,
+        load_profile("standard"),
+        _scene_deps(tmp_path, fake, built),
+        "film",
+        tmp_path / "work",
+    )
+    assert built == [] and not text.prompts  # lazy: nothing built until a frame renders
+    frame = StyleFrame(id="hero", description="Dashboard hero", prompt="a glowing plinth")
+    out = tmp_path / "out" / "hero.png"
+    record, usage = render(frame, ART, out)
+    assert record.path == str(out) and out.is_file() and record.provider == PROVIDER
+    # The builder saw the description and the prompt; the verifier scored against both.
+    assert "Dashboard hero" in text.prompts[0] and "a glowing plinth" in text.prompts[0]
+    assert judge.rubrics and "Dashboard hero" in judge.rubrics[0]
+    build = SceneBuild.model_validate_json(
+        (tmp_path / "work" / "scene" / "hero" / "build.json").read_text("utf-8")
+    )
+    assert build.recipe is not None and build.status == "accepted"
+    # Preview candidates, then one final-tier render of the best recipe.
+    names = [str(job["name"]) for job in fake.submitted]
+    assert names[-1].startswith("film-style_frames-") and len(names) == len(build.iterations) + 1
+    signed = json.loads(Path(fake.submitted[-1]["settings"]["job_file"]).read_text("utf-8"))
+    final = tier_recipe(build.recipe, Tier.FINAL)
+    assert signed["envelope"]["recipe_hash"] == final.content_hash
+    assert usage.gpu_minutes > build.usage.gpu_minutes > 0
+    assert usage.ai_usage == build.usage.ai_usage and usage.ai_usage
+
+
+def test_scene_renderer_with_no_recipe_names_the_frame(tmp_path: Path) -> None:
+    from spectracut.providers.mock_text import MockTextProvider
+    from spectracut.studio.profiles import load_profile
+
+    render = SceneStyleFrameRenderer(
+        MockTextProvider,  # schema-valid nonsense: every call is refused, nothing renders
+        lambda: SceneJudge(0.95),
+        load_profile("standard"),
+        _scene_deps(tmp_path, FakeFlamenco(), []),
+        "film",
+        tmp_path / "work",
+    )
+    frame = StyleFrame(id="cta", description="End card", prompt="the logo")
+    with pytest.raises(ValueError, match="style frame 'cta'.*no recipe"):
+        render(frame, ART, tmp_path / "out" / "cta.png")

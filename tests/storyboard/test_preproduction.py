@@ -561,3 +561,45 @@ def test_preproduction_nodes_wire_the_voiceover_and_art_direction_into_the_anima
         "storyboard",
         "art_direction",
     )
+
+
+class _SceneUsageRenderer(_UsageRenderer):
+    """A scene-builder renderer: GPU minutes plus the builder's AI usage."""
+
+    def __call__(
+        self, frame: StyleFrame, art: ArtDirection, path: Path
+    ) -> tuple[ImageRecord, Usage]:
+        record, usage = super().__call__(frame, art, path)
+        return record, usage.model_copy(update={"ai_usage": {"scene_builder_claude_requests": 3}})
+
+
+def test_style_frames_carry_review_media_and_the_renderers_ai_usage(tmp_path: Path) -> None:
+    """#281: the gate's review page lists every rendered frame; builder usage is booked."""
+    inner = DepartmentRunner(ART_DEPARTMENTS, MockTextProvider(respond=_respond))
+    runner = PreproductionRunner(
+        inner,
+        {d.name: d for d in ART_DEPARTMENTS},
+        explorer=None,
+        renderer=_SceneUsageRenderer(),
+        voice=_voice,
+        workdir=tmp_path / "work",
+        board_renderer=_BoardRenderer(),
+        preview=_Preview(),
+        media_root=tmp_path,
+    )
+    result = runner(_ctx("style_frames", {"brief": BRIEF_OUT, "art_direction": ART}))
+    frames = StyleFrames.model_validate(result.output)
+    renders = [Path(f.render.path) for f in frames.frames if f.render is not None]
+    expected = [p.relative_to(tmp_path).as_posix() for p in renders]
+    assert len(expected) == len(FRAMES["frames"])
+    assert frames.review_media == {
+        "kind": "style_frame",
+        "video": expected[0],
+        "images": expected,
+        "fps": 24,
+    }
+    assert result.usage.ai_usage["scene_builder_claude_requests"] == 3 * len(expected)
+    # Without a media root (the old constructor) there is no review_media.
+    plain = _runner(tmp_path, explorer=None, renderer=_UsageRenderer(), voice=_voice)
+    out = plain(_ctx("style_frames", {"brief": BRIEF_OUT, "art_direction": ART}))
+    assert StyleFrames.model_validate(out.output).review_media is None

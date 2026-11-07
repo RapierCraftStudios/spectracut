@@ -6,9 +6,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from starlette.testclient import TestClient
 
 from spectracut.api.app import create_app
+from spectracut.api.review import ReviewMedia
 from spectracut.qa.report import QAReportStore
 from spectracut.spec.brief import AudienceProfile, Brief, ClaimSource, Persona, ProofPoint
 from spectracut.studio import (
@@ -207,3 +209,31 @@ def test_page_binds_to_localhost_only_and_needs_no_account(client: TestClient) -
 
 def test_render_qa_route_still_served(client: TestClient) -> None:
     assert client.get("/v1/renders/none/qa").status_code == 404
+
+
+def test_style_frame_gate_lists_every_rendered_image(tmp_path: Path) -> None:
+    """#281: the style-frame gate's review page gets every frame still as a media URL."""
+    images = ["preproduction/hero.png", "preproduction/cta.png"]
+
+    def frames(ctx: RunContext) -> RunResult:
+        media = {"kind": "style_frame", "video": images[0], "images": images, "fps": 24}
+        return RunResult(output={"frames": ["hero", "cta"], "review_media": media})
+
+    store = ProductionStore(tmp_path / "home")
+    g = ProductionGraph(PID, gates=GatePolicy(defaults={"style_frames": GateMode.HUMAN}))
+    g.add_nodes([NodeSpec(id="style_frames", kind="style_frames", department="art")])
+    g.run(frames)
+    path = store.create(PID, _brief(), g)
+    (path / "preproduction").mkdir()
+    for name in images:
+        (path / name).write_bytes(name.encode())
+    client = TestClient(create_app(QAReportStore(tmp_path / "qa"), productions=store))
+    [item] = client.get("/v1/review/queue").json()["items"]
+    base = f"/v1/review/productions/{PID}/media/"
+    assert item["media"]["kind"] == "style_frame"
+    assert item["media"]["images"] == [base + name for name in images]
+    for name in images:
+        assert client.get(base + name).content == name.encode()
+    too_many = {"kind": "style_frame", "video": "a.png", "images": ["a.png"] * 33, "fps": 24}
+    with pytest.raises(ValidationError):
+        ReviewMedia.model_validate(too_many)

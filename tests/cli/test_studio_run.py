@@ -332,9 +332,30 @@ def test_standard_shot_nodes_render_on_the_farm_through_default_runner(
     assert not again.executed and len(fake.submitted) == 3
 
 
+SCENE_CALLS: list[JsonValue] = [
+    {"tool": "scene.clear", "args": {}},
+    {"tool": "object.add_primitive", "args": {"kind": "cube", "name": "slab"}},
+    {"tool": "light.add", "args": {"kind": "area", "name": "key", "energy": 500}},
+    {"tool": "camera.add", "args": {"name": "cam", "location": [0, -6, 1]}},
+    {"tool": "camera.use", "args": {"name": "cam"}},
+]
+
+
+def _scene_text() -> MockTextProvider:
+    """The scene builder's text model: a fixed build for its schema, mock otherwise."""
+
+    def respond(system: str, prompt: str, schema: dict[str, Any]) -> JsonValue:
+        if set(schema.get("required", [])) == {"plan", "calls"}:
+            return {"plan": "a lit slab", "calls": list(SCENE_CALLS)}
+        return _respond(system, prompt, schema)
+
+    return MockTextProvider(respond)
+
+
 def test_standard_style_frames_render_on_the_farm_through_default_runner(
     home: Path, brief_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(studio_mod, "text_provider_factory", _scene_text)
     created = runner.invoke(app, ["studio", "new", str(brief_file), "--id", "film"])
     assert created.exit_code == 0, created.output
     store = ProductionStore(home)
@@ -368,8 +389,21 @@ def test_standard_style_frames_render_on_the_farm_through_default_runner(
         assert re.fullmatch(r"sha256:[0-9a-f]{64}", frame.render.sha256)
         assert frame.render.provider == "blender-farm"
     assert built == ["film"]
-    # Two style frames plus the animatic's one board, all on the farm.
-    assert len(fake.submitted) == len(frames.frames) + 1
+    # Each frame is built by the scene builder at the preview tier, then its best recipe
+    # re-renders at the final tier under style_frames; plus the animatic's one board.
+    names = [str(job["name"]) for job in fake.submitted]
+    builds = [n for n in names if n.startswith("film-scene_build-")]
+    finals = [n for n in names if n.startswith("film-style_frames-")]
+    assert {n.split("-")[2] for n in builds} == {"hero", "cta"}
+    assert len(finals) == len(frames.frames)
+    assert len(fake.submitted) == len(builds) + len(finals) + 1
+    # The gate's review page lists every rendered frame.
+    assert frames.review_media is not None
+    assert frames.review_media["kind"] == "style_frame"
+    assert frames.review_media["images"] == ["preproduction/hero.png", "preproduction/cta.png"]
+    assert (
+        graph.ledger.totals(art_depts.STYLE_FRAMES).ai_usage["scene_builder_mock_text_requests"] > 0
+    )
     assert all(job["worker_tag"] == "tag-1" for job in fake.submitted)
     assert graph.ledger.totals(art_depts.STYLE_FRAMES).gpu_minutes > 0
     assert graph.ledger.totals(art_depts.ANIMATIC).gpu_minutes > 0
