@@ -128,6 +128,10 @@ class KitEntry(StrictModel):
     provenance: Provenance
 
 
+KitAsset = KitEntry
+"""Alias: a kit asset is a :class:`KitEntry` (``kind`` ``asset`` or ``lighting``)."""
+
+
 class KitFile(StrictModel):
     """A sha256-pinned file shipped with the kit and its licence sidecar."""
 
@@ -440,6 +444,7 @@ __all__ = [
     "KITS_DIR",
     "STAGE_PREFIX",
     "Kit",
+    "KitAsset",
     "KitCall",
     "KitEntry",
     "KitFile",
