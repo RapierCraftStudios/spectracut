@@ -29,8 +29,10 @@ import recorded  # type: ignore[import-not-found]
 from recorded import BRIEF, Film, external_ai_usage, invoke, run_film
 
 from spectracut.formats.cutdowns import CutDownSpec
+from spectracut.providers.local.registry import resolve_model
 from spectracut.studio.departments import art as art_depts
 from spectracut.studio.departments.finishing import DeliveryReport
+from spectracut.studio.departments.sound import SoundDesign
 from spectracut.studio.gates import GateMode
 from spectracut.studio.graph import ProductionGraph
 from spectracut.studio.ledger import Ledger
@@ -80,6 +82,19 @@ def assert_only_allowed_services(ledger: Ledger) -> None:
             assert entry.kind == ELEVENLABS_KIND, entry.node_id
 
 
+def assert_sound_design_on_real_models(graph: ProductionGraph) -> None:
+    """the sound_design node was built by a real local model and its GPU usage is in the ledger."""
+    node_id = next(n for n in graph.order() if graph.spec(n).kind == "sound_design")
+    design = SoundDesign.model_validate(graph.output(node_id))
+    model = resolve_model("sfx").id
+    assert design.cues
+    for cue in design.cues:
+        assert "mock" not in cue.provenance.origin, cue.provenance.origin
+        assert cue.provenance.origin.startswith(model), cue.provenance.origin
+    entries = graph.ledger.entries_for(node_id)
+    assert entries and sum(e.gpu_minutes for e in entries) > 0, entries
+
+
 def test_production_file_declares_every_standard_stage_and_the_owner_gates() -> None:
     kinds = {n["kind"] for n in PRODUCTION["nodes"]}
     assert {"brief", "concept", "script", "style_frames", "storyboard", "animatic"} <= kinds
@@ -87,6 +102,12 @@ def test_production_file_declares_every_standard_stage_and_the_owner_gates() -> 
     graph = _graph()
     for nid in PRODUCTION["owner_gates"]:
         assert graph.gate_for(graph.spec(nid)) is GateMode.HUMAN, nid
+
+
+def test_real_model_check_rejects_the_recorded_films_mock_sound_design(launch_film: Film) -> None:
+    """Regression: mock-origin cues fail the live assertion, so a mock-mode run cannot pass."""
+    with pytest.raises(AssertionError, match="mock"):
+        assert_sound_design_on_real_models(launch_film.graph)
 
 
 def test_cutdowns_are_15s_and_30s_in_every_aspect_from_the_films_shots() -> None:
@@ -162,6 +183,7 @@ def test_e2e_launch_film_reaches_delivery_with_only_allowed_services() -> None:
     assert all(graph.status(n) is NodeStatus.CLEAN for n in graph.order())
     assert_delivered(DeliveryReport.model_validate(graph.output("delivery")))
     assert_only_allowed_services(graph.ledger)
+    assert_sound_design_on_real_models(graph)
     before = len(graph.ledger)
     again = invoke(["studio", "run", pid, "--home", str(home)])
     assert "executed" not in again, again
