@@ -122,7 +122,7 @@ def model_disk_lines(
     total = f" of {disk.total_gb:.1f} GB" if disk.total_gb else ""
     return [
         f"model disk on {model_host}{where}: {disk.free_gb:.1f} GB free{total} "
-        f"(reserve {reserve_gb(disk.total_gb):g} GB)"
+        f"(reserve {round(reserve_gb(disk.total_gb), 1):g} GB)"
     ]
 
 

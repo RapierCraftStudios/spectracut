@@ -283,7 +283,8 @@ def test_disk_probe_cleanup_and_pointer_run_on_a_real_shell(
     assert disk.root == str(root) and disk.free_gb > 0 and (disk.total_gb or 0) > disk.free_gb
     assert set(disk.present) == {"ezaudio-xl", "moss-sfx-8b-nf4"}
     assert disk.present["ezaudio-xl"] > 0
-    plan = _plan(SetupState(models_dir=str(root)), "rig", model_disk=disk)
+    roomy = dataclasses.replace(disk, free_gb=1000.0, total_gb=2000.0)  # any real disk size
+    plan = _plan(SetupState(models_dir=str(root)), "rig", model_disk=roomy)
     for step in plan.steps:
         if step.id.startswith(("models:clean:", "models:root:")):
             sh(step)
@@ -301,8 +302,8 @@ def test_disk_probe_cleanup_and_pointer_run_on_a_real_shell(
 
 def test_parse_model_disk_and_windows_probe() -> None:
     out = (
-        "root=D:/m\\nfree=50000000000\\ntotal=1000000000000\\n"
-        "dirs=ezaudio/ezaudio-xl:2000000000|other/thing:5|kokoro/kokoro-82m:x\\n"
+        "root=D:/m\nfree=50000000000\ntotal=1000000000000\n"
+        "dirs=ezaudio/ezaudio-xl:2000000000|other/thing:5|kokoro/kokoro-82m:x\n"
     )
     disk = parse_model_disk(LEGION, out)
     assert disk == ModelDisk("D:/m", 50.0, 1000.0, {"ezaudio-xl": 2.0})
@@ -328,9 +329,12 @@ def _cli(home: Path, monkeypatch: pytest.MonkeyPatch, runner: Runner, args: Sequ
     monkeypatch.setattr(setup_cli, "CommandRunner", lambda: runner)
     monkeypatch.setattr(setup_cli, "build_wheels", lambda _out: WHEELS)
     monkeypatch.setattr(setup_cli, "_model_host", lambda _home: "rig")
+    monkeypatch.setattr(setup_cli, "_sync_tags", lambda *_a, **_k: None)  # no Manager here
+    monkeypatch.setattr(setup_cli, "_check_job_types", lambda *_a, **_k: None)
     home.mkdir(exist_ok=True)
     (home / "hosts.json").write_text(
-        '{"hosts":[{"name":"rig","cpus":8,"mem_gb":32,"profile":"cycles-cpu"}]}', encoding="utf-8"
+        '{"hosts":[{"name":"rig","cpus":8,"mem_gb":32,"profile":{"blender_version":"4.5.3"}}]}',
+        encoding="utf-8",
     )
     result = CliRunner().invoke(app, ["setup", "--dry-run", *args])
     if result.exit_code != 0 and "profile" in result.output:
@@ -341,13 +345,13 @@ def _cli(home: Path, monkeypatch: pytest.MonkeyPatch, runner: Runner, args: Sequ
 def test_cli_setup_refuses_weights_that_do_not_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = Runner("root=/srv/m\\nfree=30000000000\\ntotal=100000000000\\ndirs=\\n")
+    runner = Runner("root=/srv/m\nfree=30000000000\ntotal=100000000000\ndirs=\n")
     result = _cli(tmp_path / "home", monkeypatch, runner, [])
     assert result.exit_code != 0
     assert "6.2 GB short" in result.output and "--models-dir" in result.output
     assert runner.ran == ["models:disk:rig"]  # measured, nothing downloaded
 
-    runner = Runner("root=/srv/m\\nfree=30000000000\\ntotal=100000000000\\ndirs=\\n")
+    runner = Runner("root=/srv/m\nfree=30000000000\ntotal=100000000000\ndirs=\n")
     ok = _cli(tmp_path / "home2", monkeypatch, runner, ["--models", "kokoro-82m"])
     assert ok.exit_code == 0, ok.output
     assert "download kokoro-82m weights" in ok.output and "ezaudio" not in ok.output
@@ -356,7 +360,7 @@ def test_cli_setup_refuses_weights_that_do_not_fit(
 def test_cli_setup_skip_models_and_bad_options(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = Runner("free=1\\ntotal=100000000000\\n")
+    runner = Runner("free=1\ntotal=100000000000\n")
     skip = _cli(tmp_path / "home", monkeypatch, runner, ["--skip-models"])
     assert skip.exit_code == 0, skip.output
     assert "install the local model families" in skip.output and "weights" not in skip.output
@@ -398,7 +402,9 @@ def test_doctor_lists_every_model(tmp_path: Path) -> None:
     pin = model_version("kokoro-82m")
     assert f"kokoro-82m {'f' * 12} on legion: drift (pinned {pin}) (essential, selected)" in lines
     assert f"{MODELS_DEPS} {models_deps_version(WHEELS.pin)} on legion: healthy" in lines
-    assert model_lines(model_host="rig", state=state)[0].endswith(": not installed")
+    assert model_lines(model_host="rig", state=state)[0].endswith(
+        ": not installed (essential, selected)"
+    )
 
     full = component_lines(tmp_path)
     assert full[-len(model_lines(tmp_path)) :] == model_lines(tmp_path)

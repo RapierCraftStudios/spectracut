@@ -25,6 +25,7 @@ from spectracut.providers.base import redact
 from spectracut.queue.flamenco import FlamencoClient, FlamencoError, job_type_names
 from spectracut.queue.signing import ensure_signing_key, read_public_key
 from spectracut.setup.manifest import HostFacts, StepRunner, load_manifest
+from spectracut.setup.model_assets import resolve_models
 from spectracut.setup.plan import (
     CommandRunner,
     SetupError,
@@ -47,7 +48,6 @@ from spectracut.setup.storage import (
     normalize_storage_path,
     parse_storage_host,
 )
-from spectracut.setup.model_assets import resolve_models
 from spectracut.setup.wheels import build_wheels
 from spectracut.setup.worker_tags import TagApi, desired_tags, sync_worker_tags
 

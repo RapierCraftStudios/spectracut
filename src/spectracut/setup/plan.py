@@ -726,9 +726,9 @@ def _registration_step(f: HostFacts, public_key: str) -> Step:
 MODELS_DEPS = "models-deps"
 """State component of the family extras installed into the spectracut-host tool venv."""
 MODEL_PREFIX = "model:"
+"""State component prefix of one model's weights (``model:<model id>``)."""
 MODELS_ROOT = "models-root"
 """State component: the ``--models-dir`` recorded in the model host's pointer file."""
-"""State component prefix of one model's weights (``model:<model id>``)."""
 DISK_MARGIN_GB = 2.0
 _WINDOWS_ROOT_PS = "$env:LOCALAPPDATA/spectracut/models"
 DEPS_TIMEOUT = 7200.0
@@ -927,7 +927,8 @@ def model_disk_step(f: HostFacts, models_dir: str | None = None) -> Step:
                 _sh_root(models_dir),
                 'p="$root"; while [ ! -d "$p" ]; do p=$(dirname "$p"); done',
                 'echo "root=$root"',
-                "df -Pk \"$p\" | awk 'NR==2 {print \"free=\" $4*1024; print \"total=\" $2*1024}'",
+                'df -Pk "$p" | awk \'NR==2 '
+                '{printf "free=%.0f\\ntotal=%.0f\\n", $4*1024, $2*1024}\'',
                 'd=""; for x in "$root"/*/*/; do [ -d "$x" ] || continue; r="${x%/}"; '
                 'r="${r#"$root"/}"; d="$d|$r:$(( $(du -sk "$x" | cut -f1) * 1024 ))"; done',
                 'echo "dirs=${d#|}"',
@@ -1060,7 +1061,7 @@ def model_steps(
             f"{f.name}: the selected model weights ({', '.join(missing)}) need about "
             f"{need:.1f} GB{where}, but {disk.free_gb:.1f} GB is free"
             + (f" (+{reclaim:.1f} GB of unfinished downloads)" if reclaim else "")
-            + f" and {reserve:g} GB is kept in reserve: {need - avail:.1f} GB short. "
+            + f" and {round(reserve, 1):g} GB is kept in reserve: {need - avail:.1f} GB short. "
             "Nothing was downloaded. Options: --models essential|<ids> to install fewer "
             "models, --models-dir <path> to put the weights on a disk with more room, or "
             "--skip-models to update hosts and runtimes without weights"
