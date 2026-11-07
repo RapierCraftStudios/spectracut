@@ -233,12 +233,14 @@ class SoundDeps:
     providers: Mapping[str, LocalProvider] | None = None
     ardour: ArdourRunner | None = None
     stretcher: Stretcher | None = None
+    picture: AnimaticPreview | None = None
+    """Renders each picture clip for foley; ``None`` means sound design adds no foley."""
 
 
 def default_sound(production: Production) -> SoundDeps:
     """Real sound dependencies: the model runtime on the model host from setup state."""
     runtime, problem = production.model_runtime()
-    return SoundDeps(runtime=runtime, runtime_problem=problem)
+    return SoundDeps(runtime=runtime, runtime_problem=problem, picture=animatic_preview_factory())
 
 
 sound_factory: Callable[[Production], SoundDeps] = default_sound
@@ -378,6 +380,7 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                     providers=deps.providers,
                     ardour=deps.ardour,
                     stretcher=deps.stretcher,
+                    picture=deps.picture,
                 )
             runner = sound
         return runner(ctx)

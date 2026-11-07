@@ -163,9 +163,15 @@ On the dev box, with legion registered:
 | sound_design | ezaudio-xl | - | - | - | pending first live run (check `studio-sound-design-legion-e2e`) |
 | music | ace-step | - | - | - | pending first live run (check `studio-sound-design-legion-e2e`) |
 
-Foley is not requested by any studio stage yet: `SoundRunner._sound_design` builds sound-effect cues only, and foley
-needs the picture as a host-local `video_path`. HunyuanVideo-Foley is covered only by
-`tests/host/test_hunyuan_foley_e2e.py`.
+Foley (#316): when it has a picture renderer (real `spectracut studio run` uses the animatic's ffmpeg encoder),
+`SoundRunner._sound_design` adds one HunyuanVideo-Foley cue for each picture clip whose media is a real file. Each
+clip is rendered on its own to `sound_design/picture/<clip>.mp4` and generated with one candidate. The client sends the
+movie inline with the generate request (`files` in the `models-serve` protocol), and the host writes it into its
+session temp dir and passes that path as `video_path`. So the model host needs the updated `spectracut-host`; an older
+host ignores `files` and the loader fails with "foley needs video_path". At the sound_design stage the picture is the
+animatic, so foley hears still boards, and placeholder boards (`board:<id>`) get no foley. Live run:
+`SPECTRACUT_E2E=1 uv run pytest -q -m e2e tests/host/test_sound_design_foley_legion_e2e.py` (post-deploy check
+`studio-sound-design-foley-legion-e2e`). The model alone stays covered by `tests/host/test_hunyuan_foley_e2e.py`.
 
 ## Owner actions
 

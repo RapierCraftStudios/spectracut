@@ -11,7 +11,10 @@ The protocol is JSON lines. The client sends ``{"op": "load", "model": id}``,
 ``{"op": "generate", "prompt": ..., "options": {...}}`` and ``{"op": "close"}``,
 and the host answers each with one line: ``{"ok": true, ...}``, or
 ``{"ok": false, "error": ...}``. A generate reply carries the output bytes as
-base64 in ``data``. The client never waits on stdin EOF, because Windows OpenSSH
+base64 in ``data``. Input files a model needs (``video_path``, the picture foley hears)
+are sent the same way: the client moves each from ``options`` into
+``"files": {name: {"suffix": ..., "data": base64}}`` and the host writes it into its
+session temp dir and points the option at that copy. The client never waits on stdin EOF, because Windows OpenSSH
 can lose it (see :mod:`spectracut.setup.transport`). The host resolves models
 only by id from its registry and runs only installed loaders.
 """
@@ -31,6 +34,8 @@ from spectracut.providers.base import ProviderError
 from spectracut.providers.local.runtime import ModelSpec
 
 SERVE_COMMAND = "models-serve"
+INPUT_FILE_OPTIONS: tuple[str, ...] = ("video_path",)
+"""Generate options whose value is a local file the host receives inline (``files``)."""
 CLOSE_TIMEOUT_S = 30.0
 
 
@@ -121,7 +126,21 @@ class RemoteSession:
         out = options.pop("out_path", None)
         if out is None:
             raise self._fail("generate needs out_path")
-        reply = self.request({"op": "generate", "prompt": prompt, "options": options})
+        files: dict[str, dict[str, str]] = {}
+        for name in INPUT_FILE_OPTIONS:
+            value = options.pop(name, None)
+            if value is None:
+                continue
+            local = Path(value)
+            if not local.is_file():
+                raise self._fail(f"{name} {str(local)!r} is not a local file")
+            data = base64.b64encode(local.read_bytes()).decode("ascii")
+            files[name] = {"suffix": local.suffix, "data": data}
+        options = {k: str(v) if isinstance(v, Path) else v for k, v in options.items()}
+        message: dict[str, Any] = {"op": "generate", "prompt": prompt, "options": options}
+        if files:
+            message["files"] = files
+        reply = self.request(message)
         try:
             data = base64.b64decode(str(reply.get("data", "")), validate=True)
         except (binascii.Error, ValueError) as exc:
