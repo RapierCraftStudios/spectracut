@@ -42,13 +42,16 @@ EXR_FORMATS = ("OPEN_EXR", "OPEN_EXR_MULTILAYER")
 
 def test_library_loads_every_comp_graph() -> None:
     comps = comp.load_comps(COMPS)
-    assert set(comps) == {"device-clean", "device-cinematic", "screen-grade"}
-    for graph in comps.values():
-        assert graph.screen_matte == comp.DEFAULT_SCREEN_MATTE == "device_screen"
+    assert set(comps) == {"device-clean", "device-cinematic", "screen-grade", "one-beam"}
+    for name, graph in comps.items():
+        if name != "one-beam":
+            assert graph.screen_matte == comp.DEFAULT_SCREEN_MATTE == "device_screen"
+    assert comps["one-beam"].screen_matte is None
     ops = {name: [op.op for op in g.ops] for name, g in comps.items()}
     assert ops["device-clean"] == ["ui_sharpen", "screen_glow", "lens"]
     assert ops["device-cinematic"] == ["screen_glow", "glints", "light_wrap", "lens"]
     assert ops["screen-grade"] == ["screen_grade", "ui_sharpen"]
+    assert ops["one-beam"] == ["bloom", "glints", "lens"]
     assert comp.default_comps_dir() == COMPS
 
 
@@ -307,3 +310,86 @@ def test_scene_ops_never_touch_the_screen_model() -> None:
     assert comp.screen_transfer(scene_only, patch) == patch
     with pytest.raises(ValueError, match="non-empty rectangle"):
         comp.screen_transfer(scene_only, [])
+
+
+# ---- #347: bloom and matte-free graphs for abstract shots ---------------------------
+
+#: comp_hash of the device graphs before bloom / matte-free graphs existed: unchanged,
+#: so existing productions do not re-run comp or finish.
+DEVICE_HASHES = {
+    "device-clean": "sha256:0f5de0b53903dd9faa1c60c4b4e33044fee74a9f6ed34493d158b44d2fe026ad",
+    "device-cinematic": "sha256:bca77c2c179b8316b65ae44a1fcfe6e189398a38a87e45a62faf22172c780ce7",
+    "screen-grade": "sha256:3341079b2357c93d4eb1e22c91b2bafe0559223474e1d7b79d3950f4a1ecd755",
+}
+
+
+def test_device_graph_hashes_are_unchanged() -> None:
+    comps = comp.load_comps(COMPS)
+    assert {name: comp.comp_hash(comps[name]) for name in DEVICE_HASHES} == DEVICE_HASHES
+
+
+def test_one_beam_is_bloom_glints_and_subtle_dispersion_on_the_whole_frame() -> None:
+    graph = comp.load_comps(COMPS)["one-beam"]
+    bloom, glints, lens = graph.ops
+    assert isinstance(bloom, comp.Bloom) and bloom.glare_type == "FOG_GLOW"
+    assert 0 < bloom.strength <= 0.5
+    assert isinstance(glints, comp.Glints) and 0 < glints.strength <= 0.3
+    assert isinstance(lens, comp.LensOp) and lens.distortion == 0 and 0 < lens.dispersion <= 0.02
+    params = comp.comp_params(graph)
+    assert params["screen_matte"] is None
+    assert params["ops"][0] == {  # type: ignore[index]
+        "op": "bloom",
+        "glare_type": "FOG_GLOW",
+        "threshold": 0.9,
+        "strength": 0.35,
+        "size": 7,
+    }
+
+
+def test_bloom_defaults_and_is_a_scene_op() -> None:
+    assert comp.Bloom().model_dump() == {
+        "op": "bloom",
+        "glare_type": "FOG_GLOW",
+        "threshold": 1.0,
+        "strength": 0.0,
+        "size": 6,
+    }
+    assert "bloom" in comp.SCENE_OPS and "bloom" not in comp.MATTE_OPS
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        "{op: bloom, threshold: -0.1}",
+        "{op: bloom, threshold: 10.5}",
+        "{op: bloom, strength: 1.5}",
+        "{op: bloom, size: 0}",
+        "{op: bloom, size: 10}",
+        "{op: bloom, glare_type: STREAKS}",
+        "{op: bloom, extra: 1}",
+    ],
+)
+def test_bloom_bounds_are_refused(tmp_path: Path, op: str) -> None:
+    path = tmp_path / "bad.yaml"
+    path.write_text(f"id: bad\nops: [{op}]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="is invalid"):
+        comp.load_comp(path)
+
+
+@pytest.mark.parametrize("op", ["screen_grade", "ui_sharpen", "screen_glow", "light_wrap"])
+def test_a_matte_free_graph_refuses_screen_ops_and_light_wrap(tmp_path: Path, op: str) -> None:
+    path = tmp_path / "bad.yaml"
+    path.write_text(f"id: bad\nscreen_matte: null\nops: [{{op: {op}}}]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=rf"no screen matte; op\(s\) \['{op}'\] need one"):
+        comp.load_comp(path)
+
+
+def test_a_matte_free_graph_keeps_scene_ops_and_carries_a_null_matte() -> None:
+    graph = comp.CompGraph(
+        id="abstract", screen_matte=None, ops=[comp.Bloom(strength=0.3), comp.LensOp()]
+    )
+    assert comp.comp_params(graph)["screen_matte"] is None
+    steps = comp.comp_steps(graph, ["frames/frame_0001.exr"])
+    assert steps[-1].args["screen_matte"] is None
+    with pytest.raises(ValueError, match="is invalid|String should match"):
+        comp.CompGraph(id="bad", screen_matte="no spaces allowed")

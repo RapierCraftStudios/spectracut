@@ -1092,6 +1092,70 @@ def test_apply_graph_masks_screen_ops_with_the_matte_and_scene_ops_with_its_inve
     assert not any(kind == "CompositorNodeRLayers" for kind, _, _ in nodes.values())
 
 
+def test_apply_graph_one_beam_has_no_matte_and_chains_scene_ops_on_the_image(
+    tmp_path: Path,
+) -> None:
+    """#347: a matte-free graph builds no Cryptomatte/Invert; each op feeds the next."""
+    assets = _exr_assets(tmp_path)
+    args = _comp_args("one-beam")
+    assert args["screen_matte"] is None
+    report, nodes, links = pure(COMP_TREE, str(assets), json.dumps(args))
+    assert report["screen_matte"] is None and report["comp_id"] == "one-beam"
+    kinds = {kind for kind, _, _ in nodes.values()}
+    assert not kinds & {"CompositorNodeCryptomatteV2", "CompositorNodeInvert"}
+    assert "CompositorNodeMixRGB" not in kinds  # nothing to mask: effects are the frame
+    assert ["image", "bloom_glare", "Image"] in links
+    assert ["bloom_glare", "glints_glare", "Image"] in links
+    assert ["glints_glare", "lens_distortion", "Image"] in links
+    assert ["lens_distortion", "composite", "Image"] in links
+
+
+def test_apply_graph_bloom_under_a_device_matte_is_masked_by_the_scene_matte(
+    tmp_path: Path,
+) -> None:
+    assets = _exr_assets(tmp_path)
+    args = _comp_args("device-cinematic")
+    bloom = {"op": "bloom", "glare_type": "BLOOM", "strength": 0.4, "size": 8}
+    args["ops"] = [bloom, *args["ops"]]
+    report, nodes, links = pure(COMP_TREE, str(assets), json.dumps(args))
+    assert report["screen_matte"] == "device_screen"
+    assert nodes["bloom_glare"][0] == "CompositorNodeGlare"
+    assert ["image", "bloom_glare", "Image"] in links
+    assert ["image", "bloom", 1] in links and ["bloom_glare", "bloom", 2] in links
+    fac = {dst: src for src, dst, sock in links if sock == 0}
+    assert fac["bloom"] == "scene_matte"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"screen_matte": None, "ops": [{"op": "screen_glow"}]},
+        {"screen_matte": None, "ops": [{"op": "ui_sharpen"}]},
+        {"screen_matte": None, "ops": [{"op": "lens"}, {"op": "light_wrap"}]},
+        {"ops": [{"op": "bloom", "threshold": 11}]},
+        {"ops": [{"op": "bloom", "strength": 1.5}]},
+        {"ops": [{"op": "bloom", "size": 10}]},
+        {"ops": [{"op": "bloom", "glare_type": "STREAKS"}]},
+        {"ops": [{"op": "bloom", "extra": 1}]},
+    ],
+)
+def test_apply_graph_bloom_and_null_matte_refusals(tmp_path: Path, change: dict[str, Any]) -> None:
+    """Refused as ``args.invalid`` before bpy is touched (the fake tree stays empty)."""
+    assets = _exr_assets(tmp_path)
+    script = COMP_TREE.replace(
+        "report = comp_apply_graph(bpy, args)",
+        "from bpy_runtime.ops import ToolError\n"
+        "try:\n"
+        "    comp_apply_graph(bpy, args)\n"
+        "except ToolError as e:\n"
+        "    print(json.dumps([e.code, str(e), len(tree.nodes)]))\n"
+        "    raise SystemExit(0)\n"
+        "report = None",
+    )
+    code, message, built = pure(script, str(assets), json.dumps({**_comp_args(), **change}))
+    assert code == "args.invalid" and built == 0, message
+
+
 @pytest.mark.parametrize(
     ("change", "code"),
     [

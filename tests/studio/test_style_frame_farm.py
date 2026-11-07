@@ -370,3 +370,160 @@ def test_recipe_renderer_without_a_kit_stages_an_empty_dir(tmp_path: Path) -> No
     assert stage_kit_files(None, tmp_path) == [] and not any(tmp_path.iterdir())
     render = FarmRecipeRenderer(lambda: None, "film", tmp_path)  # type: ignore[arg-type,return-value]
     assert render.kit is None
+
+
+# ---- #347: abstract style frames finished through the one-beam comp and the Look --------
+
+
+class FormatFlamenco(FakeFlamenco):
+    """Writes ``frame_0001`` in the format the recipe's last ``render.set_output`` names."""
+
+    def submit(self, job: dict[str, Any]) -> dict[str, Any]:
+        result = super().submit(job)
+        settings = job["settings"]
+        signed = json.loads(Path(settings["job_file"]).read_text(encoding="utf-8"))
+        outputs = [
+            s for s in signed["envelope"]["recipe"]["steps"] if s["tool"] == "render.set_output"
+        ]
+        if str(outputs[-1]["args"]["format"]).startswith("OPEN_EXR"):
+            out = Path(settings["output_dir"])
+            (out / "frame_0001.png").rename(out / "frame_0001.exr")
+        return result
+
+
+def _signed_recipes(fake: FakeFlamenco) -> list[dict[str, Any]]:
+    return [
+        json.loads(Path(job["settings"]["job_file"]).read_text("utf-8"))["envelope"]["recipe"]
+        for job in fake.submitted
+    ]
+
+
+def _brand_kit(look: dict[str, Any] | None = None) -> Any:
+    from spectracut.spec.brand import load_brand_kit
+
+    kit = load_brand_kit(Path(__file__).resolve().parents[2] / "brands/alterlab/brand-kit.yaml")
+    if look is None:
+        return kit
+    return kit.model_copy(update={"looks": [kit.looks[0].model_copy(update=look)]})
+
+
+def _comp_renderer(tmp_path: Path, fake: FakeFlamenco, *, brand_kit: Any, comp: Any) -> Any:
+    from spectracut.studio.profiles import load_profile
+
+    return SceneStyleFrameRenderer(
+        lambda: SceneText(),
+        lambda: SceneJudge(0.95),
+        load_profile("standard"),
+        _scene_deps(tmp_path, fake, []),
+        "film",
+        tmp_path / "work",
+        brand_kit=lambda: brand_kit,
+        comp=lambda: comp,
+    )
+
+
+def test_scene_renderer_with_comp_and_brand_kit_finishes_through_comp_then_look(
+    tmp_path: Path,
+) -> None:
+    from spectracut.finishing import comp
+    from spectracut.finishing.looks import finish_params, resolve_look
+    from spectracut.studio.scene_builder import SceneBuild
+
+    graph = comp.load_comps(comp.default_comps_dir())["one-beam"]
+    kit = _brand_kit()
+    fake = FormatFlamenco()
+    render = _comp_renderer(tmp_path, fake, brand_kit=kit, comp=graph)
+    out = tmp_path / "out" / "hero.png"
+    record, usage = render(StyleFrame(id="hero", description="beam", prompt="glass"), ART, out)
+    build = SceneBuild.model_validate_json(
+        (tmp_path / "work" / "scene" / "hero" / "build.json").read_text("utf-8")
+    )
+    assert build.recipe is not None
+    n = len(build.iterations)
+    assert len(fake.submitted) == n + 3
+    assert all(str(j["name"]).startswith("film-style_frames-") for j in fake.submitted[n:])
+    passes, comped, finished = _signed_recipes(fake)[n:]
+    # (1) the scene at the final tier, 16:9 full HD, to 32-bit multilayer EXR with passes.
+    tools = [s["tool"] for s in passes["steps"]]
+    assert "render.set_passes" in tools and passes["steps"][-1]["args"] == {
+        "format": "OPEN_EXR_MULTILAYER",
+        "color_depth": "32",
+    }
+    sizes = [s["args"] for s in passes["steps"] if s["tool"] == "render.set_resolution"]
+    assert sizes and all((a["width"], a["height"]) == (1920, 1080) for a in sizes)
+    # (2) compositor only: the one-beam graph (no matte) on the staged EXR.
+    assert [s["tool"] for s in comped["steps"]] == [
+        "scene.clear",
+        "render.set_resolution",
+        "render.set_output",
+        "comp.apply_graph",
+    ]
+    apply = comped["steps"][-1]["args"]
+    assert apply == {**comp.comp_params(graph), "frames": ["frames/frame_0001.exr"]}
+    assert apply["screen_matte"] is None
+    assert [op["op"] for op in apply["ops"]] == ["bloom", "glints", "lens"]
+    # (3) compositor only: the brand kit's Look on the comped EXR, to PNG.
+    assert finished["steps"][0]["tool"] == "scene.clear"
+    look_step = finished["steps"][-1]
+    assert look_step["tool"] == "finish.apply_look"
+    assert look_step["args"] == {
+        **finish_params(resolve_look(kit)),
+        "frames": ["frames/frame_0001.exr"],
+    }
+    assert look_step["args"]["grain"] > 0 and look_step["args"]["lens"]["vignette"] > 0
+    # Each compositor job's frame is staged content-addressed in shared storage.
+    staged = sorted((tmp_path / "shared").rglob("frames/frame_0001.exr"))
+    assert len(staged) == 2
+    # The Look's PNG lands at the requested path; GPU minutes sum all three jobs.
+    finish_hash = hashlib.sha256(out.read_bytes()).hexdigest()
+    assert record.path == str(out) and record.sha256 == f"sha256:{finish_hash}"
+    assert out.read_bytes() == fake_hash(finished)
+    assert usage.gpu_minutes > build.usage.gpu_minutes > 0
+
+
+def fake_hash(recipe: dict[str, Any]) -> bytes:
+    """What :class:`FakeFlamenco` writes as the frame: the job recipe's hash."""
+    from spectracut.spec.recipe import Recipe
+
+    return Recipe.model_validate(recipe).content_hash.encode()
+
+
+def test_scene_renderer_refuses_a_lut_look_before_submitting_the_final(tmp_path: Path) -> None:
+    from spectracut.finishing import comp
+
+    graph = comp.load_comps(comp.default_comps_dir())["one-beam"]
+    kit = _brand_kit({"grade": _brand_kit().looks[0].grade.model_copy(update={"lut": "a.cube"})})
+    fake = FormatFlamenco()
+    render = _comp_renderer(tmp_path, fake, brand_kit=kit, comp=graph)
+    frame = StyleFrame(id="hero", description="beam", prompt="glass")
+    with pytest.raises(ValueError, match="look 'clean' grades with LUT 'a.cube'"):
+        render(frame, ART, tmp_path / "out" / "hero.png")
+    assert not any(str(j["name"]).startswith("film-style_frames-") for j in fake.submitted)
+
+
+@pytest.mark.parametrize("missing", ["comp", "brand_kit"])
+def test_scene_renderer_without_comp_or_kit_renders_one_straight_png(
+    tmp_path: Path, missing: str
+) -> None:
+    from spectracut.finishing import comp
+    from spectracut.studio.departments.shots import tier_recipe
+    from spectracut.studio.node import Tier
+    from spectracut.studio.scene_builder import SceneBuild
+
+    graph = comp.load_comps(comp.default_comps_dir())["one-beam"]
+    fake = FormatFlamenco()
+    render = _comp_renderer(
+        tmp_path,
+        fake,
+        brand_kit=None if missing == "brand_kit" else _brand_kit(),
+        comp=None if missing == "comp" else graph,
+    )
+    render(StyleFrame(id="hero", description="beam", prompt="glass"), ART, tmp_path / "o.png")
+    build = SceneBuild.model_validate_json(
+        (tmp_path / "work" / "scene" / "hero" / "build.json").read_text("utf-8")
+    )
+    assert build.recipe is not None
+    finals = [j for j in fake.submitted if str(j["name"]).startswith("film-style_frames-")]
+    assert len(finals) == 1
+    signed = json.loads(Path(finals[0]["settings"]["job_file"]).read_text("utf-8"))
+    assert signed["envelope"]["recipe_hash"] == tier_recipe(build.recipe, Tier.FINAL).content_hash
