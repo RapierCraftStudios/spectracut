@@ -230,7 +230,8 @@ def _serve_files(files: object) -> dict[str, Any]:
     gen = json.dumps({"op": "generate", "prompt": "x", "options": {}, "files": files})
     out = io.StringIO()
     serve(io.StringIO(f"{load}\n{gen}\n"), out, lambda spec: FakeModel(spec, []))
-    return json.loads(out.getvalue().splitlines()[1])
+    reply: dict[str, Any] = json.loads(out.getvalue().splitlines()[1])
+    return reply
 
 
 @pytest.mark.parametrize(

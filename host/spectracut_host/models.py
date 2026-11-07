@@ -197,9 +197,10 @@ def serve(
     reply carries the output file as base64 ``data``. A generate may carry input files
     as ``"files": {name: {"suffix": ..., "data": base64}}`` for the options in
     :data:`INPUT_FILE_OPTIONS` only; each is written under a host-chosen name in the
-    session temp dir, the option is pointed at it, and it is deleted after generate. Returns on close or EOF, after
-    closing the loaded model. ``lock`` is held from each load until that model is
-    closed, so models never co-reside across processes on one host.
+    session temp dir, the option is pointed at it, and it is deleted after generate.
+    Returns on close or EOF, after closing the loaded model. ``lock`` is held from each
+    load until that model is closed, so models never co-reside across processes on one
+    host.
     """
     from spectracut.providers.local.registry import MODELS
 

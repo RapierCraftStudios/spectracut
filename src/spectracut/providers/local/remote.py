@@ -14,9 +14,9 @@ and the host answers each with one line: ``{"ok": true, ...}``, or
 base64 in ``data``. Input files a model needs (``video_path``, the picture foley hears)
 are sent the same way: the client moves each from ``options`` into
 ``"files": {name: {"suffix": ..., "data": base64}}`` and the host writes it into its
-session temp dir and points the option at that copy. The client never waits on stdin EOF, because Windows OpenSSH
-can lose it (see :mod:`spectracut.setup.transport`). The host resolves models
-only by id from its registry and runs only installed loaders.
+session temp dir and points the option at that copy. The client never waits on
+stdin EOF, because Windows OpenSSH can lose it (see :mod:`spectracut.setup.transport`).
+The host resolves models only by id from its registry and runs only installed loaders.
 """
 
 from __future__ import annotations
@@ -134,8 +134,8 @@ class RemoteSession:
             local = Path(value)
             if not local.is_file():
                 raise self._fail(f"{name} {str(local)!r} is not a local file")
-            data = base64.b64encode(local.read_bytes()).decode("ascii")
-            files[name] = {"suffix": local.suffix, "data": data}
+            encoded = base64.b64encode(local.read_bytes()).decode("ascii")
+            files[name] = {"suffix": local.suffix, "data": encoded}
         options = {k: str(v) if isinstance(v, Path) else v for k, v in options.items()}
         message: dict[str, Any] = {"op": "generate", "prompt": prompt, "options": options}
         if files:
