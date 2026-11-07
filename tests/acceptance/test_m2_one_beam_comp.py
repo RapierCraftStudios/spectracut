@@ -43,8 +43,8 @@ HERO_SCORE = 0.75
 
 DESCRIPTION = (
     "A stack of clear glass tiers, centred and filling the frame, rim-lit against a dark "
-    "gradient. A single emissive accent-blue beam passes through the stack, glowing softly where it "
-    "meets the glass."
+    "gradient. A single emissive accent-blue beam passes through the stack, glowing softly "
+    "where it meets the glass."
 )
 ART = ArtDirection.model_validate(
     {
