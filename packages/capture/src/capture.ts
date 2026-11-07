@@ -107,6 +107,18 @@ export interface CaptureOptions {
   setup?: readonly Action[];
   /** Selectors whose text is recorded in text.json (beside the visible text). */
   textSelectors?: readonly string[];
+  /**
+   * Selectors whose bounding boxes are recorded at every frame in anchors.json
+   * (UI anchors for camera moves and layout checks).
+   */
+  anchors?: readonly string[];
+}
+
+/** Bounding boxes (CSS px, relative to the captured area) of the anchor selectors at one frame. */
+export interface AnchorRecord {
+  frame: number;
+  /** Selector to its box; null when nothing matches. */
+  boxes: Record<string, Rect | null>;
 }
 
 export interface CaptureResult {
@@ -117,6 +129,8 @@ export interface CaptureResult {
   /** Visible-text records (text.json), one per navigation plus one at the end. */
   texts: TextRecord[];
   clip: Rect | null;
+  /** Per-frame anchor boxes (anchors.json); empty without `anchors`. */
+  anchors: AnchorRecord[];
 }
 
 /** Longest visible string kept in a text record. */
@@ -142,6 +156,8 @@ export async function capture(page: CapturePage, options: CaptureOptions): Promi
   let readPending = false;
   const texts: TextRecord[] = [];
   const textSelectors = options.textSelectors ?? [];
+  const anchorSelectors = options.anchors ?? [];
+  const anchors: AnchorRecord[] = [];
 
   const recordText = async (): Promise<void> => {
     const read: PageText = page.readText
@@ -208,6 +224,14 @@ export async function capture(page: CapturePage, options: CaptureOptions): Promi
     }
     const png = await page.screenshot({ clip: clip ?? undefined });
     await recorder.write(clock.frame, clock.timeMs, png, cursor);
+    if (anchorSelectors.length > 0) {
+      const boxes: Record<string, Rect | null> = {};
+      for (const selector of anchorSelectors) {
+        const box = await page.boundingBox(selector);
+        boxes[selector] = box && clip ? { ...box, x: box.x - clip.x, y: box.y - clip.y } : box;
+      }
+      anchors.push({ frame: clock.frame, boxes });
+    }
     await layers.exportFrame(page, clock.frame, clip ?? undefined);
     await clock.advance();
   };
@@ -228,7 +252,8 @@ export async function capture(page: CapturePage, options: CaptureOptions): Promi
   await writeFile(join(outDir, "events.json"), json(events));
   if ((options.layers ?? []).length > 0) await writeFile(join(outDir, "layers.json"), json(layerManifest));
   await writeFile(join(outDir, "text.json"), json(texts));
-  return { outDir, manifest, events, layers: layerManifest, texts, clip };
+  if (anchorSelectors.length > 0) await writeFile(join(outDir, "anchors.json"), json(anchors));
+  return { outDir, manifest, events, layers: layerManifest, texts, clip, anchors };
 }
 
 /**
@@ -353,6 +378,9 @@ export function playwrightPage(page: Page, deviceScaleFactor = 1): CapturePage {
     },
     async keyType(text) {
       await page.keyboard.type(text);
+    },
+    async insertText(text) {
+      await page.keyboard.insertText(text);
     },
     async wheel(x, y, dx, dy) {
       await inPage(page, WHEEL_SRC, { x, y, dx, dy });

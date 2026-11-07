@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 /**
  * Interaction script DSL: eased cursor paths, per-key typing on beat subdivisions,
- * clicks, drags, inertial scroll and waits, all frame-locked to the virtual clock.
+ * pasted text, clicks, drags, inertial scroll and waits, all frame-locked to the
+ * virtual clock.
  * Every interaction is emitted as a timed event for sound cues.
  */
 import { framesFor, type Point } from "./clock.js";
@@ -55,6 +56,16 @@ export type Action =
       secret?: boolean;
     }
   | {
+      /**
+       * Insert `text` as one input (no per-key events), like a paste. Use it for URLs,
+       * whose per-keystroke validation can shift the layout mid-typing.
+       */
+      do: "paste";
+      text: string;
+      /** Mask the pasted text in exported events. */
+      secret?: boolean;
+    }
+  | {
       do: "scroll";
       at?: Target;
       /** Initial velocity in CSS px per second (positive scrolls down). */
@@ -99,6 +110,8 @@ export interface InputPage {
   mouseUp(): Promise<void>;
   keyPress(key: string): Promise<void>;
   keyType(text: string): Promise<void>;
+  /** Insert text as a single input event with no key events (a paste). */
+  insertText?(text: string): Promise<void>;
   /** Wheel at a point; scrolls the nearest scrollable ancestor synchronously. */
   wheel(x: number, y: number, deltaX: number, deltaY: number): Promise<void>;
   boundingBox(selector: string): Promise<{ x: number; y: number; width: number; height: number } | null>;
@@ -228,6 +241,13 @@ async function runAction(ctx: ScriptContext, action: Action): Promise<void> {
         });
       }
       if (keys.length > 0) await ctx.captureFrame();
+      return;
+    }
+    case "paste": {
+      if (!page.insertText) throw new Error("this page cannot run paste actions");
+      await page.insertText(action.text);
+      ctx.emit({ type: "keystroke", key: "⌘V" });
+      await ctx.captureFrame();
       return;
     }
     case "scroll": {

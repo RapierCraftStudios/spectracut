@@ -9,11 +9,14 @@
   html, body { margin: 0; padding: 0; width: 1728px; height: 1117px; background: #000; overflow: hidden; }
   #band { position: absolute; left: 0; top: 0; width: 1728px; height: 37px; background: #000; }
   #frame { position: absolute; left: 0; top: 37px; width: 1728px; height: 1080px; object-fit: fill; display: block; background: #000; }
+  #pointer { position: absolute; left: 0; top: 0; width: 16px; height: 25px; display: none; transform-origin: 0 0; pointer-events: none; z-index: 10; }
+  #pointer svg { display: block; overflow: visible; }
 </style>
 </head>
 <body>
 <div id="band"></div>
 <img id="frame" alt="">
+<div id="pointer"><svg width="16" height="25" viewBox="0 0 16 25"><path d="M0 0 L0 21 L5 16 L8.5 24 L11.5 22.7 L8 15 L15 15 Z" fill="#000" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg></div>
 <script>
 (function () {
   var q = new URLSearchParams(location.search);
@@ -21,8 +24,21 @@
   var fps = Number(q.get("fps")) || 30;
   var t = q.get("t");
   var img = document.getElementById("frame");
+  // Pointer over the chrome: one [u, v, scale] (content-rect UV) or null per frame.
+  var pointer = JSON.parse(q.get("pointer") || "null");
+  var arrow = document.getElementById("pointer");
+  var rect = { x: 0, y: 37, w: 1728, h: 1080 };
+  function point(i) {
+    var k = pointer && pointer.length ? pointer[Math.max(0, Math.min(pointer.length - 1, i))] : null;
+    if (!k) { arrow.style.display = "none"; return; }
+    arrow.style.display = "block";
+    arrow.style.left = (rect.x + k[0] * rect.w) + "px";
+    arrow.style.top = (rect.y + k[1] * rect.h) + "px";
+    arrow.style.transform = "scale(" + k[2] + ")";
+  }
   function show(i) {
     if (frames.length) img.src = frames[Math.max(0, Math.min(frames.length - 1, i))];
+    point(i);
   }
   if (t !== null && t !== "") {
     var tv = Math.max(0, Math.min(1, Number(t) || 0));

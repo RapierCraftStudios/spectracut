@@ -17,6 +17,8 @@
   #frame { position: absolute; left: 0; top: 54px; width: 402px; height: 820px; object-fit: fill; display: block; background: #000; }
   #urlpill { position: absolute; left: 21px; top: 790px; width: 360px; height: 50px; border-radius: 25px; background: rgba(40, 40, 46, 0.92); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4); text-align: center; font: 500 16px/50px "SF Pro Text", "Inter", sans-serif; color: #f2f2f7; }
   #home { position: absolute; left: 134px; top: 862px; width: 134px; height: 5px; border-radius: 3px; background: #fff; }
+  #pointer { position: absolute; left: 0; top: 0; width: 16px; height: 25px; display: none; transform-origin: 0 0; pointer-events: none; z-index: 10; }
+  #pointer svg { display: block; overflow: visible; }
 </style>
 </head>
 <body>
@@ -28,6 +30,7 @@
 </div>
 <div id="urlpill"></div>
 <div id="home"></div>
+<div id="pointer"><svg width="16" height="25" viewBox="0 0 16 25"><path d="M0 0 L0 21 L5 16 L8.5 24 L11.5 22.7 L8 15 L15 15 Z" fill="#000" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg></div>
 <script>
 (function () {
   var q = new URLSearchParams(location.search);
@@ -36,8 +39,21 @@
   var t = q.get("t");
   var img = document.getElementById("frame");
   document.getElementById("urlpill").textContent = q.get("host") || "";
+  // Pointer over the chrome: one [u, v, scale] (content-rect UV) or null per frame.
+  var pointer = JSON.parse(q.get("pointer") || "null");
+  var arrow = document.getElementById("pointer");
+  var rect = { x: 0, y: 54, w: 402, h: 820 };
+  function point(i) {
+    var k = pointer && pointer.length ? pointer[Math.max(0, Math.min(pointer.length - 1, i))] : null;
+    if (!k) { arrow.style.display = "none"; return; }
+    arrow.style.display = "block";
+    arrow.style.left = (rect.x + k[0] * rect.w) + "px";
+    arrow.style.top = (rect.y + k[1] * rect.h) + "px";
+    arrow.style.transform = "scale(" + k[2] + ")";
+  }
   function show(i) {
     if (frames.length) img.src = frames[Math.max(0, Math.min(frames.length - 1, i))];
+    point(i);
   }
   if (t !== null && t !== "") {
     var tv = Math.max(0, Math.min(1, Number(t) || 0));

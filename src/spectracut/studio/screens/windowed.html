@@ -22,6 +22,8 @@
   #frame { position: absolute; left: 0; top: 46px; width: 1400px; height: 875px; object-fit: fill; display: block; background: #000; }
   #dock { position: absolute; left: 464px; top: 1018px; width: 800px; height: 84px; border-radius: 24px; background: rgba(255, 255, 255, 0.18); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2); display: flex; gap: 14px; padding: 10px 16px; box-sizing: border-box; }
   #dock i { display: block; width: 64px; height: 64px; border-radius: 15px; }
+  #pointer { position: absolute; left: 0; top: 0; width: 16px; height: 25px; display: none; transform-origin: 0 0; pointer-events: none; z-index: 10; }
+  #pointer svg { display: block; overflow: visible; }
 </style>
 </head>
 <body>
@@ -40,6 +42,7 @@
 <div id="dock">
   <i style="background:#4aa3ff"></i><i style="background:#ff9f43"></i><i style="background:#5ad17a"></i><i style="background:#c56cf0"></i><i style="background:#ff6b81"></i><i style="background:#f6d55c"></i><i style="background:#8395a7"></i><i style="background:#48dbfb"></i><i style="background:#1dd1a1"></i><i style="background:#576574"></i>
 </div>
+<div id="pointer"><svg width="16" height="25" viewBox="0 0 16 25"><path d="M0 0 L0 21 L5 16 L8.5 24 L11.5 22.7 L8 15 L15 15 Z" fill="#000" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg></div>
 <script>
 (function () {
   var q = new URLSearchParams(location.search);
@@ -48,8 +51,21 @@
   var t = q.get("t");
   var img = document.getElementById("frame");
   document.getElementById("urlpill").textContent = q.get("host") || "";
+  // Pointer over the chrome: one [u, v, scale] (content-rect UV) or null per frame.
+  var pointer = JSON.parse(q.get("pointer") || "null");
+  var arrow = document.getElementById("pointer");
+  var rect = { x: 164, y: 122, w: 1400, h: 875 };
+  function point(i) {
+    var k = pointer && pointer.length ? pointer[Math.max(0, Math.min(pointer.length - 1, i))] : null;
+    if (!k) { arrow.style.display = "none"; return; }
+    arrow.style.display = "block";
+    arrow.style.left = (rect.x + k[0] * rect.w) + "px";
+    arrow.style.top = (rect.y + k[1] * rect.h) + "px";
+    arrow.style.transform = "scale(" + k[2] + ")";
+  }
   function show(i) {
     if (frames.length) img.src = frames[Math.max(0, Math.min(frames.length - 1, i))];
+    point(i);
   }
   if (t !== null && t !== "") {
     var tv = Math.max(0, Math.min(1, Number(t) || 0));

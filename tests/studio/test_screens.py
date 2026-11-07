@@ -19,13 +19,17 @@ from spectracut.studio.departments.capture import CaptureProvenance, ScreenCaptu
 from spectracut.studio.departments.screens import (
     CHROME_PAGES,
     CHROME_SIZES,
+    PRESS_SCALE,
     Chrome,
     ScreenFrame,
     ScreenState,
+    box_uv,
     check_state,
     compose,
     compose_spec,
     frame_at,
+    pointer_track,
+    transient_frames,
 )
 
 _PNGS: dict[tuple[int, int, bool], bytes] = {}
@@ -223,3 +227,67 @@ def test_values_come_from_recorded_text_json(tmp_path: Path) -> None:
     )
     assert empty.values == []
     assert isinstance(state, ScreenState)
+
+
+# ---- anchors, transient frames and the pointer (#367) ------------------------------
+
+
+def test_box_uv_is_the_box_centre_over_the_content_rect() -> None:
+    assert box_uv({"x": 100, "y": 50, "width": 200, "height": 100}, 1000, 500) == (0.2, 0.2)
+    assert box_uv({"x": -50, "y": 480, "width": 20, "height": 100}, 1000, 500) == (0.0, 1.0)
+    with pytest.raises(ValueError):
+        box_uv({"x": 0, "y": 0, "width": 1, "height": 1}, 0, 10)
+
+
+def test_transient_frames_drop_short_blips_not_motion_or_ends() -> None:
+    assert transient_frames(["a", "b", "a", "a"]) == {1}
+    assert transient_frames(["a", "b", "c", "b", "a"]) == {1, 2, 3}
+    assert transient_frames(["a", "b", "b", "b", "b", "a"]) == set()  # 4 frames: a real change
+    assert transient_frames(["a", "b", "c", "d", "e"]) == set()  # continuous scroll
+    assert transient_frames(["b", "a", "a", "c"]) == set()  # end frames are never rejected
+    assert transient_frames(["a", "b", "c", "c"]) == set()  # a change that stays
+
+
+def test_pointer_presses_for_three_frames_then_stays_parked() -> None:
+    cursors = [(0.0, 0.0), (50.0, 25.0), (100.0, 50.0)] + [(100.0, 50.0)] * 5
+    track = pointer_track(cursors, [3], 200, 100)
+    assert track[0] is None  # hidden until the first move
+    assert track[1] == (0.25, 0.25, 1.0)
+    assert [k[2] for k in track[3:6] if k] == [PRESS_SCALE] * 3 == [0.85] * 3
+    assert track[6] == track[7] == (0.5, 0.5, 1.0)  # parked after the press
+
+
+def test_compose_draws_the_recorded_cursor_as_pointer(tmp_path: Path) -> None:
+    raw = _raw(tmp_path)
+    manifest, events = tmp_path / "manifest.json", tmp_path / "events.json"
+    cursor = [
+        {"x": 0, "y": 0},
+        {"x": 617, "y": 385.5},
+        {"x": 617, "y": 385.5},
+        {"x": 617, "y": 385.5},
+    ]
+    manifest.write_text(
+        json.dumps({"fps": 30, "frames": [{"index": i, "cursor": c} for i, c in enumerate(cursor)]})
+    )
+    events.write_text(json.dumps([{"type": "click", "frame": 2, "timeMs": 66}]))
+    raw = raw.model_copy(update={"manifest": str(manifest), "events": str(events)})
+    ex = FakeExecutor()
+    compose(cast("Any", ex), raw, "fullscreen", tmp_path / "out", viewport=(1234, 771))
+    query = parse_qs(urlsplit(ex.specs[-1]["url"]).query)
+    assert json.loads(query["pointer"][0]) == [
+        None,
+        [0.5, 0.5, 1.0],
+        [0.5, 0.5, 0.85],
+        [0.5, 0.5, 0.85],
+    ]
+    # Without a viewport (or unreadable files) there is no pointer.
+    compose(cast("Any", ex), raw, "fullscreen", tmp_path / "out2")
+    assert "pointer" not in parse_qs(urlsplit(ex.specs[-1]["url"]).query)
+    assert "pointer" not in compose_spec(raw, "fullscreen")["url"]  # type: ignore[operator]
+
+
+def test_chrome_pages_draw_the_pointer() -> None:
+    for chrome in ("fullscreen", "windowed", "iphone"):
+        page = _html(chrome)
+        assert 'id="pointer"' in page and 'q.get("pointer")' in page
+        assert re.search(r"#pointer\s*{[^}]*transform-origin:\s*0 0", page)

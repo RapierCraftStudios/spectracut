@@ -35,7 +35,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, Final, Literal
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, field_validator
 
 from spectracut.queue.executors.capture import CaptureExecutor
 from spectracut.queue.queue import Job
@@ -58,7 +58,9 @@ from spectracut.studio.departments.screens import (
     DeviceId,
     ScreenState,
     Sha256,
+    box_uv,
     compose,
+    transient_frames,
 )
 from spectracut.studio.departments.screens import (
     ScreenFrame as CaptureFrame,
@@ -97,6 +99,9 @@ MOVE_MS: Final = 600
 TYPE_BPM: Final = 120
 TYPE_SUBDIVISION: Final = 4
 SCROLL_VELOCITY: Final = 1200.0
+SCREEN_CENTRE: Final = "SC"
+"""Reserved anchor name: the centre of the content rect."""
+_URL_VALUE: Final = re.compile(r"^https?://", re.IGNORECASE)
 END_HOLD_MS: Final = 500
 LOGIN_SETTLE_MS: Final = 1000
 READY_TIMEOUT_S: Final = 120.0
@@ -168,6 +173,23 @@ class ScreenCapture(StrictModel):
     provenance: CaptureProvenance
     screen: ScreenState | None = Field(default=None, exclude_if=lambda v: v is None)
     """The capture composited into device chrome (absent on older outputs)."""
+    anchors: dict[str, tuple[float, float]] = Field(
+        default_factory=dict, exclude_if=lambda v: not v
+    )
+    """UI anchor name (its capture selector) to ``(u, v)`` in 0..1 of the content rect,
+    from the element's recorded DOM box; ``SC`` is reserved for the screen centre."""
+
+    @field_validator("anchors")
+    @classmethod
+    def _check_anchors(
+        cls, value: dict[str, tuple[float, float]]
+    ) -> dict[str, tuple[float, float]]:
+        for name, (u, v) in value.items():
+            if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
+                raise ValueError(f"anchor {name!r} UV ({u}, {v}) is outside [0, 1]")
+        if SCREEN_CENTRE in value and value[SCREEN_CENTRE] != (0.5, 0.5):
+            raise ValueError(f"anchor name {SCREEN_CENTRE!r} is reserved for the screen centre")
+        return value
 
 
 class UICaptures(StrictModel):
@@ -327,7 +349,11 @@ def steps_to_actions(steps: Sequence[ScreenStep], base_url: str) -> list[dict[st
             actions += [_move(step.target), {"do": "click"}]
         elif step.action == "type":
             actions += [_move(step.target), {"do": "click"}]
-            if step.value:
+            if _URL_VALUE.match(step.value.strip()):
+                # Paste URLs: per-key typing drives the product's per-keystroke URL
+                # validator, whose error message shifts the layout mid-typing.
+                actions.append({"do": "paste", "text": step.value.strip()})
+            elif step.value:
                 actions.append(
                     {
                         "do": "type",
@@ -359,6 +385,45 @@ def _main_selector(steps: Sequence[ScreenStep]) -> str | None:
             if is_selector(target) and not target.startswith("text="):
                 return target
     return None
+
+
+def _anchor_selectors(mapping: ScreenMapping) -> list[str]:
+    """Capture selectors of the elements the beat targets: click/type/hover steps and the anchor."""
+    found: list[str] = []
+    targets = [s.target for s in mapping.steps if s.action in ("click", "type", "hover")]
+    for target in [*targets, *([mapping.anchor] if mapping.anchor else [])]:
+        selector = _selector(target)
+        if selector not in found:
+            found.append(selector)
+    return found
+
+
+def _anchor_layout(
+    records: Sequence[Any], frames: int, width: int, height: int
+) -> tuple[dict[str, tuple[float, float]], list[tuple[Any, ...]] | None]:
+    """UV anchors (from each element's last recorded box) and per-frame layout signatures.
+
+    Signatures are ``None`` when the records do not cover every frame.
+    """
+    anchors: dict[str, tuple[float, float]] = {}
+    layouts: list[tuple[Any, ...]] = []
+    for record in records:
+        boxes = record.get("boxes") if isinstance(record, dict) else None
+        if not isinstance(boxes, dict):
+            return {}, None
+        signature: list[tuple[Any, ...]] = []
+        for name, box in sorted(boxes.items()):
+            if isinstance(box, dict):
+                anchors[name] = box_uv(box, width, height)
+                signature.append(
+                    (name, *(round(float(box[k])) for k in ("x", "y", "width", "height")))
+                )
+            else:
+                signature.append((name, None))
+        layouts.append(tuple(signature))
+    anchors.pop(SCREEN_CENTRE, None)
+    anchors[SCREEN_CENTRE] = (0.5, 0.5)
+    return anchors, layouts if len(layouts) == frames else None
 
 
 def login_actions(source: ProductSource, base_url: str) -> list[dict[str, JsonValue]]:
@@ -704,6 +769,9 @@ class CaptureRunner:
             "legibility": legibility,
             "textSelectors": [*source.demo_data.name_selectors, *([anchor] if anchor else [])],
         }
+        anchors = _anchor_selectors(mapping)
+        if anchors:
+            spec["anchors"] = list(anchors)
         main = _main_selector(mapping.steps)
         if main is not None:
             spec["layers"] = [{"name": "main", "selector": main}]
@@ -792,6 +860,24 @@ class CaptureRunner:
                 if last.is_file():
                     layers.append(CaptureFrame(path=str(last), sha256=_sha256_file(last)))
         clip = [CaptureFrame(path=str(f), sha256=h) for f, h in zip(frames, hashes, strict=True)]
+        anchors: dict[str, tuple[float, float]] = {}
+        anchors_path = out / "anchors.json"
+        if anchors_path.is_file():
+            try:
+                records = json.loads(anchors_path.read_text(encoding="utf-8"))
+                anchors, layouts = _anchor_layout(
+                    records if isinstance(records, list) else [],
+                    len(clip),
+                    device.width,
+                    device.height,
+                )
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise self._fail(ctx, f"{name}: unreadable anchors.json: {exc}") from None
+            if layouts is not None:
+                # A transient layout shift is held on the previous frame (the clip
+                # stays frame-locked); raw hashes and determinism are unchanged.
+                for index in sorted(transient_frames(layouts)):
+                    clip[index] = clip[index - 1]
         raw = ScreenCapture(
             key=key,
             proof_point=mapping.proof_point,
@@ -806,6 +892,7 @@ class CaptureRunner:
             manifest=str(out / "manifest.json"),
             events=str(out / "events.json"),
             text=str(text_path),
+            anchors=anchors,
             provenance=CaptureProvenance(
                 product_id=source.id,
                 repo_commit=self.commit(source.repo),
@@ -821,7 +908,13 @@ class CaptureRunner:
         )
         chrome: Chrome = "iphone" if device.id == "phone" else mapping.chrome
         try:
-            screen = compose(self._executor(), raw, chrome, out.with_name(f"{out.name}-{chrome}"))
+            screen = compose(
+                self._executor(),
+                raw,
+                chrome,
+                out.with_name(f"{out.name}-{chrome}"),
+                viewport=(device.width, device.height),
+            )
         except Exception as exc:  # noqa: BLE001 - ValueError or executor failure: a node failure
             raise self._fail(ctx, f"{name}: screen composite failed: {exc}") from exc
         return raw.model_copy(update={"screen": screen})
