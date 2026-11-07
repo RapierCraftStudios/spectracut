@@ -129,7 +129,7 @@ def compile_calls(calls: JsonValue, *, recipe_id: str, shot_id: str) -> Recipe:
     return recorder.recipe()
 
 
-def check_copy(recipe: Recipe, allowed: Sequence[str], kit: BrandKit | None) -> None:
+def check_recipe_copy(recipe: Recipe, allowed: Sequence[str], kit: BrandKit | None) -> None:
     """Every ``text.add`` body is allowed copy and free of the kit's forbidden words."""
     allowed_set = {a.strip() for a in allowed}
     for step in recipe.steps:
@@ -386,7 +386,7 @@ class SceneBuilder:
                     recipe_id=f"{brief.id}-a{cand.attempt}-c{cand.candidate}"[:128],
                     shot_id=brief.id,
                 )
-                check_copy(recipe, brief.copy_lines(), brief.brand_kit)
+                check_recipe_copy(recipe, brief.copy_lines(), brief.brand_kit)
                 cand.recipe = recipe
             except (HarnessError, CopyRefused) as exc:
                 cand.error = str(exc)
@@ -518,7 +518,7 @@ __all__ = [
     "SceneBuild",
     "SceneBuilder",
     "SceneIteration",
-    "check_copy",
+    "check_recipe_copy",
     "compile_calls",
     "scene_build_runner",
 ]
