@@ -210,6 +210,16 @@ def test_args_and_unknown_tool_codes(session: Session) -> None:
     assert session.recorder.steps == []
 
 
+def test_camera_move_keys_take_a_range_checked_fstop(session: Session) -> None:
+    keys = [{"frame": 1, "fstop": 2.8, "lens": 50}, {"frame": 2, "fstop": 4, "lens": 85}]
+    call(session, "camera.move", {"keys": keys})
+    assert [s.args["keys"][1]["fstop"] for s in session.recorder.steps] == [4]
+    for fstop in (0.05, 129):
+        bad = [{"frame": 1, "fstop": 2.8}, {"frame": 9, "fstop": fstop}]
+        assert error_of(session, "camera.move", {"keys": bad}).code == "args.invalid"
+    assert len(session.recorder.steps) == 1
+
+
 def test_render_timeout(make_dispatcher: Any) -> None:
     sleeper = (sys.executable, "-c", "import time; time.sleep(30)")
     slow: PreviewDispatcher = make_dispatcher(host_cmd=sleeper, timeout_s=0.5)

@@ -34,6 +34,8 @@ EASINGS: dict[str, tuple[str, str | None]] = {
     "ease_in_out": ("BEZIER", "EASE_IN_OUT"),
 }
 MAX_FRAME = 1_048_574
+HARD_CUT_GAP = 1.01
+"""Keys this many frames apart or closer on one f-curve are a hard cut (``CONSTANT``)."""
 
 
 def camera_set_dof(bpy: Any, args: dict[str, Any]) -> Report:
@@ -79,7 +81,7 @@ def _keys(value: Any) -> list[dict[str, Any]]:
             raise ToolError(f"keys[{i}] must be an object")
         check_only(
             key,
-            {"frame", "location", "rotation", "lens", "focus_distance"},
+            {"frame", "location", "rotation", "lens", "focus_distance", "fstop"},
             f"camera.move keys[{i}]",
         )
         frame = as_int(key.get("frame"), f"keys[{i}].frame", 0, MAX_FRAME)
@@ -97,8 +99,10 @@ def _keys(value: Any) -> list[dict[str, Any]]:
             parsed["focus_distance"] = as_num(
                 key["focus_distance"], f"keys[{i}].focus_distance", 0, 1e6
             )
+        if "fstop" in key:
+            parsed["fstop"] = as_num(key["fstop"], f"keys[{i}].fstop", 0.1, 128)
         if len(parsed) == 1:
-            raise ToolError(f"keys[{i}] needs location, rotation, lens or focus_distance")
+            raise ToolError(f"keys[{i}] needs location, rotation, lens, focus_distance or fstop")
         keys.append(parsed)
     return keys
 
@@ -118,6 +122,17 @@ def _fcurves(id_block: Any) -> list[Any]:
         for bag in strip.channelbags
         for fc in bag.fcurves
     ]
+
+
+def _hard_cuts(points: list[Any]) -> None:
+    """Hold (``CONSTANT``) every key whose next key is at most ``HARD_CUT_GAP`` frames later.
+
+    Two keys one frame apart are a cut, not a move: easing between them would smear
+    the jump across a frame, so the earlier key holds and the next frame snaps.
+    """
+    for point, after in zip(points, points[1:], strict=False):
+        if after.co[0] - point.co[0] <= HARD_CUT_GAP:
+            point.interpolation = "CONSTANT"
 
 
 def camera_move(bpy: Any, args: dict[str, Any]) -> Report:
@@ -142,12 +157,19 @@ def camera_move(bpy: Any, args: dict[str, Any]) -> Report:
             dof.focus_object = None
             dof.focus_distance = key["focus_distance"]
             camera.data.keyframe_insert(data_path="dof.focus_distance", frame=frame)
+        if "fstop" in key:
+            dof = camera.data.dof
+            dof.use_dof = True
+            dof.aperture_fstop = key["fstop"]
+            camera.data.keyframe_insert(data_path="dof.aperture_fstop", frame=frame)
     interpolation, ease = EASINGS[easing]
     for fc in _fcurves(camera) + _fcurves(camera.data):
-        for point in fc.keyframe_points:
+        points = sorted(fc.keyframe_points, key=lambda p: p.co[0])
+        for point in points:
             point.interpolation = interpolation
             if ease is not None:
                 point.easing = ease
+        _hard_cuts(points)
     return {
         "camera": str(camera.name),
         "easing": easing,
