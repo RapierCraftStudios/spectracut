@@ -68,6 +68,41 @@ def _render(animation=False):
 
 _bpy.ops.render.render.side_effect = _render
 
+# FAKE_BPY_GPU=OPTIX (or CUDA, ...) gives Cycles one GPU of that type next to the CPU;
+# unset, the device list is empty, as on a host without a GPU.
+_gpu = os.environ.get("FAKE_BPY_GPU")
+if _gpu:
+    from types import SimpleNamespace
+    _bpy.context.preferences.addons["cycles"].preferences.devices = [
+        SimpleNamespace(type="CPU", name="CPU", use=True),
+        SimpleNamespace(type=_gpu, name="NVIDIA GeForce RTX 3070 Laptop GPU", use=False),
+    ]
+
+def _device_state():
+    record = os.environ.get("FAKE_BPY_RECORD")
+    if not record:
+        return
+    scene = _bpy.context.scene
+    prefs = _bpy.context.preferences.addons["cycles"].preferences
+    try:
+        uses = {d.type: d.use for d in prefs.devices}
+    except TypeError:
+        uses = {}
+    Path(record + ".device").write_text(json.dumps({
+        "cycles_device": str(scene.cycles.device),
+        "denoising_use_gpu": scene.cycles.denoising_use_gpu is True,
+        "compute_device_type": str(prefs.compute_device_type),
+        "uses": uses,
+    }))
+
+_render_frames = _render
+
+def _render_and_record(animation=False):
+    _device_state()
+    _render_frames(animation)
+
+_bpy.ops.render.render.side_effect = _render_and_record
+
 def _dump():
     record = os.environ.get("FAKE_BPY_RECORD")
     if record:

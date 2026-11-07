@@ -110,7 +110,7 @@ def test_refuses_unknown_tools_and_bad_args(
 
 
 def test_runtime_never_imports_spectracut() -> None:
-    for name in ("runner.py", "tools.py"):
+    for name in ("runner.py", "tools.py", "render_device.py"):
         source = (RUNNER.parent / name).read_text()
         assert "import spectracut" not in source and "from spectracut" not in source
         assert "eval(" not in source and "exec(" not in source
@@ -162,3 +162,87 @@ def test_runner_disables_stamp_metadata_and_strips_png_text(
     kinds = [k for k, _ in _chunks(frames[0])]
     assert kinds == [b"IHDR", b"IDAT", b"IEND"]
     assert frames[0] == frames[1]
+
+
+CYCLES_STEPS = [
+    {"index": 0, "tool": "scene.clear", "args": {}},
+    {"index": 1, "tool": "camera.add", "args": {"name": "Cam", "location": [0, -5, 1]}},
+    {"index": 2, "tool": "render.set_engine", "args": {"engine": "cycles"}},
+    {"index": 3, "tool": "render.set_resolution", "args": {"width": 64, "height": 36}},
+]
+
+
+def _cycles_run(
+    fake_bin: Path, work: Path, monkeypatch: pytest.MonkeyPatch, gpu: str | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if gpu is None:
+        monkeypatch.delenv("FAKE_BPY_GPU", raising=False)
+    else:
+        monkeypatch.setenv("FAKE_BPY_GPU", gpu)
+    work.mkdir()
+    result = _blender(fake_bin, _manifest(work, CYCLES_STEPS), "tok", work)
+    assert result.returncode == 0, result.stderr
+    report = json.loads((work / "out" / "report.json").read_text())
+    state = json.loads((work / "bpy.jsonl.device").read_text())
+    return report, state
+
+
+def test_cycles_render_selects_gpu_and_reports_device(
+    fake_bin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, state = _cycles_run(fake_bin, tmp_path / "gpu", monkeypatch, "OPTIX")
+    assert report["render_device"] == {
+        "engine": "CYCLES",
+        "device": "GPU",
+        "backend": "OPTIX",
+        "devices": ["NVIDIA GeForce RTX 3070 Laptop GPU"],
+    }
+    # Applied before the render starts: GPU device, GPU denoise, only the GPU enabled.
+    assert state == {
+        "cycles_device": "GPU",
+        "denoising_use_gpu": True,
+        "compute_device_type": "OPTIX",
+        "uses": {"CPU": False, "OPTIX": True},
+    }
+
+
+def test_cycles_falls_back_to_cuda_when_no_optix(
+    fake_bin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, state = _cycles_run(fake_bin, tmp_path / "cuda", monkeypatch, "CUDA")
+    assert report["render_device"]["device"] == "GPU"
+    assert report["render_device"]["backend"] == "CUDA"
+    assert state["cycles_device"] == "GPU" and state["uses"] == {"CPU": False, "CUDA": True}
+
+
+def test_cycles_cpu_fallback_only_without_gpu_is_flagged(
+    fake_bin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, state = _cycles_run(fake_bin, tmp_path / "cpu", monkeypatch, None)
+    device = report["render_device"]
+    assert device["device"] == "CPU" and device["backend"] == "CPU"
+    assert "no GPU" in device["warning"]
+    assert state["cycles_device"] == "CPU"
+
+
+def test_device_choice_keeps_scene_graph_hash(
+    fake_bin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gpu, _ = _cycles_run(fake_bin, tmp_path / "gpu", monkeypatch, "OPTIX")
+    cpu, _ = _cycles_run(fake_bin, tmp_path / "cpu", monkeypatch, None)
+    assert gpu["render_device"]["device"] == "GPU" and cpu["render_device"]["device"] == "CPU"
+    assert gpu["scene_graph_hash"] == cpu["scene_graph_hash"]
+
+
+def test_non_cycles_engine_reports_gpu_without_touching_cycles_prefs(
+    fake_bin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_BPY_GPU", "OPTIX")
+    result = _blender(fake_bin, _manifest(tmp_path, GOOD_STEPS), "tok", tmp_path)
+    assert result.returncode == 0, result.stderr
+    device = json.loads((tmp_path / "out" / "report.json").read_text())["render_device"]
+    assert device["device"] == "GPU" and device["backend"] != "CYCLES"
+    # Neither the Cycles device nor its compute backend was set (still mock reprs).
+    state = json.loads((tmp_path / "bpy.jsonl.device").read_text())
+    assert state["cycles_device"] not in {"GPU", "CPU"}
+    assert state["compute_device_type"].startswith("<MagicMock")
