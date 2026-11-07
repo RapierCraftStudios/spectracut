@@ -119,6 +119,7 @@ class Light:
     def __init__(self, name, type):
         self.name, self.type = name, type
         self.energy = self.size = self.color = self.spot_size = None
+        self.shape, self.size_y = "SQUARE", None
 
 
 class Points(list):
@@ -154,6 +155,7 @@ def _new_object(name, data=None):
         o.type = "FONT" if data.type == "FONT" else "CURVE"
     o.data = data if data is not None else MagicMock(name="meshdata_" + name)
     o.location, o.rotation_euler, o.scale = (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
+    o.visible_camera = True
     _objects.append(o)
     return o
 
@@ -237,6 +239,8 @@ def _dump():
         "lights": {l.name: {"type": l.type, "energy": l.energy, "size": l.size,
                             "color": _val(l.color), "spot_size": l.spot_size}
                    for l in _lights},
+        "light_shape": {l.name: [l.shape, l.size_y] for l in _lights},
+        "visible_camera": {o.name: o.visible_camera for o in _objects if o.type == "LIGHT"},
         "world": None,
     }
     if isinstance(world, World):
@@ -630,8 +634,19 @@ def test_light_add_size_colour_and_spot_angle(blender: Path, tmp_path: Path) -> 
     assert lights["Beam"]["size"] is None
 
 
+def test_light_add_rectangle_hidden_from_camera(blender: Path, tmp_path: Path) -> None:
+    # #362: the apple-studio rig's 0.06 x 1.2 m rim strips, invisible to the camera.
+    rim = {"kind": "area", "name": "Rim", "size": 0.06, "size_y": 1.2, "camera_visible": False}
+    run = ok(run_steps(blender, tmp_path, [("light.add", rim)]))
+    assert run.state["lights"]["Rim"]["size"] == 0.06
+    assert run.state["light_shape"]["Rim"] == ["RECTANGLE", 1.2]
+    assert run.state["visible_camera"]["Rim"] is False
+
+
 def test_light_add_without_new_fields_is_unchanged(blender: Path, tmp_path: Path) -> None:
     run = ok(run_steps(blender, tmp_path, [("light.add", {"kind": "point", "name": "P"})]))
+    assert run.state["light_shape"]["P"] == ["SQUARE", None]
+    assert run.state["visible_camera"]["P"] is True
     assert run.state["lights"]["P"] == {
         "type": "POINT",
         "energy": 1000.0,
@@ -651,6 +666,9 @@ def test_light_add_without_new_fields_is_unchanged(blender: Path, tmp_path: Path
         {"kind": "spot", "spot_angle": 200},
         {"kind": "area", "color": [1, 1]},
         {"kind": "area", "color": [1, 2, 1]},
+        {"kind": "point", "size_y": 1},
+        {"kind": "area", "size": 1, "size_y": 0},
+        {"kind": "area", "camera_visible": "no"},
     ],
 )
 def test_light_add_refusals_before_bpy(blender: Path, tmp_path: Path, args: dict[str, Any]) -> None:

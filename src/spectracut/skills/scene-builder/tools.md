@@ -33,6 +33,7 @@ Keyframe a camera move with easing.
 - `location` (optional): list[number][3]
 - `rotation` (optional): list[number][3]
 - `lens` (optional): number (>= 1, <= 5000)
+- `focus_distance` (optional): number (>= 0)
 
 ## camera.set_dof
 
@@ -80,7 +81,7 @@ Add a bezier or poly curve through points; bevel it into a tube.
 
 Add a point/sun/area/spot light (optional area size, colour, spot angle), or a rig preset (three_point, key_fill, product_softbox, rim_area) aimed at a target.
 
-Rules: Either one light or a preset rig, never both. One light: kind, energy, location, rotation, size (area only), color, spot_angle (spot only); no target, distance or power. Rig: rig with optional target, distance and power, and none of the single-light arguments.
+Rules: Either one light or a preset rig, never both. One light: kind, energy, location, rotation, size and size_y (area only), color, spot_angle (spot only), camera_visible; no target, distance or power. Rig: rig with optional target, distance and power, and none of the single-light arguments.
 
 - `kind` (optional): "point" | "sun" | "area" | "spot"
 - `name` (optional): string
@@ -88,6 +89,8 @@ Rules: Either one light or a preset rig, never both. One light: kind, energy, lo
 - `location` (optional): list[number][3]
 - `rotation` (optional): list[number][3]
 - `size` (optional): number (> 0, <= 100). area light size in m (area only)
+- `size_y` (optional): number (> 0, <= 100). rectangular area light height in m (area only; size is width)
+- `camera_visible` (optional): boolean. false hides the light from the camera (still lights the set)
 - `color` (optional): list[number (>= 0, <= 1)][3]
 - `spot_angle` (optional): number (>= 1, <= 180). spot cone angle in degrees (spot only)
 - `rig` (optional): "three_point" | "key_fill" | "product_softbox" | "rim_area". add a preset rig of lights aimed at target instead of one light

@@ -92,9 +92,10 @@ def rig_steps(
 class LightAdd(ToolArgs):
     """Either one light or a preset rig, never both.
 
-    One light: kind, energy, location, rotation, size (area only), color,
-    spot_angle (spot only); no target, distance or power. Rig: rig with optional
-    target, distance and power, and none of the single-light arguments.
+    One light: kind, energy, location, rotation, size and size_y (area only),
+    color, spot_angle (spot only), camera_visible; no target, distance or power.
+    Rig: rig with optional target, distance and power, and none of the single-light
+    arguments.
     """
 
     kind: Literal["point", "sun", "area", "spot"] | None = None
@@ -104,6 +105,12 @@ class LightAdd(ToolArgs):
     rotation: Vec3 | None = None
     size: Annotated[float, Field(gt=0, le=100)] | None = Field(
         default=None, description="area light size in m (area only)"
+    )
+    size_y: Annotated[float, Field(gt=0, le=100)] | None = Field(
+        default=None, description="rectangular area light height in m (area only; size is width)"
+    )
+    camera_visible: bool | None = Field(
+        default=None, description="false hides the light from the camera (still lights the set)"
     )
     color: RGB | None = None
     spot_angle: Annotated[float, Field(ge=1, le=180)] | None = Field(
@@ -128,6 +135,8 @@ class LightAdd(ToolArgs):
             "location",
             "rotation",
             "size",
+            "size_y",
+            "camera_visible",
             "color",
             "spot_angle",
         } & self.model_fields_set
@@ -139,6 +148,8 @@ class LightAdd(ToolArgs):
         kind = self.kind or "point"
         if self.size is not None and kind != "area":
             raise ValueError("size applies only to area lights")
+        if self.size_y is not None and kind != "area":
+            raise ValueError("size_y applies only to area lights")
         if self.spot_angle is not None and kind != "spot":
             raise ValueError("spot_angle applies only to spot lights")
         return self

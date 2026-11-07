@@ -732,3 +732,212 @@ def test_set_passes_enables_exactly_the_issue_allowlist() -> None:
     )
     assert report == {"passes": wanted}
     assert {k for k, v in layer.items() if not v} == {"use_pass_vector"}
+
+
+# --- #362: device.add with a pinned kit model ----------------------------------------------
+
+KIT_IMPORT = r"""
+_actions = [SimpleNamespace(name="Scene")]  # a pre-existing action stays
+_bpy.data.actions.__iter__.side_effect = lambda: iter(list(_actions))
+_bpy.data.actions.remove.side_effect = lambda a: (
+    _actions.remove(a), _events.append(["action.remove", a.name])
+)
+_bpy.data.images.load.return_value.size = (3024, 1964)
+_kit = {}
+IDENTITY = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+
+
+def _socket():
+    return SimpleNamespace(default_value=None)
+
+
+def _import(filepath):
+    _events.append(["import", filepath])
+    _actions.append(SimpleNamespace(name="Anim"))  # the glb's animation
+    root = _new_object("Macbook")
+    root.type = "EMPTY"
+    root.matrix_world = IDENTITY
+    root.material_slots = []
+    # A 2 m wide model standing on z = 0.5 with a 1.6 x 0.8 m screen facing -Y.
+    verts = [(-0.8, -0.5, 0.6), (0.8, -0.5, 0.6), (0.8, -0.5, 1.4), (-0.8, -0.5, 1.4),
+             (0.0, 0.5, 0.5)]
+    uv = {}
+
+    def new_uv(name):
+        layer = SimpleNamespace(data=[SimpleNamespace(uv=None) for _ in verts])
+        uv[name] = layer
+        return layer
+
+    mesh = SimpleNamespace(
+        vertices=[SimpleNamespace(co=v) for v in verts],
+        loops=[SimpleNamespace(vertex_index=i) for i in range(len(verts))],
+        polygons=[
+            SimpleNamespace(material_index=1, loop_indices=[0, 1, 2, 3], normal=(0, -1, 0)),
+            SimpleNamespace(material_index=0, loop_indices=[4], normal=(0, 0, 1)),
+        ],
+        uv_layers=SimpleNamespace(new=new_uv),
+    )
+    bsdf = SimpleNamespace(
+        type="BSDF_PRINCIPLED",
+        inputs={k: _socket() for k in ("Base Color", "Metallic", "Roughness")},
+    )
+    body = SimpleNamespace(
+        name="Frame.001", use_nodes=True, node_tree=SimpleNamespace(nodes=[bsdf], links=[])
+    )
+    glass = SimpleNamespace(name="DisplayGlass", use_nodes=True)
+    top = _new_object("Top", mesh)
+    top.parent = root
+    top.matrix_world = IDENTITY
+    top.bound_box = [(x, y, z) for x in (-1, 1) for y in (-0.5, 0.5) for z in (0.5, 1.5)]
+    top.material_slots = [SimpleNamespace(material=body), SimpleNamespace(material=glass)]
+    for o in (root, top):
+        o.animation_data_clear.side_effect = (lambda n: lambda: _events.append(["clear", n]))(
+            o.name
+        )
+    _kit.update(root=root, top=top, uv=uv, bsdf=bsdf)
+
+
+def _kit_dump():
+    record = os.environ.get("FAKE_BPY_RECORD")
+    if record and _kit:
+        uv = {k: [d.uv for d in v.data[:4]] for k, v in _kit["uv"].items()}
+        state = {
+            "uv": uv,
+            "root": [list(_kit["root"].scale), list(_kit["root"].location)],
+            "slots": [str(s.material.name) for s in _kit["top"].material_slots],
+            "body": {k: s.default_value for k, s in _kit["bsdf"].inputs.items()},
+        }
+        with open(record + ".kit", "w") as fh:
+            json.dump(state, fh, default=str)
+
+
+def _kit_material(name):
+    m = _material(name)
+    m.node_tree.nodes.new.side_effect = lambda t: (
+        _events.append(["node", name, t]) or MagicMock(name=t)
+    )
+    return m
+
+
+_bpy.data.materials.new.side_effect = _kit_material
+_bpy.ops.import_scene.gltf.side_effect = _import
+atexit.register(_kit_dump)
+"""
+
+
+@pytest.fixture
+def kit_blender(tmp_path: Path) -> Path:
+    bpy_dir = tmp_path / "fake_bpy"
+    bpy_dir.mkdir()
+    fake = FAKE_BPY.replace("import sys\nsys.modules[__name__] = _bpy", KIT_IMPORT)
+    (bpy_dir / "bpy.py").write_text(fake + "\nimport sys\nsys.modules[__name__] = _bpy\n")
+    exe = tmp_path / "blender"
+    exe.write_text(FAKE_BLENDER.format(python=sys.executable, fake_bpy_dir=str(bpy_dir)))
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    return exe
+
+
+GLB = b"glTF fake kit model"
+
+
+def _kit_step(**over: Any) -> dict[str, Any]:
+    step: dict[str, Any] = {
+        "kind": "laptop",
+        "name": "device",
+        "screen": {"frames": _frames(1)},
+        "emission_strength": 1.7,
+        "finish": "space-black",
+        "model": {
+            "path": f"devices/{sha(GLB)}.glb",
+            "sha256": sha(GLB),
+            "screen": {"node": "Top", "material": "DisplayGlass"},
+            "real_width": 0.3,
+            "body_material": "Frame.001",
+        },
+    }
+    step.update(over)
+    return step
+
+
+def _kit_assets(tmp_path: Path) -> Path:
+    assets = _assets(tmp_path)
+    (assets / "devices").mkdir()
+    (assets / "devices" / f"{sha(GLB)}.glb").write_bytes(GLB)
+    return assets
+
+
+def test_device_add_model_normalises_and_maps_the_screen(kit_blender: Path, tmp_path: Path) -> None:
+    assets = _kit_assets(tmp_path)
+    run = run_steps(kit_blender, tmp_path, [("device.add", _kit_step())], assets_dir=assets)
+    assert run.proc.returncode == 0, run.proc.stderr
+    report = run.report("device.add")
+    assert report["device"] == "Macbook" and report["screen_object"] == "Top"
+    assert report["model"] == f"devices/{sha(GLB)}.glb" and report["emission_strength"] == 1.7
+    # 2 m wide -> 0.3 m: scale 0.15; lowest point z 0.5 * 0.15 lifted to the floor.
+    assert report["scale"] == 0.15
+    screen = report["screen"]
+    assert screen["centre"] == [0.0, -0.075, 0.075]
+    assert screen["normal"] == [0.0, -1.0, 0.0] and screen["up"] == [0.0, 0.0, 1.0]
+    assert (screen["width"], screen["height"]) == (0.24, 0.12)
+    assert screen["corners"][0] == [-0.12, -0.075, 0.135]  # top-left seen from the front
+    kit = json.loads((tmp_path / "bpy.json.kit").read_text())
+    assert kit["root"] == [[0.15, 0.15, 0.15], [0.0, 0.0, -0.075]]
+    # Planar UVs: upright and unmirrored seen from the front (bottom-left -> 0,0).
+    uvs = [[round(c, 9) + 0.0 for c in uv] for uv in kit["uv"]["SC_ScreenUV"]]
+    assert uvs == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+    assert kit["slots"] == ["Frame.001", "screen.device"]
+    assert kit["body"]["Roughness"] == 0.34 and kit["body"]["Metallic"] == 1.0
+    events = run.state["events"]
+    assert ["clear", "Macbook"] in events and ["clear", "Top"] in events
+    assert ["action.remove", "Anim"] in events
+    calls = run.calls
+    nodes = {e[2] for e in events if e[:2] == ["node", "screen.device"]}
+    for node in ("ShaderNodeEmission", "ShaderNodeBsdfGlossy", "ShaderNodeFresnel"):
+        assert node in nodes, node
+    assert {"ShaderNodeMapping", "ShaderNodeUVMap", "ShaderNodeTexImage"} <= nodes
+    # No procedural rig parts.
+    assert not any("Dev.body" in c or "meshes.new" in c for c in calls)
+
+
+@pytest.mark.parametrize(
+    ("over", "code"),
+    [
+        ({"model": {**_kit_step()["model"], "sha256": "0" * 64}}, "asset.hash_mismatch"),
+        ({"model": {**_kit_step()["model"], "path": "../mac.glb"}}, "asset.path_refused"),
+        ({"finish": "aluminium"}, "args.invalid"),
+        ({"rotation": [0, 0, 1]}, "args.invalid"),
+        ({"bevel": 0.003}, "args.invalid"),
+    ],
+)
+def test_device_add_model_refusals_before_bpy(
+    kit_blender: Path, tmp_path: Path, over: dict[str, Any], code: str
+) -> None:
+    assets = _kit_assets(tmp_path)
+    run = run_steps(kit_blender, tmp_path, [("device.add", _kit_step(**over))], assets_dir=assets)
+    assert run.proc.returncode == 1
+    assert f"[{code}]" in run.proc.stderr, run.proc.stderr
+    assert not any("import_scene" in c or "images.load" in c for c in run.calls)
+
+
+def test_cover_crop_fills_the_screen_from_the_top() -> None:
+    got = pure(
+        "from bpy_runtime.ops.device import cover_crop\n"
+        "print(json.dumps([cover_crop(2, 1, 3024, 1964), cover_crop(1, 2, 4, 2),"
+        " cover_crop(2, 1, 4, 2)]))"
+    )
+    taller, wider, same = got
+    # A taller capture keeps its top: v spans [1 - f, 1]; u is untouched.
+    assert taller[0] == 1.0 and taller[2] == 0.0
+    assert taller[1] == pytest.approx((3024 / 1964) / 2) and taller[1] + taller[3] == 1.0
+    # A wider capture is cropped equally at both sides.
+    assert wider[1] == 1.0 and wider[0] == pytest.approx(0.25) and wider[2] == pytest.approx(0.375)
+    assert same == [1.0, 1.0, 0.0, 0.0]
+
+
+def test_model_finishes_match_the_device_kit() -> None:
+    from spectracut.templates.device_kit import MACBOOK_FINISHES
+
+    host = pure(
+        "from bpy_runtime.ops.device import MODEL_FINISHES\nprint(json.dumps(MODEL_FINISHES))"
+    )
+    assert host == json.loads(json.dumps(dict(MACBOOK_FINISHES)))

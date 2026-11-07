@@ -347,6 +347,8 @@ export function playwrightPage(page: Page, deviceScaleFactor = 1): CapturePage {
 export interface LaunchOptions extends CaptureOptions {
   viewport?: Size;
   deviceScaleFactor?: number;
+  /** Preferred colour scheme the page sees; defaults to "light". */
+  colorScheme?: "light" | "dark";
   /** Browser binary; defaults to the Playwright-managed Chromium. */
   executablePath?: string;
   /** Browser channel such as "chrome" or "msedge". */
@@ -369,7 +371,7 @@ export async function launchAndCapture(options: LaunchOptions): Promise<CaptureR
       deviceScaleFactor,
       locale: "en-US",
       timezoneId: "UTC",
-      colorScheme: "light",
+      colorScheme: options.colorScheme ?? "light",
     });
     const page = await context.newPage();
     return await capture(playwrightPage(page, deviceScaleFactor), options);

@@ -105,10 +105,14 @@ class DeviceProfile(StrictModel):
 
 
 DEVICES: Final[Mapping[str, DeviceProfile]] = {
-    "laptop": DeviceProfile(id="laptop", width=1440, height=900, device_scale_factor=2),
-    "phone": DeviceProfile(id="phone", width=390, height=844, device_scale_factor=3),
+    "laptop": DeviceProfile(id="laptop", width=1512, height=982, device_scale_factor=2),
+    "phone": DeviceProfile(id="phone", width=393, height=852, device_scale_factor=3),
 }
-"""Laptop 16:10 (2880x1800 px) and phone 19.5:9 (1170x2532 px)."""
+"""Laptop at the MacBook Pro display aspect (3024x1964 px) and phone at the iPhone
+aspect (1179x2556 px), the device kit's screens (#362)."""
+COLOR_SCHEME: Final = "dark"
+"""Captures run in the product's dark scheme (#362); cookie banners stay hidden by the
+capture package's default clean rules."""
 
 
 class CaptureFrame(StrictModel):
@@ -650,6 +654,7 @@ class CaptureRunner:
             "url": _url(base_url, mapping.route),
             "viewport": {"width": device.width, "height": device.height},
             "deviceScaleFactor": device.device_scale_factor,
+            "colorScheme": COLOR_SCHEME,
             "fps": fps,
             "script": list(script),
             "clean": {"secretSelectors": ["input[type=password]"]},

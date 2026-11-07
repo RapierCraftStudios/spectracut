@@ -80,9 +80,9 @@ from spectracut.templates.base import (
     Template,
     TemplateAspect,
     require_clean_copy,
-    swatch,
 )
-from spectracut.templates.devices import DEVICE
+from spectracut.templates.device_kit import KIT_LENS, by_sha256, ensure_device_asset
+from spectracut.templates.devices import kit_entry, set_for
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -553,6 +553,10 @@ def with_motion(recipe: Recipe, board: Board, *, fps: int = FPS) -> Recipe:
 
 DEVICE_VARIANTS = ("front", "three-quarter")
 DEVICE_FSTOP = 2.8
+DEVICE_PIPELINE = ColorPipeline(
+    view_transform="AgX", display="sRGB", look="AgX - Medium High Contrast"
+)
+"""The kit devices' colour pipeline (#362): AgX Medium High Contrast on sRGB."""
 _HDRI_SUFFIXES = (".hdr", ".exr")
 
 
@@ -592,12 +596,10 @@ def capture_frames(
 
 
 def device_lighting(kit: BrandKit, assets: str | None) -> dict[str, JsonValue]:
-    """Lighting slots from the kit: a dark set for a dark surface swatch, else soft;
-    the kit's HDRI (first ``.hdr``/``.exr`` in its assets dir) only when it pins one."""
-    r, g, b = (float(c) for c in swatch(kit, "surface")[:3])  # type: ignore[arg-type]
-    slots: dict[str, JsonValue] = {
-        "lighting": "studio-dark" if 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.05 else "studio-soft"
-    }
+    """Set slots from the kit: the ``dark`` set for a dark surface swatch, else
+    ``light``; the kit's HDRI (first ``.hdr``/``.exr`` in its assets dir) only when it
+    pins one."""
+    slots: dict[str, JsonValue] = {"set": set_for(kit)}
     root = Path(assets) if assets else None
     if root is not None and root.is_dir():
         hdris = sorted(
@@ -609,16 +611,38 @@ def device_lighting(kit: BrandKit, assets: str | None) -> dict[str, JsonValue]:
     return slots
 
 
-def focus_steps(recipe: Recipe, board: Board, look: Look, *, fps: int = FPS) -> list[Call]:
-    """DoF on the device with a focus pull, then the Look's render rules.
+def screen_centre(recipe: Recipe) -> tuple[float, float, float]:
+    """The world centre of the kit device's screen in ``recipe`` (its ``device.add``
+    model's measured frame, moved by the device location)."""
+    for step in recipe.steps:
+        if step.tool != "device.add":
+            continue
+        model = step.args.get("model")
+        sha = model.get("sha256") if isinstance(model, dict) else None
+        entry = by_sha256(sha) if isinstance(sha, str) else None
+        kind = step.args.get("kind")
+        if entry is None and kind in ("laptop", "phone"):
+            entry = kit_entry(kind)  # type: ignore[arg-type]
+        if entry is None:
+            break
+        at = _vec(step.args.get("location"), [0.0, 0.0, 0.0])
+        c = entry.frame.centre
+        return (c[0] + at[0], c[1] + at[1], c[2] + at[2])
+    return (0.0, 0.0, 0.0)
 
-    ``camera.set_dof`` focuses the device body at ``DEVICE_FSTOP``; a ``camera.move``
-    keys ``focus_distance`` from half the device distance to the device by 40% of
-    the shot (following the board's move); the Look's rules set motion blur and
-    turn DoF off when the Look forbids it.
+
+def focus_steps(recipe: Recipe, board: Board, look: Look, *, fps: int = FPS) -> list[Call]:
+    """DoF on the screen with a focus pull, then the Look's render rules.
+
+    ``camera.set_dof`` focuses on the screen centre (:func:`screen_centre`) at
+    ``DEVICE_FSTOP``; a ``camera.move`` keys ``focus_distance`` from half the screen
+    distance to the screen by 40% of the shot (following the board's move), so the
+    pull ends on the screen; the Look's rules set motion blur and turn DoF off when
+    the Look forbids it.
     """
     calls: list[Call] = []
     cam = _camera_state(recipe)
+    centre = screen_centre(recipe)
     if cam is not None:
         _name, loc, rot = cam
         end = shot_frames(board, fps)
@@ -628,8 +652,9 @@ def focus_steps(recipe: Recipe, board: Board, look: Look, *, fps: int = FPS) -> 
             end_loc, _rot = _move_end(board.move, loc, rot)
             t = (pull - 1) / max(1, end - 1)
             at = [a + (b - a) * t for a, b in zip(loc, end_loc, strict=True)]
-        near = math.dist(at, (0.0, 0.0, 0.0))
-        calls.append(("camera.set_dof", {"focus_object": f"{DEVICE}.body", "fstop": DEVICE_FSTOP}))
+        near = math.dist(at, centre)
+        start = math.dist(loc, centre)
+        calls.append(("camera.set_dof", {"focus_distance": round(start, 4), "fstop": DEVICE_FSTOP}))
         keys: list[JsonValue] = [
             {"frame": 1, "focus_distance": round(near * 0.5, 4)},
             {"frame": pull, "focus_distance": round(near, 4)},
@@ -649,10 +674,13 @@ def device_recipe(
     look: Look,
     assets: str | None = None,
 ) -> tuple[Recipe, dict[str, JsonValue], dict[str, Path]]:
-    """A device board's recipe: the device template with the capture on its screen,
-    the board's camera move and frame range, a focus pull and the Look's rules.
+    """A device board's recipe: the device template (the kit model, its camera
+    derived from the measured screen frame at ``KIT_LENS`` mm) with the capture on
+    its screen, the board's camera move and frame range, a focus pull onto the screen
+    and the Look's rules.
 
-    Returns ``(recipe, slots, staging map)``.
+    Pure: returns ``(recipe, slots, staging map of the captures)``; the department
+    stages the model glb (:meth:`ShotRunner._device_shot`).
     """
     assert board.device is not None
     screen, extra = capture_frames(capture, shot_frames(board))
@@ -662,7 +690,9 @@ def device_recipe(
     }
     template = TEMPLATES[f"device-{board.device}"]
     variant = variant if variant in DEVICE_VARIANTS else "three-quarter"
-    base = with_motion(template.build(kit, slots, variant=variant, aspect=aspect), board)
+    # The kit camera's lens holds: the board's move and range, not its lens.
+    framed = board.model_copy(update={"lens_mm": KIT_LENS})
+    base = with_motion(template.build(kit, slots, variant=variant, aspect=aspect), framed)
     out = list(base.steps)
     for tool, args in focus_steps(base, board, look):
         out.append(RecipeStep(index=len(out), tool=tool, args=args))
@@ -882,12 +912,13 @@ class ShotRunner:
                 look=ds.qa_look(ctx),
                 assets=_assets(ctx.spec),
             )
+            extra.update(model_assets(base))
         except (ValueError, ValidationError) as exc:
             raise ValueError(f"shot {shot.shot_id!r} ({template}): {exc}") from None
         planned = shot.model_copy(
             update={"template": template, "scene_builder": None, "variant": variant, "slots": slots}
         )
-        rendered = tier_recipe(base, Tier.PREVIEW, shot.aspect)
+        rendered = tier_recipe(base, Tier.PREVIEW, shot.aspect, DEVICE_PIPELINE)
         return planned, base, rendered, shot_frames(board), board.capture_key, extra
 
     def _art(self, ctx: RunContext, kit: BrandKit) -> ArtDirection:
@@ -939,6 +970,7 @@ class ShotRunner:
             base = Recipe.model_validate(prior.recipe)
             rendered = tier_recipe(base, ctx.tier, prior.aspect)
             if prior.capture is not None:
+                rendered = tier_recipe(base, ctx.tier, prior.aspect, DEVICE_PIPELINE)
                 extra = _restage(ctx, prior, base)
                 frames = prior.frame_end or TEMPLATES[prior.template].frames
                 done.append(
@@ -1088,7 +1120,22 @@ def _restage(ctx: RunContext, prior: RenderedShot, base: Recipe) -> dict[str, Pa
             if sha not in by_sha:
                 raise ValueError(f"shot {prior.shot_id!r}: capture frame {rel} is not captured")
             extra[rel] = by_sha[sha]
+    extra.update(model_assets(base))
     return extra
+
+
+def model_assets(recipe: Recipe) -> dict[str, Path]:
+    """The kit model glbs ``recipe`` pins (``devices/<sha256>.glb``), fetched and
+    verified into the shared assets cache by :func:`ensure_device_asset`."""
+    out: dict[str, Path] = {}
+    for rel, sha in ds.referenced_assets(recipe).items():
+        if not rel.startswith("devices/"):
+            continue
+        entry = by_sha256(sha)
+        if entry is None:
+            raise ValueError(f"device model {rel} is not in the device kit")
+        out[rel] = ensure_device_asset(entry)
+    return out
 
 
 def _add(a: Usage, b: Usage) -> Usage:

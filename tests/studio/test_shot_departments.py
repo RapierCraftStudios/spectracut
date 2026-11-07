@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ from spectracut.studio.node import NodeSpec, NodeStatus, Tier
 from spectracut.studio.profiles import load_profile
 from spectracut.studio.scene_builder import SceneBrief, SceneBuild, compile_calls
 from spectracut.templates import TEMPLATES
+from spectracut.templates.device_kit import KIT_LENS, kit_for
 
 ROOT = Path(__file__).resolve().parents[2]
 KIT = ROOT / "brands" / "alterlab" / "brand-kit.yaml"
@@ -760,9 +762,22 @@ def test_device_board_renders_on_the_device_template_with_the_capture_on_screen(
     clip = [f.sha256 for f in captures.captures[0].clip]
     assert set(shas) == set(clip) and len(shas) == 72
     assert all(f["path"].startswith("captures/") for f in screen["frames"])
-    # Focus on the device body, then a focus pull keyed on the camera.
+    # #362: the kit MacBook, its camera at 70 mm; focus on the screen centre at f/2.8,
+    # then a focus pull keyed on the camera that ends on the screen.
+    mac = kit_for("laptop")
+    assert steps["device.add"]["model"]["sha256"] == mac.sha256  # type: ignore[index]
+    lenses = [s.args["mm"] for s in recipe.steps if s.tool == "camera.set_lens"]
+    assert lenses and set(lenses) == {KIT_LENS} and KIT_LENS == 70.0
+    centre = sd.screen_centre(recipe)
+    assert centre == mac.frame.centre
+    cam = sd._camera_state(recipe)
+    assert cam is not None
     dofs = [s.args for s in recipe.steps if s.tool == "camera.set_dof"]
-    assert dofs[0] == {"focus_object": "device.body", "fstop": sd.DEVICE_FSTOP}
+    assert dofs[0] == {
+        "focus_distance": round(math.dist(cam[1], centre), 4),
+        "fstop": sd.DEVICE_FSTOP,
+    }
+    assert sd.DEVICE_FSTOP == 2.8 and "focus_object" not in dofs[0]
     # The Look's render rules follow (the AlterLab Look turns motion blur and DoF off).
     assert dofs[1:] == [{"enabled": False}]
     assert steps["render.set_property"] == {"property": "render.use_motion_blur", "value": False}
