@@ -99,15 +99,20 @@ def load_manifest(path: Path, env: dict[str, str]) -> dict[str, Any]:
 
 
 def write_report(
-    output_dir: Path, reports: list[dict[str, Any]], scene_graph_hash: str | None = None
+    output_dir: Path,
+    reports: list[dict[str, Any]],
+    scene_graph_hash: str | None = None,
+    render_device: dict[str, Any] | None = None,
 ) -> Path:
-    """Write the steps' reports and the scene-graph hash to ``output_dir/report.json``.
+    """Write the steps' reports, scene-graph hash and render device to ``report.json``.
 
     The write is atomic: Flamenco chunk tasks of one job share the output dir.
     """
     body: dict[str, Any] = {"steps": reports}
     if scene_graph_hash is not None:
         body["scene_graph_hash"] = scene_graph_hash
+    if render_device is not None:
+        body["render_device"] = render_device
     try:
         text = json.dumps(body, sort_keys=True, allow_nan=False, indent=2)
     except (TypeError, ValueError) as exc:
@@ -315,7 +320,13 @@ def run(manifest: dict[str, Any], bpy: Any) -> None:
             reports.append({"index": i, "tool": step["tool"], "report": report})
     # Only ops that return data are listed under "steps"; the scene-graph hash is
     # always written so replays can be compared.
-    write_report(Path(manifest["output_dir"]), reports, scene_graph_hash(bpy))
+    graph_hash = scene_graph_hash(bpy)
+    # The device is host-dependent, so it is chosen after hashing and never hashed.
+    from bpy_runtime.render_device import select_render_device
+
+    device = select_render_device(bpy)
+    print("spectracut: render device", json.dumps(device, sort_keys=True))
+    write_report(Path(manifest["output_dir"]), reports, graph_hash, device)
     scene = bpy.context.scene
     scene.frame_start = int(manifest["frame_start"])
     scene.frame_end = int(manifest["frame_end"])

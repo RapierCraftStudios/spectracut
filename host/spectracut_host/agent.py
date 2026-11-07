@@ -34,7 +34,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from spectracut.queue.profile import RenderProfile, frame_cache_key
 from spectracut.queue.signing import JobSignatureError, SignedJob, parse_signed_job
@@ -124,6 +124,18 @@ def read_scene_graph_hash(output: Path) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def read_render_device(output: Path) -> dict[str, Any] | None:
+    """The ``render_device`` the bpy runtime wrote to ``report.json``, if any."""
+    try:
+        data = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = data.get("render_device") if isinstance(data, dict) else None
+    if isinstance(value, dict) and isinstance(value.get("device"), str):
+        return value
+    return None
+
+
 def execute(
     signed: SignedJob,
     frames: str | None,
@@ -156,6 +168,7 @@ def execute(
         "render_profile": profile.model_dump(mode="json"),
         "frame_cache_key": frame_cache_key(envelope.recipe_hash, profile),
         "scene_graph_hash": read_scene_graph_hash(output),
+        "render_device": read_render_device(output),
     }
     name = result_name((envelope.frame_start, envelope.frame_end), chunk)
     (output / name).write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")

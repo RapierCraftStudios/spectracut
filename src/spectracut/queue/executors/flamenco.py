@@ -5,13 +5,17 @@ A ``blender`` job's payload names a signed job file on shared storage and its
 :class:`~spectracut.queue.signing.JobEnvelope`. The executor resolves the
 worker tag, submits a ``spectracut-shot`` job and polls its status until it
 finishes, mirroring every status change onto the queue job. GPU minutes are the
-submit-to-complete wall time on one card.
+submit-to-complete wall time on one card, scaled by the share of the job's
+``result*.json`` files whose ``render_device`` says GPU (a CPU render holds no
+card). Results from hosts that report no device keep the full wall time.
 """
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from spectracut.queue.executors.base import JobResult, JobStatus, Resources
@@ -49,6 +53,32 @@ FLAMENCO_STATUS: Final[dict[str, JobStatus]] = {
     "failed": JobStatus.FAILED,
     "canceled": JobStatus.FAILED,
 }
+
+
+def reported_devices(output_dir: str) -> list[str]:
+    """``render_device.device`` of every ``result*.json`` in ``output_dir``, in file order."""
+    try:
+        paths = sorted(Path(output_dir).glob("result*.json"))
+    except OSError:
+        return []
+    devices: list[str] = []
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        device = data.get("render_device") if isinstance(data, dict) else None
+        name = device.get("device") if isinstance(device, dict) else None
+        if isinstance(name, str):
+            devices.append(name)
+    return devices
+
+
+def gpu_share(devices: list[str]) -> float:
+    """Share of rendered results on the GPU; ``1.0`` when no result reports a device."""
+    if not devices:
+        return 1.0
+    return sum(1 for d in devices if d == "GPU") / len(devices)
 
 
 class FlamencoJobFailed(RuntimeError):
@@ -165,15 +195,20 @@ class FlamencoExecutor:
             raw = self.client.job_status(flamenco_id)
             status = map_status(raw)
             if status is JobStatus.SUCCEEDED:
+                usage = self._usage_since(started)
+                devices = reported_devices(output_dir)
+                output: dict[str, Any] = {
+                    "flamenco_job_id": flamenco_id,
+                    "status": raw,
+                    "output_dir": output_dir,
+                    "worker_tag": tag.name,
+                }
+                if devices:
+                    output["render_device"] = sorted(set(devices))
                 return JobResult(
-                    output={
-                        "flamenco_job_id": flamenco_id,
-                        "status": raw,
-                        "output_dir": output_dir,
-                        "worker_tag": tag.name,
-                    },
+                    output=output,
                     render_profile=job.render_profile,
-                    usage=self._usage_since(started),
+                    usage=Usage(gpu_minutes=usage.gpu_minutes * gpu_share(devices)),
                 )
             if status is JobStatus.FAILED:
                 raise FlamencoJobFailed(flamenco_id, raw, usage=self._usage_since(started))

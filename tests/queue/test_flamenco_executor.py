@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -301,3 +302,43 @@ def test_flamenco_timeout_reports_gpu_minutes() -> None:
     with pytest.raises(FlamencoTimeout, match="still active after 180.0s") as info:
         executor.run(_blender_job())
     assert info.value.usage.gpu_minutes == pytest.approx(3.0)
+
+
+def _results(out: Path, devices: list[str | None]) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    for i, device in enumerate(devices):
+        body: dict[str, Any] = {"frames": [i * 12 + 1, i * 12 + 12]}
+        if device is not None:
+            body["render_device"] = {"engine": "CYCLES", "device": device}
+        (out / f"result-{i * 12 + 1}-{i * 12 + 12}.json").write_text(json.dumps(body))
+
+
+def _timed_executor(out: Path) -> FlamencoExecutor:
+    ticks = iter([100.0, 100.0 + 120.0])
+    return FlamencoExecutor(
+        FakeFlamenco(["active", "completed"]),
+        output_dir=str(out),
+        sleep=lambda _s: None,
+        clock=lambda: next(ticks),
+    )
+
+
+def test_gpu_minutes_count_only_when_the_report_says_gpu(tmp_path: Path) -> None:
+    _results(tmp_path / "gpu", ["GPU", "GPU"])
+    _results(tmp_path / "cpu", ["CPU", "CPU"])
+    _results(tmp_path / "mixed", ["GPU", "CPU"])
+    gpu = _timed_executor(tmp_path / "gpu").run(_blender_job())
+    cpu = _timed_executor(tmp_path / "cpu").run(_blender_job())
+    mixed = _timed_executor(tmp_path / "mixed").run(_blender_job())
+    assert gpu.usage.gpu_minutes == pytest.approx(2.0)
+    assert cpu.usage.gpu_minutes == 0.0
+    assert mixed.usage.gpu_minutes == pytest.approx(1.0)
+    assert isinstance(cpu.output, dict) and cpu.output["render_device"] == ["CPU"]
+    assert isinstance(mixed.output, dict) and mixed.output["render_device"] == ["CPU", "GPU"]
+
+
+def test_results_without_a_device_keep_wall_time(tmp_path: Path) -> None:
+    _results(tmp_path / "legacy", [None, None])
+    result = _timed_executor(tmp_path / "legacy").run(_blender_job())
+    assert result.usage.gpu_minutes == pytest.approx(2.0)
+    assert isinstance(result.output, dict) and "render_device" not in result.output
