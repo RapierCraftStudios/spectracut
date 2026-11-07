@@ -31,7 +31,15 @@ KINDS = ("sfx", "foley", "music", "tts", "critic", "image", "asr", "clap")
 MODELS: dict[str, ModelSpec] = {
     m.id: m
     for m in (
-        ModelSpec("ezaudio-xl", "sfx", "ezaudio", 8, source="OpenSound/EzAudio", version="xl"),
+        ModelSpec(
+            "ezaudio-xl",
+            "sfx",
+            "ezaudio",
+            8,
+            source="OpenSound/EzAudio",
+            version="xl",
+            licence="MIT (weights), Apache-2.0 (flan-t5-xl)",
+        ),
         ModelSpec(
             "moss-sfx-8b-nf4",
             "sfx",
@@ -39,6 +47,7 @@ MODELS: dict[str, ModelSpec] = {
             8,
             source="OpenMOSS-Team/MOSS-SoundEffect",
             version="8b-nf4",
+            licence="Apache-2.0",
         ),
         ModelSpec(
             "hunyuan-foley-xl",
@@ -47,16 +56,35 @@ MODELS: dict[str, ModelSpec] = {
             8,
             source="tencent/HunyuanVideo-Foley",
             version="xl",
+            licence="Tencent Hunyuan Community",
         ),
         ModelSpec(
-            "ace-step-1.5", "music", "ace-step", 8, source="ACE-Step/Ace-Step1.5", version="1.5"
+            "ace-step-1.5",
+            "music",
+            "ace-step",
+            8,
+            source="ACE-Step/Ace-Step1.5",
+            version="1.5",
+            licence="MIT",
         ),
-        ModelSpec("kokoro-82m", "tts", "kokoro", 2, source="hexgrad/Kokoro-82M"),
         ModelSpec(
-            "qwen2.5-omni-7b-q4", "critic", "llama-cpp", 8, source="ggml-org/Qwen2.5-Omni-7B-GGUF"
+            "kokoro-82m", "tts", "kokoro", 2, source="hexgrad/Kokoro-82M", licence="Apache-2.0"
         ),
         ModelSpec(
-            "z-image-turbo-q4", "image", "diffusers-gguf", 8, source="jayn7/Z-Image-Turbo-GGUF"
+            "qwen2.5-omni-7b-q4",
+            "critic",
+            "llama-cpp",
+            8,
+            source="ggml-org/Qwen2.5-Omni-7B-GGUF",
+            licence="Apache-2.0",
+        ),
+        ModelSpec(
+            "z-image-turbo-q4",
+            "image",
+            "diffusers-gguf",
+            8,
+            source="jayn7/Z-Image-Turbo-GGUF",
+            licence="Apache-2.0",
         ),
         ModelSpec(
             "faster-whisper-large-v3-turbo",
@@ -64,8 +92,16 @@ MODELS: dict[str, ModelSpec] = {
             "faster-whisper",
             6,
             source="mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+            licence="MIT",
         ),
-        ModelSpec("larger-clap-general", "clap", "clap", 2, source="laion/larger_clap_general"),
+        ModelSpec(
+            "larger-clap-general",
+            "clap",
+            "clap",
+            2,
+            source="laion/larger_clap_general",
+            licence="Apache-2.0",
+        ),
     )
 }
 

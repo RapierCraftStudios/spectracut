@@ -191,6 +191,7 @@ def setup_cmd(
             target,
             wheels=wheels,
             signing_public_key=public_key,
+            model_host=_model_host(root),
         )
         if settings and not dry_run:
             save_state(state, root)  # valid for this farm; kept even if a later step stops
@@ -217,6 +218,13 @@ def setup_cmd(
         raise failure from exc
     typer.echo(f"set {set_id} applied; storage on {plan.storage.host}")
     _skipped_summary(skipped)
+
+
+def _model_host(home: Path) -> str | None:
+    """The model host studio uses (``SPECTRACUT_MODEL_HOST``, ``[models] host``, GPU host)."""
+    from spectracut.cli.studio import model_host_name
+
+    return model_host_name(home)
 
 
 def _required_hosts(target: StorageTarget | None, state: SetupState) -> set[str]:

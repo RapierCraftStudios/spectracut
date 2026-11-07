@@ -141,6 +141,25 @@ def _configured_model_host() -> str | None:
     return host.strip() if isinstance(host, str) and host.strip() else None
 
 
+def model_host_name(home: Path) -> str | None:
+    """The model host's name, resolved as :func:`model_runtime` does, or ``None``.
+
+    :data:`MODEL_HOST_ENV`, else ``[models] host``, else the single registered host with
+    GPUs. ``None`` when none is configured and zero or several GPU hosts are registered,
+    or the host registry cannot be read.
+    """
+    from spectracut.cli.render import load_hosts
+
+    wanted = _configured_model_host()
+    if wanted is not None:
+        return wanted
+    try:
+        gpu_hosts = [h for h in load_hosts(home) if h.gpus]
+    except (OSError, ValueError):
+        return None
+    return gpu_hosts[0].name if len(gpu_hosts) == 1 else None
+
+
 def model_runtime(home: Path) -> ModelRuntimeResult:
     """The model runtime on the model host from setup state, or the problem naming the host.
 
