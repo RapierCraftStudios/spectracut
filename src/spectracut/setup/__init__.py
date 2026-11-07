@@ -6,9 +6,22 @@ from __future__ import annotations
 from pathlib import Path
 
 import spectracut
-from spectracut.setup.manifest import Manifest, load_manifest
-from spectracut.setup.model_assets import extras_digest, model_version
-from spectracut.setup.plan import MODEL_PREFIX, MODELS_DEPS, SetupState, load_state
+from spectracut.setup.manifest import Manifest, StepRunner, load_manifest
+from spectracut.setup.model_assets import (
+    ESSENTIAL_MODELS,
+    extras_digest,
+    model_version,
+    reserve_gb,
+    resolve_models,
+)
+from spectracut.setup.plan import (
+    MODEL_PREFIX,
+    MODELS_DEPS,
+    SetupError,
+    SetupState,
+    load_state,
+    probe_model_disk,
+)
 from spectracut.setup.wheels import CONTROL_PLANE_PIN
 
 
@@ -50,7 +63,9 @@ def model_lines(
 ) -> list[str]:
     """One line per registered model (registry order), then the family deps.
 
-    ``healthy`` when the installed weights version equals the pinned
+    Each model line ends with ``(essential|optional, selected|not selected)``: whether it
+    is in the essential set and in the selection ``setup`` installs (``setup --models``,
+    default essential). ``healthy`` when the installed weights version equals the pinned
     :func:`~spectracut.setup.model_assets.model_version`, ``drift`` otherwise, ``not
     installed`` when no host (or not ``model_host``, when given) has the model.
     """
@@ -60,18 +75,24 @@ def model_lines(
     hosts = {
         h: hs.components for h, hs in state.hosts.items() if model_host is None or h == model_host
     }
+    try:
+        selected = set(resolve_models(state.models or "essential"))
+    except ValueError:
+        selected = set(ESSENTIAL_MODELS)
     lines: list[str] = []
     for spec in MODELS.values():
+        tag = "essential" if spec.id in ESSENTIAL_MODELS else "optional"
+        tag += ", selected" if spec.id in selected else ", not selected"
         pin = model_version(spec.id)
         installed = {
             h: c[MODEL_PREFIX + spec.id] for h, c in hosts.items() if MODEL_PREFIX + spec.id in c
         }
         if not installed:
-            lines.append(f"{spec.id} {spec.licence}: not installed")
+            lines.append(f"{spec.id} {spec.licence}: not installed ({tag})")
         for host in sorted(installed):
             ver = installed[host]
             health = "healthy" if ver == pin else f"drift (pinned {pin[:12]})"
-            lines.append(f"{spec.id} {ver[:12]} on {host}: {health}")
+            lines.append(f"{spec.id} {ver[:12]} on {host}: {health} ({tag})")
     digest = extras_digest()
     deps = {h: c[MODELS_DEPS] for h, c in hosts.items() if MODELS_DEPS in c}
     if not deps:
@@ -83,4 +104,26 @@ def model_lines(
     return lines
 
 
-__all__ = ["component_lines", "model_lines"]
+def model_disk_lines(
+    model_host: str | None, runner: StepRunner, home: Path | None = None
+) -> list[str]:
+    """Free and total space at the model root on ``model_host``, measured now (read-only).
+
+    Empty without a model host; ``unreachable`` when the host cannot be probed.
+    """
+    if model_host is None:
+        return []
+    state = load_state(home)
+    try:
+        disk = probe_model_disk(runner, runner.probe(model_host), state.models_dir)
+    except (SetupError, OSError, ValueError) as exc:
+        return [f"model disk on {model_host}: unreachable ({exc})"]
+    where = f" at {disk.root}" if disk.root else ""
+    total = f" of {disk.total_gb:.1f} GB" if disk.total_gb else ""
+    return [
+        f"model disk on {model_host}{where}: {disk.free_gb:.1f} GB free{total} "
+        f"(reserve {round(reserve_gb(disk.total_gb), 1):g} GB)"
+    ]
+
+
+__all__ = ["component_lines", "model_disk_lines", "model_lines"]

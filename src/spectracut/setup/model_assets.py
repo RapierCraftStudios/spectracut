@@ -254,11 +254,70 @@ def extras_digest() -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
+ESSENTIAL_MODELS: tuple[str, ...] = (
+    "ezaudio-xl",
+    "ace-step-1.5",
+    "kokoro-82m",
+    "faster-whisper-large-v3-turbo",
+    "larger-clap-general",
+)
+"""What ``spectracut setup`` installs by default: sfx, music, temp VO, ASR and CLAP."""
+RESERVE_MIN_GB = 20.0
+RESERVE_FRACTION = 0.15
+"""Free space setup leaves on the model root's disk: the larger of these two."""
+MODEL_ROOT_POINTER = "model-root"
+"""File naming the model root chosen by ``setup --models-dir``, read after the env var:
+``$HOME/.config/spectracut/model-root`` (Linux), ``%LOCALAPPDATA%\\spectracut\\model-root``."""
+
+
+def all_model_ids() -> tuple[str, ...]:
+    """Every model id with an asset, in registry order."""
+    return tuple(m for a in ASSETS.values() for m in a.model_ids)
+
+
+def resolve_models(spec: str) -> tuple[str, ...]:
+    """``essential``, ``all`` or comma-separated model ids, as ids in registry order."""
+    value = spec.strip()
+    known = all_model_ids()
+    if value == "essential":
+        wanted = set(ESSENTIAL_MODELS)
+    elif value == "all":
+        wanted = set(known)
+    else:
+        wanted = {m.strip() for m in value.split(",") if m.strip()}
+        unknown = sorted(wanted - set(known))
+        if not wanted or unknown:
+            raise ValueError(
+                f"unknown model id(s) {', '.join(unknown) or repr(spec)}: use essential, all "
+                f"or ids from {', '.join(known)}"
+            )
+    return tuple(m for m in known if m in wanted)
+
+
+def reserve_gb(total_gb: float | None) -> float:
+    """Free space to keep on a disk of ``total_gb`` (just the minimum when unknown)."""
+    return max(RESERVE_MIN_GB, RESERVE_FRACTION * total_gb) if total_gb else RESERVE_MIN_GB
+
+
+def model_root_pointer() -> Path:
+    """Where this machine keeps the :data:`MODEL_ROOT_POINTER` file."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "spectracut" / MODEL_ROOT_POINTER
+    return Path.home() / ".config" / "spectracut" / MODEL_ROOT_POINTER
+
+
 def default_model_root() -> Path:
-    """The host model root on this machine: :data:`MODEL_ROOT_ENV`, else the OS default."""
+    """The host model root: :data:`MODEL_ROOT_ENV`, the pointer file, else the OS default."""
     env = os.environ.get(MODEL_ROOT_ENV, "").strip()
     if env:
         return Path(env).expanduser()
+    try:
+        chosen = model_root_pointer().read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        chosen = ""
+    if chosen:
+        return Path(chosen).expanduser()
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "spectracut" / "models"
@@ -268,17 +327,25 @@ def default_model_root() -> Path:
 __all__ = [
     "ASSETS",
     "BIN_DIR",
+    "ESSENTIAL_MODELS",
     "HF_CLI",
     "LINUX_MODEL_ROOT",
     "LLAMA_CPP_RELEASE",
     "MODEL_ROOT_ENV",
+    "MODEL_ROOT_POINTER",
+    "RESERVE_FRACTION",
+    "RESERVE_MIN_GB",
     "SRC_DIR",
     "TORCH_INDEX",
     "WINDOWS_MODEL_ROOT",
     "ModelAsset",
     "WeightsSource",
+    "all_model_ids",
     "asset_for",
     "default_model_root",
     "extras_digest",
+    "model_root_pointer",
     "model_version",
+    "reserve_gb",
+    "resolve_models",
 ]

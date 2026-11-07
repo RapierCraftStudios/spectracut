@@ -40,14 +40,18 @@ from spectracut.setup.manifest import (
 from spectracut.setup.model_assets import (
     ASSETS,
     BIN_DIR,
+    ESSENTIAL_MODELS,
     LINUX_MODEL_ROOT,
     MODEL_ROOT_ENV,
+    MODEL_ROOT_POINTER,
     SRC_DIR,
     TORCH_INDEX,
     ModelAsset,
     asset_for,
     extras_digest,
     model_version,
+    reserve_gb,
+    resolve_models,
 )
 from spectracut.setup.storage import (
     CONTROL,
@@ -191,6 +195,10 @@ class SetupState(StrictModel):
     windows_drive: str = WINDOWS_DRIVE
     # The layout last applied with ``storage``; None on older states means the defaults.
     storage_layout: StorageLayout | None = None
+    # Requested by ``setup --models`` (None: essential) and ``--models-dir`` (None: the
+    # host's SPECTRACUT_MODEL_ROOT or per-OS default); kept for later runs.
+    models: str | None = None
+    models_dir: str | None = None
 
     def layout(self) -> StorageLayout:
         return StorageLayout(path=self.storage_path, drive=normalize_drive(self.windows_drive))
@@ -719,6 +727,8 @@ MODELS_DEPS = "models-deps"
 """State component of the family extras installed into the spectracut-host tool venv."""
 MODEL_PREFIX = "model:"
 """State component prefix of one model's weights (``model:<model id>``)."""
+MODELS_ROOT = "models-root"
+"""State component: the ``--models-dir`` recorded in the model host's pointer file."""
 DISK_MARGIN_GB = 2.0
 _WINDOWS_ROOT_PS = "$env:LOCALAPPDATA/spectracut/models"
 DEPS_TIMEOUT = 7200.0
@@ -768,10 +778,27 @@ def _need_kib(asset: ModelAsset) -> int:
     return int((asset.size_gb + DISK_MARGIN_GB) * 1024 * 1024)
 
 
-def _sh_weights(model_id: str, asset: ModelAsset) -> str:
+def _sh_root(models_dir: str | None) -> str:
+    """Sets ``$root``: ``models_dir`` when given, else the env var or the Linux default."""
+    if models_dir is not None:
+        return f"root={shlex.quote(models_dir)}"
+    return f'root="${{{MODEL_ROOT_ENV}:-{LINUX_MODEL_ROOT}}}"'
+
+
+def _ps_root(models_dir: str | None) -> str:
+    """Sets ``$root`` in PowerShell (``models_dir`` has no quotes: normalize_storage_path)."""
+    if models_dir is not None:
+        return f"$root = '{models_dir}'"
+    return (
+        f"$root = if ($env:{MODEL_ROOT_ENV}) {{ $env:{MODEL_ROOT_ENV} }} "
+        f'else {{ "{_WINDOWS_ROOT_PS}" }}'
+    )
+
+
+def _sh_weights(model_id: str, asset: ModelAsset, models_dir: str | None = None) -> str:
     need = asset.size_gb + DISK_MARGIN_GB
     lines = [
-        f'set -e; root="${{{MODEL_ROOT_ENV}:-{LINUX_MODEL_ROOT}}}"',
+        f"set -e; {_sh_root(models_dir)}",
         f'd="$root/{asset.family}/{model_id}"; mkdir -p "$d"',
         "avail=$(df -Pk \"$d\" | awk 'NR==2 {print $4}')",
         f'if [ "$avail" -lt {_need_kib(asset)} ]; then echo "not enough disk for {model_id}: '
@@ -793,13 +820,12 @@ def _sh_weights(model_id: str, asset: ModelAsset) -> str:
     return "; ".join(lines)
 
 
-def _ps_weights(model_id: str, asset: ModelAsset) -> str:
+def _ps_weights(model_id: str, asset: ModelAsset, models_dir: str | None = None) -> str:
     need = asset.size_gb + DISK_MARGIN_GB
     check = 'if ($LASTEXITCODE -ne 0) {{ throw "{what} failed ($LASTEXITCODE)" }}'
     lines = [
         "$ErrorActionPreference = 'Stop'",
-        f"$root = if ($env:{MODEL_ROOT_ENV}) {{ $env:{MODEL_ROOT_ENV} }} "
-        f'else {{ "{_WINDOWS_ROOT_PS}" }}',
+        _ps_root(models_dir),
         f"$d = Join-Path $root '{asset.family}/{model_id}'",
         "New-Item -ItemType Directory -Force $d | Out-Null",
         "$free = (Get-PSDrive (Get-Item $d).PSDrive.Name).Free",
@@ -835,21 +861,27 @@ def _ps_weights(model_id: str, asset: ModelAsset) -> str:
         for url in asset.windows_archives:
             lines += [
                 "$z = Join-Path $env:TEMP 'spectracut-model.zip'",
+                "if (Test-Path $z) { Remove-Item -Force $z }",
                 f"Invoke-WebRequest '{url}' -OutFile $z -UseBasicParsing",
                 "Expand-Archive -Force $z $bin; Remove-Item $z",
             ]
     return "; ".join(lines)
 
 
-def model_weights_step(f: HostFacts, model_id: str) -> Step:
-    """Pull ``model_id``'s pinned weights (and source) onto ``f`` after a free-disk check."""
+def model_weights_step(f: HostFacts, model_id: str, models_dir: str | None = None) -> Step:
+    """Pull ``model_id``'s pinned weights (and source) onto ``f`` after a free-disk check.
+
+    A rerun after an interrupted download resumes into the same folder.
+    """
     asset = asset_for(model_id)
     windows = f.os == "windows"
     return Step(
         f.name,
         f"models:weights:{model_id}:{f.name}",
         f"download {model_id} weights (~{asset.size_gb:g} GB)",
-        _ps_weights(model_id, asset) if windows else _sh_weights(model_id, asset),
+        _ps_weights(model_id, asset, models_dir)
+        if windows
+        else _sh_weights(model_id, asset, models_dir),
         "powershell" if windows else "sh",
         component=f"{MODEL_PREFIX}{model_id}",
         version=model_version(model_id),
@@ -858,30 +890,185 @@ def model_weights_step(f: HostFacts, model_id: str) -> Step:
     )
 
 
+@dataclass(frozen=True)
+class ModelDisk:
+    """The model root's disk on the model host: free and total GB, model folders present."""
+
+    root: str
+    free_gb: float
+    total_gb: float | None = None
+    present: Mapping[str, float] = field(default_factory=dict)
+    """Model id -> GB already under ``<root>/<family>/<id>`` (complete or partial)."""
+
+
+def model_disk_step(f: HostFacts, models_dir: str | None = None) -> Step:
+    """Read-only: free/total bytes at the model root (nearest existing folder), its models."""
+    if f.os == "windows":
+        cmd = "; ".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                _ps_root(models_dir),
+                "$p = $root",
+                "while (-not (Test-Path $p)) { $p = Split-Path $p -Parent }",
+                "$v = Get-PSDrive (Get-Item $p).PSDrive.Name",
+                "'root=' + $root; 'free=' + $v.Free; 'total=' + ($v.Free + $v.Used)",
+                "$d = @()",
+                "if (Test-Path $root) { foreach ($a in Get-ChildItem $root -Directory) "
+                "{ foreach ($m in Get-ChildItem $a.FullName -Directory) "
+                "{ $s = (Get-ChildItem $m.FullName -Recurse -File -Force -ErrorAction "
+                "SilentlyContinue | Measure-Object Length -Sum).Sum; if (-not $s) { $s = 0 }; "
+                "$d += $a.Name + '/' + $m.Name + ':' + $s } } }",
+                "'dirs=' + ($d -join '|')",
+            ]
+        )
+    else:
+        cmd = "; ".join(
+            [
+                _sh_root(models_dir),
+                'p="$root"; while [ ! -d "$p" ]; do p=$(dirname "$p"); done',
+                'echo "root=$root"',
+                'df -Pk "$p" | awk \'NR==2 '
+                '{printf "free=%.0f\\ntotal=%.0f\\n", $4*1024, $2*1024}\'',
+                'd=""; for x in "$root"/*/*/; do [ -d "$x" ] || continue; r="${x%/}"; '
+                'r="${r#"$root"/}"; d="$d|$r:$(( $(du -sk "$x" | cut -f1) * 1024 ))"; done',
+                'echo "dirs=${d#|}"',
+            ]
+        )
+    return Step(
+        f.name,
+        f"models:disk:{f.name}",
+        "measure the model root's disk",
+        cmd,
+        "powershell" if f.os == "windows" else "sh",
+        artifact="model-disk",
+        kind="probe",
+    )
+
+
+def parse_model_disk(f: HostFacts, out: str | None) -> ModelDisk:
+    """:func:`model_disk_step` output; a missing free falls back to the host probe's."""
+    kv: dict[str, str] = {}
+    for raw in (out or "").splitlines():
+        key, sep, value = raw.strip().partition("=")
+        if sep and key in ("root", "free", "total", "dirs"):
+            kv[key] = value.strip()
+
+    def gb(value: str) -> float | None:
+        return float(value) / 1e9 if value.replace(".", "", 1).isdigit() else None
+
+    ids = {f"{a.family}/{m}": m for a in ASSETS.values() for m in a.model_ids}
+    present: dict[str, float] = {}
+    for item in kv.get("dirs", "").split("|"):
+        rel, _, size = item.strip().rpartition(":")
+        if rel in ids and (g := gb(size)) is not None:
+            present[ids[rel]] = g
+    free = gb(kv.get("free", ""))
+    return ModelDisk(
+        kv.get("root", ""), f.free_gb if free is None else free, gb(kv.get("total", "")), present
+    )
+
+
+def probe_model_disk(runner: StepRunner, f: HostFacts, models_dir: str | None = None) -> ModelDisk:
+    """Measure the model root's disk on ``f`` (read-only; changes nothing)."""
+    return parse_model_disk(f, runner.run(model_disk_step(f, models_dir)))
+
+
+def _models_root_step(f: HostFacts, models_dir: str) -> Step:
+    """Write the pointer file the host's ``default_model_root()`` reads (``--models-dir``)."""
+    if f.os == "windows":
+        cmd = (
+            "$ErrorActionPreference = 'Stop'; "
+            "$p = Join-Path $env:LOCALAPPDATA 'spectracut'; "
+            "New-Item -ItemType Directory -Force $p | Out-Null; "
+            f"Set-Content -Encoding utf8 -Path (Join-Path $p '{MODEL_ROOT_POINTER}') "
+            f"-Value '{models_dir}'"
+        )
+    else:
+        cmd = (
+            'set -e; mkdir -p "$HOME/.config/spectracut"; '
+            f"printf '%s\\n' {shlex.quote(models_dir)} "
+            f'> "$HOME/.config/spectracut/{MODEL_ROOT_POINTER}"'
+        )
+    return Step(
+        f.name,
+        f"models:root:{f.name}",
+        f"keep model weights under {models_dir}",
+        cmd,
+        "powershell" if f.os == "windows" else "sh",
+        component=MODELS_ROOT,
+        version=models_dir,
+        kind="write",
+    )
+
+
+def _models_clean_step(f: HostFacts, model_id: str, models_dir: str | None) -> Step:
+    """Remove the unrecorded (partial) folder of a model that is no longer selected."""
+    rel = f"{asset_for(model_id).family}/{model_id}"
+    if f.os == "windows":
+        cmd = (
+            f"$ErrorActionPreference = 'Stop'; {_ps_root(models_dir)}; "
+            f"$d = Join-Path $root '{rel}'; "
+            "if (Test-Path $d) { Remove-Item -Recurse -Force $d }"
+        )
+    else:
+        cmd = f'set -e; {_sh_root(models_dir)}; rm -rf -- "${{root:?}}/{rel}"'
+    return Step(
+        f.name,
+        f"models:clean:{model_id}:{f.name}",
+        f"remove the unfinished {model_id} download (not selected)",
+        cmd,
+        "powershell" if f.os == "windows" else "sh",
+    )
+
+
 def model_steps(
-    f: HostFacts, have: Mapping[str, str], wheels: LocalWheels, *, reinstalled: bool
+    f: HostFacts,
+    have: Mapping[str, str],
+    wheels: LocalWheels,
+    *,
+    reinstalled: bool,
+    models: Sequence[str] = ESSENTIAL_MODELS,
+    disk: ModelDisk | None = None,
+    models_dir: str | None = None,
+    skip: bool = False,
 ) -> tuple[list[Step], list[str]]:
-    """The model host's deps step and the weights steps it lacks, with any disk note.
+    """The model host's deps step, then pointer, cleanup and weights steps it lacks.
 
     The deps step reruns when its version changed or spectracut-host is reinstalled in
-    this plan (a reinstall drops the extras).
+    this plan (a reinstall drops the extras); ``skip`` plans nothing else. Weights are
+    planned for the selected ``models`` not yet recorded, and only when their size (less
+    what is already on disk) fits under free space plus the unfinished folders of
+    unselected models (removed first) minus :func:`reserve_gb`; else :class:`ModelDiskError`.
     """
-    from spectracut.providers.local.registry import MODELS
-
     steps: list[Step] = []
     deps = _models_deps_step(f, wheels, wheels.pin)
     if reinstalled or have.get(MODELS_DEPS) != deps.version:
         steps.append(deps)
-    missing = [m for m in MODELS if have.get(f"{MODEL_PREFIX}{m}") != model_version(m)]
-    steps += [model_weights_step(f, m) for m in missing]
-    need = sum(asset_for(m).size_gb for m in missing)
-    notes = []
-    if missing and f.free_gb < need:
-        notes.append(
-            f"{f.name} has {f.free_gb:g} GB free but the missing model weights need about "
-            f"{need:g} GB: free space at the model root or set {MODEL_ROOT_ENV}"
+    if skip:
+        return steps, []
+    if models_dir is not None and have.get(MODELS_ROOT) != models_dir:
+        steps.append(_models_root_step(f, models_dir))
+    disk = disk or ModelDisk(models_dir or "", f.free_gb)
+    missing = [m for m in models if have.get(f"{MODEL_PREFIX}{m}") != model_version(m)]
+    orphans = [m for m in disk.present if m not in models and f"{MODEL_PREFIX}{m}" not in have]
+    need = sum(max(0.0, asset_for(m).size_gb - disk.present.get(m, 0.0)) for m in missing)
+    reclaim = sum(disk.present[m] for m in orphans)
+    reserve = reserve_gb(disk.total_gb)
+    avail = disk.free_gb + reclaim - reserve
+    if missing and need > avail:
+        where = f" at {disk.root}" if disk.root else ""
+        raise ModelDiskError(
+            f"{f.name}: the selected model weights ({', '.join(missing)}) need about "
+            f"{need:.1f} GB{where}, but {disk.free_gb:.1f} GB is free"
+            + (f" (+{reclaim:.1f} GB of unfinished downloads)" if reclaim else "")
+            + f" and {round(reserve, 1):g} GB is kept in reserve: {need - avail:.1f} GB short. "
+            "Nothing was downloaded. Options: --models essential|<ids> to install fewer "
+            "models, --models-dir <path> to put the weights on a disk with more room, or "
+            "--skip-models to update hosts and runtimes without weights"
         )
-    return steps, notes
+    steps += [_models_clean_step(f, m, models_dir) for m in orphans]
+    steps += [model_weights_step(f, m, models_dir) for m in missing]
+    return steps, []
 
 
 def build_plan(
@@ -896,6 +1083,9 @@ def build_plan(
     wheels: LocalWheels,
     signing_public_key: str | None = None,
     model_host: str | None = None,
+    models: Sequence[str] | None = None,
+    model_disk: ModelDisk | None = None,
+    skip_models: bool = False,
 ) -> Plan:
     """Steps still needed to bring every machine to ``set_id`` with storage on ``storage``.
 
@@ -903,7 +1093,10 @@ def build_plan(
     machine with the most free space. With ``signing_public_key`` every worker gets
     a ``host.json`` registering it under its registered name with that key. With
     ``model_host`` (a probed worker) the model families and pinned weights are installed
-    there too, after every other step.
+    there too, after every other step: ``models`` (default: ``state.models``, else the
+    essential set) under ``state.models_dir``, checked against ``model_disk`` (else the
+    host probe's free space); ``skip_models`` installs the families but no weights.
+    Raises :class:`ModelDiskError` when the weights do not fit.
     """
     target = storage or state.storage or choose_default_host(facts)
     layout = state.layout()
@@ -969,6 +1162,10 @@ def build_plan(
             state.hosts.get(model_host, HostState()).components,
             wheels,
             reinstalled=any(s.id == reinstall for s in steps),
+            models=resolve_models(state.models or "essential") if models is None else models,
+            disk=model_disk,
+            models_dir=state.models_dir,
+            skip=skip_models,
         )
         steps += msteps
     return Plan(
@@ -1147,6 +1344,10 @@ class SetupError(RuntimeError):
 
     host: str | None = None
     summary: str | None = None
+
+
+class ModelDiskError(SetupError):
+    """The selected model weights do not fit under the model root's free space and reserve."""
 
 
 class StepTimeout(SetupError):
