@@ -12,8 +12,11 @@
   :class:`PreproductionRunner` then explores each on an image provider (a local
   model unless ChatGPT is configured, `storyboard.explore.choose_exploration_provider`)
   and renders it at the **final** tier through an injected renderer. On the farm that
-  is Blender on a render host; the control plane never runs Blender. The node waits at
-  its human gate. Each frame names the concept beat or signature visual it shows
+  is the scene builder (``SceneStyleFrameRenderer``: Claude builds the scene at the
+  preview tier, the vision verifier scores it, the best recipe re-renders at the final
+  tier) on a render host; the control plane never runs Blender. The node waits at
+  its human gate, whose review page shows every rendered frame (``review_media``).
+  Each frame names the concept beat or signature visual it shows
   (``concept_ref``, :meth:`StyleFrameArtist.check_output`).
 - ``storyboard`` (kind ``storyboard``): a board per shot with camera and action. Each
   board's ``beat`` resolves to a script beat (:func:`~spectracut.storyboard.animatic.resolve_beats`)
@@ -400,7 +403,10 @@ class PreproductionRunner:
     """Wraps a :class:`~spectracut.studio.runner.DepartmentRunner` for the art nodes.
 
     ``style_frames`` outputs gain a concept image (``explorer``) and a final-tier
-    render (``renderer``), whose GPU minutes go to the node's usage; ``brand_kit`` is
+    render (``renderer``; in production the scene builder re-rendered at the final
+    tier), whose GPU minutes and AI usage go to the node's usage; with ``media_root``
+    (the production dir) the output also carries ``review_media`` listing every frame
+    render relative to it, so the gate's review page shows them; ``brand_kit`` is
     built from its param (:func:`build_brand_kit`). ``animatic`` is built in code: its
     VO is the ``voiceover`` input's audio (else ``voice``, the local TTS), each board
     is rendered to ``workdir/boards/<shot>.png`` by ``board_renderer`` (the farm at
@@ -422,8 +428,10 @@ class PreproductionRunner:
         board_renderer: StyleFrameRenderer,
         preview: AnimaticPreview,
         music: TempAudio | None = None,
+        media_root: Path | None = None,
     ) -> None:
         self.inner = inner
+        self.media_root = None if media_root is None else Path(media_root)
         self.departments = departments
         self.explorer = explorer
         self.renderer = renderer
@@ -450,6 +458,7 @@ class PreproductionRunner:
         frames = StyleFrames.model_validate(planned.output)
         done: list[StyleFrame] = []
         gpu = 0.0
+        render_ai: dict[str, int] = {}
         explored = 0
         for frame in frames.frames:
             concept = None
@@ -463,20 +472,42 @@ class PreproductionRunner:
             if isinstance(rendered, tuple):
                 render, used = rendered
                 gpu += used.gpu_minutes
+                for key, value in used.ai_usage.items():
+                    render_ai[key] = render_ai.get(key, 0) + value
             else:
                 render = rendered
             done.append(
                 frame.model_copy(update={"concept": concept, "render": render, "tier": "final"})
             )
         dept = self.departments[ctx.spec.department]
-        output = dept.validate_output(ctx.spec.id, StyleFrames(frames=done).model_dump(mode="json"))
+        result = StyleFrames(frames=done, review_media=self._review_media(done))
+        output = dept.validate_output(ctx.spec.id, result.model_dump(mode="json"))
         ai = dict(planned.usage.ai_usage)
+        for key, value in render_ai.items():
+            ai[key] = ai.get(key, 0) + value
         if explored:
             ai["image_exploration_requests"] = explored
         usage = planned.usage.model_copy(
             update={"ai_usage": ai, "gpu_minutes": planned.usage.gpu_minutes + gpu}
         )
         return RunResult(output=output, usage=usage)
+
+    def _review_media(self, frames: list[StyleFrame]) -> dict[str, JsonValue] | None:
+        """The gate's player descriptor: every frame render relative to ``media_root``."""
+        if self.media_root is None:
+            return None
+        root = self.media_root.resolve()
+        images: list[JsonValue] = []
+        for frame in frames:
+            if frame.render is None:
+                continue
+            path = Path(frame.render.path).resolve()
+            if not path.is_relative_to(root):
+                raise ValueError(f"style frame {frame.id!r} render {path} is outside {root}")
+            images.append(path.relative_to(root).as_posix())
+        if not images:
+            return None
+        return {"kind": "style_frame", "video": images[0], "images": images, "fps": 24}
 
     def _temp_vo(self, ctx: RunContext, script: Script) -> dict[str, TempAudio]:
         """Temp VO keyed by script beat: the voiceover input, else the local voice."""

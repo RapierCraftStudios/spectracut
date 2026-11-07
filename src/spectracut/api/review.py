@@ -20,9 +20,12 @@ that is absent or loopback, so another site open in the browser cannot post here
 A node shows media when its output (pending or accepted) carries ``review_media``::
 
     {"kind": "board|style_frame|animatic|render", "video": "media/board.webm",
-     "audio": "media/board.ogg", "fps": 24}
+     "audio": "media/board.ogg", "fps": 24,
+     "images": ["frames/a.png", "frames/b.png"]}
 
-Paths are relative to the production directory and never leave it.
+``images`` (optional, at most 32) are extra stills the page shows as a thumbnail
+strip, e.g. every rendered style frame. Paths are relative to the production
+directory and never leave it.
 """
 
 from __future__ import annotations
@@ -58,6 +61,10 @@ def static_dir() -> Path:
     return _PACKAGED_STATIC if _PACKAGED_STATIC.is_dir() else _REPO_STATIC
 
 
+MAX_IMAGES = 32
+"""Most stills one node's ``review_media`` may list."""
+
+
 class ReviewMedia(StrictModel):
     """What the player plays for a node, declared in its output."""
 
@@ -67,6 +74,8 @@ class ReviewMedia(StrictModel):
     audio: str | None = None
     """Separate audio track, relative to the production directory."""
     fps: float = Field(gt=0, le=240)
+    images: list[str] = Field(default_factory=list, max_length=MAX_IMAGES)
+    """Stills (e.g. every style frame), relative to the production directory."""
 
 
 class _Decision(StrictModel):
@@ -135,6 +144,7 @@ def _media(production_id: str, output: Any) -> tuple[dict[str, Any] | None, str 
         "fps": media.fps,
         "video": base + quote(media.video),
         "audio": base + quote(media.audio) if media.audio else None,
+        "images": [base + quote(image) for image in media.images],
     }, None
 
 

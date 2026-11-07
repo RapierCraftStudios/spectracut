@@ -134,8 +134,31 @@ function tick() {
 
 video.addEventListener("ended", () => pause());
 
+function showThumbs(images) {
+  let strip = $("thumbs");
+  if (strip) strip.remove();
+  if (!images || images.length < 2) return;
+  strip = document.createElement("div");
+  strip.id = "thumbs";
+  strip.dataset.testid = "thumbs";
+  for (const [i, src] of images.entries()) {
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = `still ${i + 1}`;
+    img.style.width = "96px";
+    img.style.cursor = "pointer";
+    img.style.marginRight = "4px";
+    img.addEventListener("click", () => {
+      still.src = src;
+    });
+    strip.appendChild(img);
+  }
+  still.insertAdjacentElement("afterend", strip);
+}
+
 function loadMedia(media) {
   state.media = media;
+  showThumbs(null);
   state.frame = 0;
   state.frames = 0;
   video.hidden = true;
@@ -153,6 +176,7 @@ function loadMedia(media) {
   if (isStill) {
     still.src = media.video;
     still.hidden = false;
+    showThumbs(media.images);
     state.frames = 1;
     showFrame();
     return;

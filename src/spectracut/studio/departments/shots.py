@@ -5,27 +5,32 @@
   template (devices, hero object, end card, typography), camera variant, aspect and
   slots for every storyboard board. The plan's schema enumerates the registered
   template ids; a board that fits no template sets ``scene_builder`` (a shot
-  description) instead and is recorded, not rendered, for the scene builder. The
+  description) instead. With a ``scene_builder`` factory the :class:`ShotRunner`
+  builds it (:func:`motion_steps` keyframes the board's lens, move and duration onto
+  the builder's best recipe) and renders it as an animated sequence; without one it is
+  recorded, not rendered, for the scene builder. The
   :class:`ShotRunner` builds each template board's recipe with
   ``TEMPLATES[t].preview(...)`` from the node's brand kit, stages the kit's assets,
   signs the job to shared storage and renders it as one Blender job
   through ``JobQueue`` + :class:`~spectracut.queue.executors.flamenco.FlamencoExecutor`,
   pinned to a registered GPU host by the config's worker tag.
-- ``shots`` (kind ``shots``): re-renders every template shot's recipe at the node's
-  tier (``device_shot.tier_steps``).
+- ``shots`` (kind ``shots``): re-renders every template and scene-built shot's recipe
+  at the node's tier (``device_shot.tier_steps``).
 
 Every rendered shot records its frames' sha256s, render QA and a vision-QA score of
 its first frame; GPU minutes and ``vision_qa_*`` AI usage go to the node's ledger
 entry. The node output is content-hashed by the graph, so a re-run with nothing
 changed is a cache hit and submits no jobs. :func:`shot_critic` is the Critic gate on
-those records. :func:`shot_nodes` declares the two nodes for the Producer (#262) to
-compose; the control plane only builds declarative recipes and never imports ``bpy``.
+those records; it fails any shot whose first frame is blank. :func:`shot_nodes`
+declares the two nodes for the Producer (#262) to compose; the control plane only
+builds declarative recipes and never imports ``bpy``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from pathlib import PurePosixPath
+import math
+from collections.abc import Callable, Mapping
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, Self, Union
 
 from pydantic import (
@@ -41,13 +46,15 @@ from pydantic import (
     model_validator,
 )
 
+from spectracut.critique.scene_verifier import PACK as SCENE_PACK
+from spectracut.critique.scene_verifier import is_blank, scene_verifier_prompt
 from spectracut.edit.timeline import Edit
 from spectracut.finishing.color import ColorPipeline
 from spectracut.queue.queue import JobQueue
 from spectracut.spec._base import Slug, StrictModel
 from spectracut.spec.brand import BrandKit
 from spectracut.spec.recipe import Recipe, RecipeStep
-from spectracut.storyboard.models import Storyboard
+from spectracut.storyboard.models import ArtDirection, Board, MoodEntry, Storyboard
 from spectracut.studio import device_shot as ds
 from spectracut.studio.department import SKILLS_ROOT, CostEstimate, Department
 from spectracut.studio.departments.art import ANIMATIC, STORYBOARD
@@ -57,7 +64,13 @@ from spectracut.studio.graph import RunContext, Runner, RunResult
 from spectracut.studio.ledger import Usage
 from spectracut.studio.node import NodeSpec, Tier
 from spectracut.templates import TEMPLATES
-from spectracut.templates.base import RESOLUTIONS, Template, TemplateAspect, require_clean_copy
+from spectracut.templates.base import (
+    RESOLUTIONS,
+    Call,
+    Template,
+    TemplateAspect,
+    require_clean_copy,
+)
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -65,6 +78,7 @@ if TYPE_CHECKING:
     from spectracut.providers.base import VisionJudge
     from spectracut.qa.report import QAReportStore
     from spectracut.queue.executors.flamenco import FlamencoApi
+    from spectracut.studio.scene_builder import SceneBrief, SceneBuild
 
 TEMPLATE_SHOTS = "template_shots"
 SHOTS = "shots"
@@ -246,6 +260,10 @@ class RenderedShot(StrictModel):
     vision_qa: VisionQA
     variant: str | None = None
     aspect: TemplateAspect = "16:9"
+    frame_end: int | None = Field(default=None, ge=1)
+    """Last frame of a scene-built shot (``round(duration_s * fps)``); templates use theirs."""
+    description: str | None = None
+    """The brief a scene-built shot was built and vision-scored against."""
 
 
 class SceneBuilderShot(StrictModel):
@@ -363,6 +381,163 @@ def tier_recipe(base: Recipe, tier: Tier, aspect: TemplateAspect = "16:9") -> Re
     return base.model_copy(update={"steps": out})
 
 
+FPS = 24
+"""Frame rate of scene-built shots (the timeline default)."""
+_STEP = 0.2
+"""A camera move travels this fraction of the camera's distance from the origin."""
+
+
+def _vec(value: JsonValue, default: list[float]) -> list[float]:
+    if isinstance(value, list) and len(value) == 3:
+        nums = [float(v) for v in value if isinstance(v, int | float)]
+        if len(nums) == 3:
+            return nums
+    return list(default)
+
+
+def _camera_state(recipe: Recipe) -> tuple[str, list[float], list[float]] | None:
+    """The active camera's name, location and rotation at the end of ``recipe``."""
+    cam: tuple[str, list[float], list[float]] | None = None
+    for step in recipe.steps:
+        args = step.args
+        if step.tool == "camera.add":
+            name = args.get("name")
+            cam = (
+                str(name) if isinstance(name, str) else "Camera",
+                _vec(args.get("location"), [0.0, 0.0, 0.0]),
+                _vec(args.get("rotation"), [0.0, 0.0, 0.0]),
+            )
+        elif step.tool == "camera.set_transform" and cam is not None:
+            loc = _vec(args.get("location"), cam[1])
+            rot = _vec(args.get("rotation"), cam[2])
+            cam = (cam[0], loc, rot)
+    return cam
+
+
+def _animated(recipe: Recipe, camera: str) -> bool:
+    """True when ``recipe`` already keys the camera (``camera.move`` or ``object.keyframe``)."""
+    return any(
+        step.tool == "camera.move"
+        or (step.tool == "object.keyframe" and step.args.get("object") == camera)
+        for step in recipe.steps
+    )
+
+
+def _move_end(move: str, loc: list[float], rot: list[float]) -> tuple[list[float], list[float]]:
+    """Where a ``move`` ends, from the camera's start (Blender XYZ Euler, radians)."""
+    x, y, z = rot
+    forward = [
+        -math.cos(x) * math.sin(y) * math.cos(z) - math.sin(x) * math.sin(z),
+        -math.cos(x) * math.sin(y) * math.sin(z) + math.sin(x) * math.cos(z),
+        -math.cos(x) * math.cos(y),
+    ]
+    right = [math.cos(y) * math.cos(z), math.cos(y) * math.sin(z), -math.sin(y)]
+    d = max(0.3, _STEP * math.sqrt(sum(c * c for c in loc)))
+    end_loc, end_rot = list(loc), list(rot)
+    if move in ("push", "pull"):
+        sign = 1.0 if move == "push" else -1.0
+        end_loc = [c + sign * d * f for c, f in zip(loc, forward, strict=True)]
+    elif move == "dolly":
+        end_loc = [c + d * r for c, r in zip(loc, right, strict=True)]
+    elif move == "pan":
+        end_rot[2] += 0.25
+    elif move == "tilt":
+        end_rot[0] += 0.15
+    elif move == "orbit":
+        a = 0.5
+        end_loc = [
+            loc[0] * math.cos(a) - loc[1] * math.sin(a),
+            loc[0] * math.sin(a) + loc[1] * math.cos(a),
+            loc[2],
+        ]
+        end_rot[2] += a
+    elif move == "crane":
+        end_loc[2] += d
+    return [round(c, 4) for c in end_loc], [round(c, 4) for c in end_rot]
+
+
+def _json(values: list[float]) -> list[JsonValue]:
+    return [round(v, 4) for v in values]
+
+
+def shot_frames(board: Board, fps: int = FPS) -> int:
+    """Frames a board's shot runs: ``round(duration_s * fps)``, at least two."""
+    return max(2, round(board.duration_s * fps))
+
+
+def motion_steps(board: Board, recipe: Recipe | None = None, *, fps: int = FPS) -> list[Call]:
+    """The board's lens, camera move and frame range as harness calls on ``recipe``.
+
+    ``camera.set_lens`` to ``board.lens_mm``; a ``camera.move`` keyframing the board's
+    move from frame 1 to the last frame when the move is not ``static`` and the recipe
+    does not already key its camera (``handheld`` is a small deterministic shake);
+    ``render.set_frame_range`` 1..:func:`shot_frames`. With no camera in the recipe only
+    the frame range is set.
+    """
+    end = shot_frames(board, fps)
+    cam = _camera_state(recipe) if recipe is not None else None
+    calls: list[Call] = []
+    if recipe is None or cam is not None:
+        calls.append(("camera.set_lens", {"mm": board.lens_mm}))
+    keyed = recipe is not None and cam is not None and _animated(recipe, cam[0])
+    if cam is not None and board.move != "static" and not keyed:
+        name, loc, rot = cam
+        keys: list[JsonValue]
+        if board.move == "handheld":
+            keys = []
+            for n, frame in enumerate(range(1, end + 1, 6)):
+                jitter = [0.01 * math.sin(n * k) for k in (1.3, 2.1, 0.7)]
+                keys.append(
+                    {
+                        "frame": frame,
+                        "location": _json([c + j for c, j in zip(loc, jitter, strict=True)]),
+                        "rotation": _json(rot),
+                    }
+                )
+            easing = "linear"
+        else:
+            end_loc, end_rot = _move_end(board.move, loc, rot)
+            keys = [
+                {"frame": 1, "location": _json(loc), "rotation": _json(rot)},
+                {"frame": end, "location": _json(end_loc), "rotation": _json(end_rot)},
+            ]
+            easing = "ease_in_out"
+        if len(keys) >= 2:
+            calls.append(("camera.move", {"keys": keys, "easing": easing}))
+    calls.append(("render.set_frame_range", {"frame_start": 1, "frame_end": end}))
+    return calls
+
+
+def with_motion(recipe: Recipe, board: Board, *, fps: int = FPS) -> Recipe:
+    """``recipe`` plus :func:`motion_steps` for ``board``."""
+    out = list(recipe.steps)
+    for tool, args in motion_steps(board, recipe, fps=fps):
+        out.append(RecipeStep(index=len(out), tool=tool, args=args))
+    return recipe.model_copy(update={"steps": out})
+
+
+def shot_brief_text(description: str, board: Board) -> str:
+    """The scene brief of a scene-built shot: the plan's description plus its board."""
+    lines = [
+        description.strip(),
+        "",
+        f"Board {board.shot_id}: {board.size} shot, {board.lens_mm:g} mm lens, "
+        f"camera move {board.move}, {board.duration_s:g} s.",
+        f"Action: {board.action}",
+    ]
+    if board.screen_content:
+        lines.append(f"Screen content: {board.screen_content}")
+    return "\n".join(lines)
+
+
+def _kit_art(kit: BrandKit) -> ArtDirection:
+    """An art direction from the brand kit alone (palette, default Look)."""
+    look = next(lk for lk in kit.looks if lk.id == kit.default_look_id)
+    return ArtDirection(
+        mood_board=[MoodEntry(ref=kit.name, take=kit.tone)], palette=kit.palette, look=look
+    )
+
+
 def _is_file(value: str) -> bool:
     name = _FILE(value).name
     return "/" in value or ("." in name and not name.startswith(".") and " " not in value)
@@ -390,7 +565,13 @@ def _assets(spec: NodeSpec) -> str | None:
 
 
 class ShotRunner:
-    """Wraps the text runner for the shot nodes; other kinds pass through to ``inner``."""
+    """Wraps the text runner for the shot nodes; other kinds pass through to ``inner``.
+
+    ``scene_builder`` (``brief -> SceneBuild``, the scene builder at the preview tier)
+    builds the boards no template fits; ``art_for`` gives their briefs the production's
+    art direction (else the brand kit's palette and default Look). Without
+    ``scene_builder`` those boards stay in ``RenderedShots.scene_builder``, unrendered.
+    """
 
     def __init__(
         self,
@@ -404,7 +585,11 @@ class ShotRunner:
         production_id: str,
         options: ds.ExecutorOptions | None = None,
         qa_store: QAReportStore | None = None,
+        scene_builder: Callable[[SceneBrief], SceneBuild] | None = None,
+        art_for: Callable[[NodeSpec], ArtDirection | None] | None = None,
     ) -> None:
+        self.scene_builder = scene_builder
+        self.art_for = art_for
         self.inner = inner
         self.departments = departments
         self.config = config
@@ -458,7 +643,12 @@ class ShotRunner:
         kit = _kit(ctx.spec)
         builds: list[tuple[TemplateShot, Recipe, Recipe]] = []
         pending: list[SceneBuilderShot] = []
+        scene: list[tuple[TemplateShot, Board]] = []
+        boards = {b.shot_id: b for b in Storyboard.model_validate(ctx.inputs[STORYBOARD]).boards}
         for shot in shots:
+            if shot.template is None and self.scene_builder is not None:
+                scene.append((shot, boards[shot.shot_id]))
+                continue
             if shot.template is None:
                 assert shot.scene_builder is not None
                 pending.append(
@@ -481,7 +671,50 @@ class ShotRunner:
             self._render(ctx, s, base, rendered, Tier.PREVIEW, TEMPLATES[str(s.template)].frames)
             for s, base, rendered in builds
         ]
+        for shot, board in scene:
+            built, used = self._scene_shot(ctx, shot, board, kit)
+            done.append(built)
+            usage = _add(usage, used)
+        order = {s.shot_id: n for n, s in enumerate(shots)}
+        done.sort(key=lambda d: order[d[0].shot_id])
         return self._result(ctx, done, usage, pending)
+
+    def _art(self, ctx: RunContext, kit: BrandKit) -> ArtDirection:
+        art = self.art_for(ctx.spec) if self.art_for is not None else None
+        return art if art is not None else _kit_art(kit)
+
+    def _scene_shot(
+        self, ctx: RunContext, shot: TemplateShot, board: Board, kit: BrandKit
+    ) -> tuple[tuple[RenderedShot, Usage], Usage]:
+        """Build a board no template fits with the scene builder, then render it animated."""
+        from spectracut.studio.scene_builder import SceneBrief
+
+        assert self.scene_builder is not None and shot.scene_builder is not None
+        description = shot_brief_text(shot.scene_builder, board)
+        art = self._art(ctx, kit)
+        build = self.scene_builder(
+            SceneBrief(id=shot.shot_id, description=description, art=art, brand_kit=kit)
+        )
+        if build.recipe is None:
+            raise ValueError(
+                f"shot {shot.shot_id!r}: the scene builder produced no recipe "
+                f"({build.status}: {build.notes or 'no candidate rendered'})"
+            )
+        base = with_motion(build.recipe, board)
+        rendered = tier_recipe(base, Tier.PREVIEW, shot.aspect)
+        frame_end = shot_frames(board)
+        done = self._render(
+            ctx,
+            shot,
+            base,
+            rendered,
+            Tier.PREVIEW,
+            frame_end,
+            template=SCENE_BUILDER,
+            description=description,
+            art=art,
+        )
+        return done, build.usage
 
     # ---- shots ---------------------------------------------------------------------
 
@@ -494,6 +727,23 @@ class ShotRunner:
         for prior in upstream.shots:
             base = Recipe.model_validate(prior.recipe)
             rendered = tier_recipe(base, ctx.tier, prior.aspect)
+            if prior.template == SCENE_BUILDER:
+                art = self._art(ctx, _kit(ctx.spec))
+                frames = prior.frame_end or 1
+                done.append(
+                    self._render(
+                        ctx,
+                        prior,
+                        base,
+                        rendered,
+                        ctx.tier,
+                        frames,
+                        template=SCENE_BUILDER,
+                        description=prior.description,
+                        art=art,
+                    )
+                )
+                continue
             frames = TEMPLATES[prior.template].frames if prior.template in TEMPLATES else 1
             done.append(self._render(ctx, prior, base, rendered, ctx.tier, frames))
         return self._result(ctx, done, Usage(), upstream.scene_builder)
@@ -508,11 +758,21 @@ class ShotRunner:
         recipe: Recipe,
         tier: Tier,
         frame_end: int,
+        *,
+        template: str | None = None,
+        description: str | None = None,
+        art: ArtDirection | None = None,
     ) -> tuple[RenderedShot, Usage]:
-        """Render one shot as one signed Blender job pinned to the config's worker tag."""
+        """Render one shot as one signed Blender job pinned to the config's worker tag.
+
+        A scene-built shot passes ``template`` (:data:`SCENE_BUILDER`), its
+        ``description`` and ``art``: its vision QA scores the first frame against the
+        description with the scene verifier's prompt instead of the generic rubric.
+        """
         config, opts = self.config, self.options
         shot_id = shot.shot_id
-        if shot.template is None:
+        template = template or shot.template
+        if template is None:
             raise ValueError(f"shot {shot_id!r} has no template to render")
         assets_dir, _sha = ds.stage_for(config, _assets(ctx.spec), recipe)
         base_id = f"{self.production_id}-{ctx.spec.id}-{shot_id}"[:96]
@@ -531,12 +791,16 @@ class ShotRunner:
             from spectracut.providers.base import select_vision_judge
 
             judge = self.judge = select_vision_judge()
-        verdict = judge.score(out / sorted(frames)[0], ds.VISION_RUBRIC)
+        rubric = ds.VISION_RUBRIC
+        if description is not None and art is not None:
+            pack_rubric = (SCENE_PACK / "rubric.md").read_text(encoding="utf-8")
+            rubric = scene_verifier_prompt(description, art, rubric=pack_rubric)
+        verdict = judge.score(out / sorted(frames)[0], rubric)
         usage = ds.vision_qa_usage(result.usage, judge)
         failures = qa.get("failures")
         rendered = RenderedShot(
             shot_id=shot_id,
-            template=shot.template,
+            template=template,
             variant=shot.variant,
             aspect=shot.aspect,
             recipe=base.model_dump(mode="json"),
@@ -552,6 +816,8 @@ class ShotRunner:
                 failures=[str(f) for f in failures] if isinstance(failures, list) else [],
             ),
             vision_qa=VisionQA(score=float(verdict.score), notes=verdict.notes),
+            frame_end=frame_end if template == SCENE_BUILDER else None,
+            description=description if template == SCENE_BUILDER else None,
         )
         return rendered, usage
 
@@ -586,7 +852,10 @@ def _add(a: Usage, b: Usage) -> Usage:
 def shot_critic(pass_score: float, inner: Critic | None = None) -> Critic:
     """The vision-QA gate for shot nodes: fail any shot whose QA failed or scored low.
 
-    Other kinds, and shot nodes whose output is not a rendered-shots record (a custom
+    A shot whose first frame is blank (luma stddev below the scene verifier's
+    ``BLANK_STDDEV``) fails too, whatever its score; a shot node with only boards
+    pending for the scene builder (nothing rendered to review) fails. Other kinds,
+    and shot nodes whose output is not a rendered-shots record (a custom
     runner built them, so there are no frames to review), go to ``inner``, or pass
     when there is none.
     """
@@ -601,10 +870,25 @@ def shot_critic(pass_score: float, inner: Critic | None = None) -> Critic:
         if shots is None:
             return inner(spec, output) if inner is not None else CriticVerdict(passed=True)
         if not shots:
-            return CriticVerdict(passed=True, comment="no rendered shots (scene builder only)")
+            return CriticVerdict(
+                passed=False,
+                comment="no rendered shots: every board is pending for the scene builder",
+                findings=[
+                    Finding(
+                        reviewer="vision-qa",
+                        severity=Severity.HIGH,
+                        text="no shot was rendered; boards are only pending for the scene builder",
+                        confirmed=True,
+                    )
+                ],
+            )
         findings: list[Finding] = []
         for shot in shots:
             problems: list[str] = []
+            if shot.frames:
+                first = Path(shot.output_dir) / sorted(shot.frames)[0]
+                if first.is_file() and is_blank(first):
+                    problems.append("first frame is blank")
             if not shot.qa.passed:
                 problems.append("render QA failed: " + (", ".join(shot.qa.failures) or "unknown"))
             if shot.vision_qa.score < pass_score:

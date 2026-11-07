@@ -11,18 +11,25 @@ import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from pydantic import JsonValue, ValidationError
 
+from spectracut.critique.scene_verifier import scene_critic, style_frames_critic
 from spectracut.edit.preview import AnimaticPreview, FfmpegPreview
-from spectracut.providers.base import TextProvider, select_text_provider
+from spectracut.providers.base import (
+    TextProvider,
+    VisionJudge,
+    select_text_provider,
+    select_vision_judge,
+)
 from spectracut.providers.config import config_path
 from spectracut.providers.local.runtime import ModelRuntime
 from spectracut.queue.executors.flamenco import FlamencoApi
 from spectracut.spec.brand import BrandKit, load_brand_kit
 from spectracut.spec.brief import Brief, CreativeBrief
+from spectracut.storyboard.models import ArtDirection
 from spectracut.studio import device_shot as ds
 from spectracut.studio import intake
 from spectracut.studio.autonomy import AutonomyPolicy, BudgetApproval, load_autonomy
@@ -32,13 +39,18 @@ from spectracut.studio.departments import art as art_depts
 from spectracut.studio.departments import finishing as finishing_depts
 from spectracut.studio.departments import shots as shot_depts
 from spectracut.studio.departments import sound as sound_depts
-from spectracut.studio.departments.style_frame_farm import FarmStyleFrameRenderer
+from spectracut.studio.departments.style_frame_farm import (
+    FarmRecipeRenderer,
+    FarmStyleFrameRenderer,
+    SceneStyleFrameRenderer,
+)
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
 from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
 from spectracut.studio.node import NodeSpec, Tier
 from spectracut.studio.producer import BudgetCaps, Producer, edge_problems, scheduled
 from spectracut.studio.profiles import available_profiles, load_profile
 from spectracut.studio.runner import CapacityLimits, DepartmentRunner
+from spectracut.studio.scene_builder import SceneBrief, SceneBuild, SceneBuilder
 from spectracut.studio.store import ProductionError, ProductionStore, write_atomic
 
 if TYPE_CHECKING:
@@ -47,7 +59,6 @@ if TYPE_CHECKING:
     from spectracut.audio.music_edit import Stretcher
     from spectracut.audio.render import ArdourRunner
     from spectracut.audio.vo import VoiceOver
-    from spectracut.providers.base import VisionJudge
     from spectracut.providers.local.registry import LocalProvider
 
 studio_app = typer.Typer(
@@ -257,13 +268,16 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
 
     Productions on the ``device-shot`` profile run through the device-shot runner.
     Other profiles render ``template_shots`` and ``shots`` nodes on the farm through
-    :class:`~spectracut.studio.departments.shots.ShotRunner`, and build
-    ``style_frames`` and ``animatic`` through
+    :class:`~spectracut.studio.departments.shots.ShotRunner` (boards no template fits
+    are built by the scene builder and rendered as animated sequences at the board's
+    duration, lens and move), and build ``style_frames`` and ``animatic`` through
     :class:`~spectracut.studio.departments.art.PreproductionRunner`: style frames get
-    a local concept image (when a local image model is reachable) and a final-tier
-    Blender render on the farm, and the animatic is cut in code to the voiceover's
-    audio: its boards render at the preview tier on the farm and its review mp4 is
-    encoded by ffmpeg (:data:`animatic_preview_factory`). Farm dependencies
+    a local concept image (when a local image model is reachable) and are built by the
+    scene builder (:class:`SceneStyleFrameRenderer`: the text provider builds, the
+    vision judge verifies, preview renders on the farm) and re-rendered at the final
+    tier, with every frame listed for the gate's review page; the animatic is cut in
+    code to the voiceover's audio: its boards render at the preview tier on the farm
+    and its review mp4 is encoded by ffmpeg (:data:`animatic_preview_factory`). Farm dependencies
     (:data:`device_shot_factory`) are built on the first shot or style-frame render,
     so text-only runs never need the Flamenco env or the signing key. ``edit``,
     ``render`` and ``delivery`` nodes are built in code by
@@ -299,6 +313,44 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                 farm = device_shot_factory(production)
             return farm
 
+    provider: list[TextProvider] = []
+    judge: list[VisionJudge] = []
+    profile = graph.profile or load_profile("standard")
+    production_dir = production.store.path(production.id)
+
+    def builder_text() -> TextProvider:
+        with farm_lock:
+            if not provider:
+                if text_provider_factory is None:
+                    raise LookupError("no text provider configured for the scene builder")
+                provider.append(text_provider_factory())
+            return provider[0]
+
+    def builder_judge() -> VisionJudge:
+        found = farm_deps().judge
+        with farm_lock:
+            if not judge:
+                judge.append(found if found is not None else select_vision_judge())
+            return judge[0]
+
+    def build_scene(brief: SceneBrief) -> SceneBuild:
+        """One scene builder per shot brief (its critic is bound to the description)."""
+        workdir = production_dir / "shots" / "scene"
+        builder = SceneBuilder(
+            builder_text(),
+            FarmRecipeRenderer(farm_deps, graph.production_id, workdir),
+            scene_critic(
+                builder_judge(),
+                profile=profile,
+                description=brief.description,
+                art=brief.art,
+                brand_kit=brief.brand_kit,
+            ),
+            profile,
+            workdir,
+        )
+        return builder.build(brief)
+
     def text(ctx: RunContext) -> RunResult:
         nonlocal inner
         name = ctx.spec.department
@@ -328,7 +380,15 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                     text,
                     DEPARTMENTS,
                     explorer=art_depts.default_explorer(runtime=runtime),
-                    renderer=FarmStyleFrameRenderer(farm_deps, graph.production_id, workdir),
+                    renderer=SceneStyleFrameRenderer(
+                        builder_text,
+                        builder_judge,
+                        profile,
+                        farm_deps,
+                        graph.production_id,
+                        workdir,
+                        brand_kit=lambda: _brand_kit_of(graph),
+                    ),
                     voice=art_depts.default_voice(runtime=runtime),
                     workdir=workdir,
                     board_renderer=FarmStyleFrameRenderer(
@@ -339,6 +399,7 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                         node_id=art_depts.ANIMATIC,
                     ),
                     preview=animatic_preview_factory(),
+                    media_root=production_dir,
                 )
             runner = preproduction
         return runner(ctx)
@@ -409,6 +470,8 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                     judge=deps.judge,
                     production_id=graph.production_id,
                     options=deps.options,
+                    scene_builder=build_scene,
+                    art_for=_art_for(graph),
                 )
             runner = shots
         return runner(ctx)
@@ -701,6 +764,41 @@ def _with_params(spec: NodeSpec, extra: dict[str, JsonValue]) -> NodeSpec:
     return spec.model_copy(update={"params": params})
 
 
+def _output_of_kind(graph: ProductionGraph, kind: str, prefer: tuple[str, ...] = ()) -> Any:
+    """The accepted output of a node of ``kind`` (one of ``prefer`` first), or ``None``."""
+    ids = [*prefer, *graph.order()]
+    for nid in ids:
+        try:
+            if graph.spec(nid).kind != kind:
+                continue
+            return graph.output(nid)
+        except (KeyError, LookupError, ValueError):
+            continue
+    return None
+
+
+def _art_for(graph: ProductionGraph) -> Callable[[NodeSpec], ArtDirection | None]:
+    """The art direction a node reads: its ``art_direction`` input, else the graph's."""
+
+    def art_for(spec: NodeSpec) -> ArtDirection | None:
+        raw = _output_of_kind(graph, art_depts.ART_DIRECTION, spec.inputs)
+        try:
+            return ArtDirection.model_validate(raw) if raw is not None else None
+        except ValidationError:
+            return None
+
+    return art_for
+
+
+def _brand_kit_of(graph: ProductionGraph) -> BrandKit | None:
+    """The production's brand kit node output, if it has run."""
+    raw = _output_of_kind(graph, art_depts.BRAND_KIT)
+    try:
+        return BrandKit.model_validate(raw) if raw is not None else None
+    except ValidationError:
+        return None
+
+
 def _pass_score(graph: ProductionGraph) -> float:
     """The profile's Critic pass score (the default profile's when none is set)."""
     if graph.profile is not None:
@@ -762,7 +860,14 @@ def run_cmd(
             scheduled(runner, departments=DEPARTMENTS),
             caps=meta.caps,
             approved=meta.budget_approvals,
-            critic=shot_depts.shot_critic(_pass_score(graph)),
+            critic=shot_depts.shot_critic(
+                _pass_score(graph),
+                inner=style_frames_critic(
+                    select_vision_judge,
+                    profile=graph.profile or load_profile("standard"),
+                    art_for=_art_for(graph),
+                ),
+            ),
             max_workers=workers,
             autonomy=policy,
         )
