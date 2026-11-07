@@ -1,0 +1,159 @@
+{
+ "status": "fixed",
+ "summary": "Style frames and boards render without the optional image model: setup-state installed query on ModelRuntime, default_explorer skips with a node note, explorer failures degrade to no concept",
+ "requirements": [
+  {
+   "id": "R1",
+   "status": "implemented",
+   "evidence": "src/spectracut/studio/departments/art.py:342"
+  },
+  {
+   "id": "R2",
+   "status": "implemented",
+   "evidence": "src/spectracut/providers/local/installed.py:15"
+  },
+  {
+   "id": "R3",
+   "status": "implemented",
+   "evidence": "tests/studio/test_art_departments.py:320"
+  },
+  {
+   "id": "R4",
+   "status": "implemented",
+   "evidence": "src/spectracut/cli/studio.py:423"
+  },
+  {
+   "id": "R5",
+   "status": "implemented",
+   "evidence": "tests/studio/test_art_departments.py:363"
+  },
+  {
+   "id": "R6",
+   "status": "implemented",
+   "evidence": "forgedock check: V1-V5 PASS"
+  }
+ ],
+ "validation": [
+  {
+   "id": "V1",
+   "command": "uv run pytest -q tests/studio/test_art_departments.py tests/storyboard/test_preproduction.py tests/providers/test_local_runtime.py tests/providers/test_remote_runtime.py",
+   "exit": 0
+  },
+  {
+   "id": "V2",
+   "command": "uv run pytest -q tests/cli/test_studio_run.py tests/cli/test_cli.py tests/studio/test_finishing_departments.py",
+   "exit": 0
+  },
+  {
+   "id": "V3",
+   "command": "uv run pytest -q tests/acceptance/test_m2_preproduction.py",
+   "exit": 0
+  },
+  {
+   "id": "V4",
+   "command": "uv run ruff check ... && uv run ruff format --check ...",
+   "exit": 0
+  },
+  {
+   "id": "V5",
+   "command": "uv run mypy src/spectracut/providers/local/runtime.py src/spectracut/providers/local/installed.py src/spectracut/studio/departments/art.py src/spectracut/cli/studio.py",
+   "exit": 0
+  }
+ ],
+ "tests": [
+  {
+   "command": "uv run pytest -q tests/studio/test_art_departments.py -k test_style_frames_render_without_concept_when_image_model_not_installed",
+   "result": "pass",
+   "fails_without_fix": true
+  },
+  {
+   "command": "uv run pytest -q tests/cli/test_studio_run.py -k image_model",
+   "result": "pass",
+   "fails_without_fix": true
+  }
+ ],
+ "self_review": [
+  {
+   "question": "1",
+   "answer": "yes",
+   "evidence": "R1-R5 delivered: art.py:342,349,505-524; studio.py:232,423; installed.py:15; tests at test_art_departments.py:320-379 and test_studio_run.py:418"
+  },
+  {
+   "question": "2",
+   "answer": "yes",
+   "evidence": "V1/V2/V3 pass; default_explorer signature and studio.py:402 call shape kept (P1); ModelRuntime adds only a keyword (P4); setup untouched (git diff -- src/spectracut/setup is empty)"
+  },
+  {
+   "question": "3",
+   "answer": "yes",
+   "evidence": "D1-D4 match the contract; forgedock check PASS for V1-V5"
+  },
+  {
+   "question": "4",
+   "answer": "yes",
+   "evidence": "git diff --name-only: 4 deliverable src files + 3 test files"
+  }
+ ],
+ "amendments": [],
+ "not_members": [
+  {
+   "symbol": "concept_skip_reason",
+   "test": "tests/cli/test_studio_run.py:233",
+   "why": "the list there is the fake department dispatch by node kind; a helper function is not a node kind"
+  },
+  {
+   "symbol": "concept_skip_reason",
+   "test": "tests/cli/test_studio_run.py:254",
+   "why": "enumerates node kinds the fake departments answer, not department helpers"
+  },
+  {
+   "symbol": "concept_skip_reason",
+   "test": "tests/studio/test_finishing_departments.py:164",
+   "why": "builds rendered-shot rows; does not enumerate art department functions"
+  },
+  {
+   "symbol": "_note_once",
+   "test": "tests/acceptance/recorded/__init__.py:9",
+   "why": "private studio helper; the recorded module lists acceptance fakes, not CLI helpers"
+  },
+  {
+   "symbol": "_note_once",
+   "test": "tests/cli/test_cli.py:92",
+   "why": "private helper, not a CLI command or profile stage"
+  },
+  {
+   "symbol": "_note_once",
+   "test": "tests/cli/test_cli.py:2",
+   "why": "private helper, not a CLI command"
+  },
+  {
+   "symbol": "installed_models",
+   "test": "tests/cli/test_cli.py:2",
+   "why": "lives in providers.local, not a CLI command"
+  },
+  {
+   "symbol": "installed",
+   "test": "tests/audio/test_generate.py:80",
+   "why": "line 80 is the runtime() helper building a fake ModelRuntime; the test does not enumerate providers.local modules or ModelRuntime attributes"
+  },
+  {
+   "symbol": "installed",
+   "test": "tests/test_model_check.py:171",
+   "why": "covers the model-check script's result records (build_record/append_result); unrelated to providers.local modules"
+  }
+ ],
+ "facts": {
+  "rejected": [
+   {
+    "approach": "models-serve probe over ssh",
+    "why": "costs an ssh round trip per run; setup state is free and is what setup itself checks (K1)"
+   }
+  ],
+  "hotspots": [
+   {
+    "at": "tests/providers/test_local_runtime.py:161",
+    "why": "stale since the built-in factory table (#296): failed on base; assertion now matches the setup hint"
+   }
+  ]
+ }
+}

@@ -1,0 +1,20 @@
+....................................................Fs...............    [100%]
+=================================== FAILURES ===================================
+_________________ test_host_loader_requires_installed_factory __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f8a3b6bf4d0>
+
+    def test_host_loader_requires_installed_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+        from spectracut_host.models import entry_env, load_model
+    
+        monkeypatch.delenv(entry_env("ezaudio"), raising=False)
+>       with pytest.raises(ProviderError, match="SPECTRACUT_MODEL_ENTRY_EZAUDIO"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: Regex pattern did not match.
+E         Expected regex: 'SPECTRACUT_MODEL_ENTRY_EZAUDIO'
+E         Actual message: 'local: ezaudio-xl: source not installed at /home/dev/.forge/tmp/runs/326-1794016886995/pytest-of-dev/pytest-11/test_host_loader_requires_inst0/model-root/ezaudio/ezaudio-xl/src: run `spectracut setup`'
+
+tests/providers/test_local_runtime.py:165: AssertionError
+=========================== short test summary info ============================
+FAILED tests/providers/test_local_runtime.py::test_host_loader_requires_installed_factory
+1 failed, 67 passed, 1 skipped in 1.99s
