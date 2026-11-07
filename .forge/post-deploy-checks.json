@@ -118,5 +118,15 @@
     "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && SPECTRACUT_E2E=1 uv run pytest -q -m e2e tests/host/test_hunyuan_foley_e2e.py",
     "pass": "/\\b1 passed\\b/",
     "timeout": 3600
+  },
+  "studio-sound-design-legion-e2e": {
+    "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && SPECTRACUT_E2E=1 uv run pytest -q -m e2e tests/host/test_sound_design_legion_e2e.py",
+    "pass": "/\\b2 passed\\b/",
+    "timeout": 3600
+  },
+  "models-doctor-legion-healthy": {
+    "run": "cd \"${SPECTRACUT_REPO:-$HOME/Projects/SpectraCut}\" && uv run python -c \"from spectracut.setup import model_lines; bad=[l for l in model_lines(model_host='legion') if not l.endswith(': healthy')]; print('\\n'.join(bad) or 'all models healthy')\"",
+    "pass": "/^all models healthy$/m",
+    "timeout": 120
   }
 }

@@ -146,6 +146,27 @@ and motion in #125. Run `push.sh legion`, then on `legion`:
 | Image | `run.ps1 tts dl_queue.py FLUX.2-klein`, then `run.ps1 img image_diffusers.py flux2klein gguf-Q8_0` | about 12 GB |
 | Omni critic | `run.ps1 tts dl_queue.py LFM3-Omni`, then `run.ps1 omni omni_lfm.py` | about 5 GB |
 
+## Studio sound stages on legion (#303)
+
+The studio's `sound_design` and `music` stages run on the real models through `RemoteLoader` (ssh `models-serve`).
+On the dev box, with legion registered:
+
+1. `spectracut setup`, then `spectracut doctor`: every model line must read `healthy`
+   (post-deploy check `models-doctor-legion-healthy`).
+2. `SPECTRACUT_E2E=1 uv run pytest -q -m e2e tests/host/test_sound_design_legion_e2e.py`
+   (post-deploy check `studio-sound-design-legion-e2e`). Override the host with `SPECTRACUT_MODEL_HOST` and
+   `SPECTRACUT_MODEL_HOST_OS`.
+3. The full AlterLab run is `m2-launch-film-farm-e2e` (`tests/acceptance/test_m2_launch_film.py`).
+
+| Stage | Model | Cues | Wall seconds | GPU minutes | Result |
+|---|---|---|---|---|---|
+| sound_design | ezaudio-xl | - | - | - | pending first live run (check `studio-sound-design-legion-e2e`) |
+| music | ace-step | - | - | - | pending first live run (check `studio-sound-design-legion-e2e`) |
+
+Foley is not requested by any studio stage yet: `SoundRunner._sound_design` builds sound-effect cues only, and foley
+needs the picture as a host-local `video_path`. HunyuanVideo-Foley is covered only by
+`tests/host/test_hunyuan_foley_e2e.py`.
+
 ## Owner actions
 
 1. **Stable Audio Open Small and 1.0** (Stability AI Community licence): log in to Hugging Face, accept the licence on
