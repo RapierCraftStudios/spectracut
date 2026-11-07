@@ -40,6 +40,7 @@ from spectracut.queue.flamenco import WorkerTag
 from spectracut.queue.signing import generate_keypair, load_private_key
 from spectracut.studio import device_shot as ds
 from spectracut.studio.departments.sound import DEFAULT_VOICE
+from spectracut.studio.departments.style_frame_farm import FarmStyleFrameRenderer
 from spectracut.studio.graph import ProductionGraph
 from spectracut.studio.node import NodeStatus
 from spectracut.studio.runner import CONTEXT_METRIC
@@ -135,6 +136,14 @@ class Ticks:
     def __call__(self) -> float:
         self.t += 90.0
         return self.t
+
+
+def recipe_style_frames(*args: Any, **kwargs: Any) -> FarmStyleFrameRenderer:
+    """Stands in for :class:`SceneStyleFrameRenderer`: style frames render their recipe on
+    the (fake) farm. The scene builder's tool-call loop needs a live text model and vision
+    judge; the recorded film replays only the departments' typed outputs."""
+    _text, _vision, _profile, deps, production_id, workdir = args
+    return FarmStyleFrameRenderer(deps, production_id, workdir)
 
 
 def fake_farm(
@@ -329,6 +338,8 @@ def launch_film(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Film]:
         mp.setattr("spectracut.qa.copy_ocr.available_reader", lambda: None)
         mp.setattr(studio_mod, "text_provider_factory", lambda: provider)
         mp.setattr(studio_mod, "device_shot_factory", fake_farm(tmp, farm))
+        mp.setattr(studio_mod, "SceneStyleFrameRenderer", recipe_style_frames)
+        mp.setattr(studio_mod, "select_vision_judge", lambda: PassingJudge())
         mp.setattr(studio_mod, "sound_factory", fake_sound(voice))
         outputs = run_film(home, LAUNCH_ID)
         store = ProductionStore(home)
