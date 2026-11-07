@@ -1,16 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Device templates: a logo-free laptop or phone with the product UI on its screen.
+"""Device templates: a MacBook Pro or iPhone kit model with the product UI on its screen.
 
-The rig is the host's ``device.add`` (bevelled aluminium body, bezel, reflective
-glass cover, moire-free pixel-grid screen, untextured keyboard deck). The screen
-is a slot: a sha256-pinned image sequence or movie from the host assets dir. Its
-emission strength is calibrated with
-:func:`spectracut.finishing.color.screen_white_strength` so UI white reads as
-display white under the shot's view transform. Lighting is a studio preset
-(``lighting``: key, fill and rim area lights from ``light.add``) over either a
-pinned HDRI world (``world.set_hdri``) or, when no HDRI is pinned, a neutral
-studio gradient (``world.set_gradient``). The floor is a glossy plastic in the
-kit's surface colour so the device reflects in it. No step adds text or a logo.
+The device is a sha256-pinned glTF model from the device kit
+(:mod:`spectracut.templates.device_kit`: ``macbook-pro`` for the laptop,
+``iphone-15-pro`` for the phone), imported by the host's ``device.add`` with
+``model``: animation cleared, scaled to real size, its lowest point on the floor and
+the capture planar-mapped onto the display faces, cover-cropped from the top. The
+screen is a slot: a sha256-pinned image sequence or movie from the host assets dir,
+shown at a fixed emission of :data:`~spectracut.templates.device_kit.SCREEN_EMISSION`
+with a fresnel-mixed glossy coat. The MacBook body takes a ``finish`` (space-black or
+silver).
+
+The set is a sweep (floor plus back wall) in one of two ``set`` variants: ``dark``
+(albedo 0.004, specular 0.25, roughness 0.28) or ``light`` (warm grey, albedo 0.72),
+lit by the ``apple-studio`` rig from ``light.add``: a 0.9x0.6 m top key, two thin
+0.06x1.2 m rim strips behind left and right, a weak front fill and a background
+sweep light, all hidden from the camera. Rig positions and the cameras (70 mm, about
+1.2 m, front and three-quarter) derive from the kit's measured screen frame. A pinned
+HDRI world (``world.set_hdri``) replaces the set's gradient world when given.
 """
 
 from __future__ import annotations
@@ -18,40 +25,60 @@ from __future__ import annotations
 import math
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 
-from spectracut.finishing.color import ColorPipeline, screen_white_strength
+from spectracut.finishing.color import ColorPipeline
 from spectracut.spec._base import StrictModel
 from spectracut.spec.brand import BrandKit
+from spectracut.templates import device_kit
 from spectracut.templates.base import Call, CameraVariant, PinnedAsset, Template, swatch
+from spectracut.templates.device_kit import SCREEN_EMISSION, DeviceAsset, Vec3
 
 DEVICE = "device"
 FLOOR = "floor"
+BACKDROP = "backdrop"
+RIG = "apple-studio"
 DeviceKind = Literal["laptop", "phone"]
-# Half the device height (metres), so the floor sits just under the rig.
-_HALF_HEIGHT: dict[str, float] = {"laptop": 0.11, "phone": 0.08}
-Lighting = Literal["studio-soft", "studio-dark", "studio-bright"]
-# Area-light energies (W) for key, fill and rim, and the gradient world (bottom,
-# top grey in scene-linear, strength) used when no HDRI is pinned.
-LIGHTING: dict[str, dict[str, tuple[float, ...]]] = {
-    "studio-soft": {"energy": (60, 25, 40), "world": (0.02, 0.12, 0.6)},
-    "studio-dark": {"energy": (45, 8, 70), "world": (0.004, 0.03, 0.4)},
-    "studio-bright": {"energy": (90, 45, 35), "world": (0.08, 0.4, 0.9)},
+SetVariant = Literal["dark", "light"]
+Finish = Literal["space-black", "silver"]
+DEFAULT_FINISH: Finish = "space-black"
+# Set materials: (colour, material.apply_preset overrides). Dark is near-black with
+# specular 0.25 (F0 0.02, IOR 1.33) at roughness 0.28; light is warm grey at albedo 0.72.
+SET_PRESET = "matte_plastic"
+SETS: dict[str, tuple[list[float], dict[str, float]]] = {
+    "dark": ([0.004, 0.004, 0.004], {"roughness": 0.28, "ior": 1.33}),
+    "light": ([0.75, 0.72, 0.68], {"roughness": 0.5, "ior": 1.45}),
 }
-FLOOR_PRESET = "glossy_plastic"
-FINISH = "aluminium"
-# Corner bevel (metres) passed to the host rig per kind.
-_BEVEL: dict[str, float] = {"laptop": 0.003, "phone": 0.004}
+# apple-studio energies (W): key, each rim, fill, sweep; and the gradient world
+# (bottom, top grey in scene-linear, strength) when no HDRI is pinned.
+RIG_ENERGY: dict[str, dict[str, float]] = {
+    "dark": {"key": 90.0, "rim": 45.0, "fill": 6.0, "sweep": 20.0},
+    "light": {"key": 110.0, "rim": 30.0, "fill": 18.0, "sweep": 60.0},
+}
+SET_WORLD: dict[str, tuple[float, float, float]] = {
+    "dark": (0.0005, 0.002, 0.3),
+    "light": (0.08, 0.2, 0.5),
+}
+# The sweep: a floor plane at z = 0 and a back wall this far behind the screen.
+BACKDROP_DEPTH = 1.6
+# Three-quarter yaw and the elevation (degrees) of each framing.
+THREE_QUARTER = 35.0
+FRAMINGS: dict[str, tuple[float, float]] = {
+    "front": (0.0, 8.0),
+    "three-quarter": (THREE_QUARTER, 12.0),
+}
 
 
-def _deg(*angles: float) -> tuple[float, float, float]:
-    x, y, z = (round(math.radians(a), 6) for a in angles)
-    return (x, y, z)
+def set_for(kit: BrandKit) -> SetVariant:
+    """``dark`` for a kit whose surface swatch is dark (luminance < 0.05), else ``light``."""
+    r, g, b = (float(c) for c in swatch(kit, "surface")[:3])  # type: ignore[arg-type]
+    return "dark" if 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.05 else "light"
 
 
 class DeviceSlots(StrictModel):
-    """The screen content (frames or a movie), the studio ``lighting`` preset and an
-    optional pinned HDRI world (``hdri``; without it a studio gradient lights the set)."""
+    """The screen content (frames or a movie), the kit ``model`` (default: the kit's
+    model for the template's kind), the body ``finish``, the ``set`` variant (default:
+    from the kit's surface swatch) and an optional pinned HDRI world."""
 
     screen_frames: list[PinnedAsset] | None = Field(
         default=None,
@@ -65,11 +92,19 @@ class DeviceSlots(StrictModel):
     frame_offset: Annotated[int, Field(ge=0)] = Field(
         default=0, description="Frames to skip at the start of the screen content."
     )
-    lighting: Lighting = Field(
-        default="studio-soft", description="Studio lighting preset: key, fill and rim lights."
+    model: PinnedAsset | None = Field(
+        default=None,
+        description="The pinned device glb; omit for the device kit's model for this kind.",
+    )
+    finish: Finish = Field(
+        default=DEFAULT_FINISH, description="Body finish of the MacBook: space-black or silver."
+    )
+    set: SetVariant | None = Field(
+        default=None,
+        description="Set variant: dark or light; omit to follow the kit's surface swatch.",
     )
     hdri: PinnedAsset | None = Field(
-        default=None, description="A pinned HDRI world; omit for the studio gradient world."
+        default=None, description="A pinned HDRI world; omit for the set's gradient world."
     )
     hdri_strength: Annotated[float, Field(ge=0, le=1000)] = Field(
         default=1.0, description="Brightness of the HDRI world."
@@ -93,12 +128,139 @@ class DeviceSlots(StrictModel):
         return {"frames": frames, "frame_offset": self.frame_offset}
 
 
+def kit_entry(kind: DeviceKind, model: PinnedAsset | None = None) -> DeviceAsset:
+    """The kit entry a ``kind`` device shows: the one pinned by ``model``'s sha256,
+    else the kit's model for ``kind`` (whose screen selectors a re-pinned copy keeps)."""
+    if model is not None:
+        found = device_kit.by_sha256(model.sha256)
+        if found is not None:
+            return found
+    return device_kit.kit_for(kind)
+
+
+def _model_arg(entry: DeviceAsset, model: PinnedAsset | None) -> dict[str, object]:
+    pinned = model if model is not None else entry.pinned()
+    arg: dict[str, object] = {
+        **pinned.arg(),
+        "screen": entry.screen.arg(),
+        "real_width": entry.real_width,
+    }
+    if entry.body_material is not None:
+        arg["body_material"] = entry.body_material
+    return arg
+
+
+def _offset(c: Vec3, dx: float, dy: float, dz: float) -> list[JsonValue]:
+    return [round(c[0] + dx, 4), round(c[1] + dy, 4), round(c[2] + dz, 4)]
+
+
+def _aim(location: list[JsonValue], target: Vec3) -> list[JsonValue]:
+    x, y, z = (float(v) for v in location)  # type: ignore[arg-type]
+    loc: Vec3 = (x, y, z)
+    return [round(a, 6) for a in device_kit.look_rotation(loc, target)]
+
+
+def studio_rig(entry: DeviceAsset, set_variant: SetVariant) -> list[Call]:
+    """The ``apple-studio`` rig around ``entry``'s screen frame, hidden from the camera:
+    top key 0.9x0.6 m, rim strips 0.06x1.2 m behind left and right, a weak front fill
+    and a sweep light on the back wall."""
+    energy = RIG_ENERGY[set_variant]
+    c = entry.frame.centre
+    lo, hi = entry.bounds
+    half = max(hi[0] - lo[0], hi[2] - lo[2]) / 2
+    key = _offset(c, 0.0, -0.15, 0.9)
+    rims = {
+        "rim_left": _offset(c, -(half + 0.3), 0.45, 0.2),
+        "rim_right": _offset(c, half + 0.3, 0.45, 0.2),
+    }
+    fill = _offset(c, 0.0, -1.6, 0.25)
+    wall: Vec3 = (c[0], c[1] + BACKDROP_DEPTH, 0.35)
+    sweep: list[JsonValue] = [round(c[0], 4), round(c[1] + BACKDROP_DEPTH * 0.45, 4), 1.3]
+    hidden: dict[str, JsonValue] = {"kind": "area", "camera_visible": False}
+    calls: list[Call] = [
+        (
+            "light.add",
+            {
+                **hidden,
+                "name": "key",
+                "energy": energy["key"],
+                "location": key,
+                "rotation": [round(math.radians(10), 6), 0.0, 0.0],
+                "size": 0.9,
+                "size_y": 0.6,
+            },
+        )
+    ]
+    for name, at in rims.items():
+        calls.append(
+            (
+                "light.add",
+                {
+                    **hidden,
+                    "name": name,
+                    "energy": energy["rim"],
+                    "location": at,
+                    "rotation": _aim(at, c),
+                    "size": 0.06,
+                    "size_y": 1.2,
+                },
+            )
+        )
+    calls += [
+        (
+            "light.add",
+            {
+                **hidden,
+                "name": "fill",
+                "energy": energy["fill"],
+                "location": fill,
+                "rotation": _aim(fill, c),
+                "size": 1.0,
+            },
+        ),
+        (
+            "light.add",
+            {
+                **hidden,
+                "name": "sweep",
+                "energy": energy["sweep"],
+                "location": sweep,
+                "rotation": _aim(sweep, wall),
+                "size": 2.0,
+            },
+        ),
+    ]
+    return calls
+
+
+def _set_calls(entry: DeviceAsset, set_variant: SetVariant) -> list[Call]:
+    colour, overrides = SETS[set_variant]
+    y = round(entry.frame.centre[1] + BACKDROP_DEPTH, 4)
+    calls: list[Call] = [
+        (
+            "object.add_primitive",
+            {"kind": "plane", "name": FLOOR, "location": [0, 0, 0], "scale": [6, 6, 1]},
+        ),
+        (
+            "object.add_slab",
+            {"name": BACKDROP, "dimensions": [12, 0.02, 6], "location": [0, y, 3]},
+        ),
+    ]
+    for obj in (FLOOR, BACKDROP):
+        calls.append(
+            (
+                "material.apply_preset",
+                {"object": obj, "preset": SET_PRESET, "color": list(colour), **overrides},
+            )
+        )
+    return calls
+
+
 def _scene(kind: DeviceKind) -> object:
     def scene(kit: BrandKit, slots: DeviceSlots, pipeline: ColorPipeline) -> list[Call]:
-        floor_z = -_HALF_HEIGHT[kind]
-        preset = LIGHTING[slots.lighting]
-        key, fill, rim = preset["energy"]
-        bottom, top, strength = preset["world"]
+        entry = kit_entry(kind, slots.model)
+        set_variant: SetVariant = slots.set or set_for(kit)
+        bottom, top, strength = SET_WORLD[set_variant]
         world: Call = (
             (
                 "world.set_hdri",
@@ -114,112 +276,58 @@ def _scene(kind: DeviceKind) -> object:
                 {"bottom": [bottom] * 3, "top": [top] * 3, "strength": strength},
             )
         )
+        device: dict[str, object] = {
+            "kind": kind,
+            "name": DEVICE,
+            "location": [0, 0, 0],
+            "rotation": [0, 0, 0],
+            "model": _model_arg(entry, slots.model),
+            "screen": slots.screen_arg(),
+            "emission_strength": SCREEN_EMISSION,
+        }
+        if entry.finishes:
+            device["finish"] = slots.finish
         return [
-            (
-                "object.add_primitive",
-                {"kind": "plane", "name": FLOOR, "location": [0, 0, floor_z], "scale": [6, 6, 1]},
-            ),
-            (
-                "material.apply_preset",
-                {"object": FLOOR, "preset": FLOOR_PRESET, "color": swatch(kit, "surface")},
-            ),
-            (
-                "device.add",
-                {
-                    "kind": kind,
-                    "name": DEVICE,
-                    "location": [0, 0, 0],
-                    "rotation": [0, 0, 0],
-                    "screen": slots.screen_arg(),  # type: ignore[dict-item]
-                    "emission_strength": screen_white_strength(pipeline),
-                    "bevel": _BEVEL[kind],
-                    "finish": FINISH,
-                },
-            ),
+            *_set_calls(entry, set_variant),
+            ("device.add", device),  # type: ignore[list-item]
             world,
-            (
-                "light.add",
-                {
-                    "kind": "area",
-                    "name": "key",
-                    "energy": key,
-                    "location": [0.8, -0.9, 0.8],
-                    "rotation": list(_deg(55, 0, 40)),
-                },
-            ),
-            (
-                "light.add",
-                {
-                    "kind": "area",
-                    "name": "fill",
-                    "energy": fill,
-                    "location": [-0.9, -0.7, 0.3],
-                    "rotation": list(_deg(70, 0, -50)),
-                },
-            ),
-            (
-                "light.add",
-                {
-                    "kind": "area",
-                    "name": "rim",
-                    "energy": rim,
-                    "location": [-0.7, 0.6, 0.5],
-                    "rotation": list(_deg(-60, 0, -130)),
-                },
-            ),
+            *studio_rig(entry, set_variant),
         ]
 
     return scene
 
 
+def device_variants(entry: DeviceAsset) -> tuple[CameraVariant, ...]:
+    """Front and three-quarter cameras on ``entry``'s screen, each with its own 9:16
+    camera re-framed to keep the whole device in frame."""
+    out = []
+    for vid, (yaw, elevation) in FRAMINGS.items():
+        wide = device_kit.kit_camera(entry, yaw=yaw, elevation=elevation, aspect=16 / 9)
+        tall = device_kit.kit_camera(entry, yaw=yaw, elevation=elevation, aspect=9 / 16)
+        out.append(
+            CameraVariant(
+                id=vid,
+                location=wide.location,
+                rotation=wide.rotation,
+                lens=wide.lens,
+                vertical_location=tall.location,
+                vertical_rotation=tall.rotation,
+                vertical_lens=tall.lens,
+            )
+        )
+    return tuple(out)
+
+
 LAPTOP = Template(
     id="device-laptop",
     slots=DeviceSlots,
-    variants=(
-        CameraVariant(
-            id="front",
-            location=(0, -0.95, 0.04),
-            rotation=_deg(88, 0, 0),
-            lens=50,
-            vertical_location=(0, -1.55, 0.04),
-            vertical_rotation=_deg(88, 0, 0),
-            vertical_lens=50,
-        ),
-        CameraVariant(
-            id="three-quarter",
-            location=(0.62, -0.74, 0.22),
-            rotation=_deg(80, 0, 40),
-            lens=50,
-            vertical_location=(0.38, -0.5, 0.12),
-            vertical_rotation=_deg(84, 0, 38),
-            vertical_lens=35,
-        ),
-    ),
+    variants=device_variants(device_kit.kit_for("laptop")),
     scene=_scene("laptop"),  # type: ignore[arg-type]
 )
 
 PHONE = Template(
     id="device-phone",
     slots=DeviceSlots,
-    variants=(
-        CameraVariant(
-            id="front",
-            location=(0, -0.62, 0.0),
-            rotation=_deg(90, 0, 0),
-            lens=50,
-            vertical_location=(0, -0.42, 0.0),
-            vertical_rotation=_deg(90, 0, 0),
-            vertical_lens=50,
-        ),
-        CameraVariant(
-            id="three-quarter",
-            location=(0.36, -0.45, 0.1),
-            rotation=_deg(80, 0, 38),
-            lens=50,
-            vertical_location=(0.22, -0.3, 0.06),
-            vertical_rotation=_deg(82, 0, 36),
-            vertical_lens=50,
-        ),
-    ),
+    variants=device_variants(device_kit.kit_for("phone")),
     scene=_scene("phone"),  # type: ignore[arg-type]
 )

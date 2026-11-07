@@ -2,12 +2,12 @@
 """Shot template library (Python definitions and assets manifest).
 
 Brand-kit-driven, deterministic recipe builders on the host's template ops:
-devices (laptop, phone), hero object, end card and depth/cutout typography.
+devices (laptop, phone on the glTF device kit), hero object, end card and depth/cutout typography.
 """
 
 from __future__ import annotations
 
-from spectracut.templates import base, devices, end_card, hero_object, typography
+from spectracut.templates import base, device_kit, devices, end_card, hero_object, typography
 from spectracut.templates.base import Template
 from spectracut.templates.devices import LAPTOP, PHONE
 from spectracut.templates.end_card import END_CARD
@@ -28,6 +28,7 @@ __all__ = [
     "TEMPLATES",
     "TYPOGRAPHY",
     "base",
+    "device_kit",
     "devices",
     "end_card",
     "hero_object",

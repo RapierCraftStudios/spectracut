@@ -189,6 +189,91 @@ def by_sha256(sha256: str) -> DeviceAsset | None:
     return next((a for a in DEVICE_KIT.values() if a.sha256 == sha256), None)
 
 
+# ---- camera from the screen frame ----------------------------------------------------------
+
+KIT_LENS = 70.0
+"""Lens (mm) of the kit device cameras."""
+KIT_DISTANCE = 1.2
+"""Camera distance (m) to the MacBook screen centre; other models scale it by screen width."""
+SENSOR = 36.0
+"""Sensor width (mm) on the frame's long edge (Blender's AUTO sensor fit)."""
+FRAME_MARGIN = 0.95
+"""The device bounds must sit inside this fraction of the half-frame."""
+
+
+@dataclass(frozen=True)
+class KitCamera:
+    """A camera aimed at the screen centre (Blender XYZ Euler radians, level horizon)."""
+
+    location: Vec3
+    rotation: Vec3
+    lens: float
+    distance: float
+
+
+def look_rotation(location: Vec3, target: Vec3) -> Vec3:
+    """The XYZ Euler that points a camera's (or area light's) -Z axis from
+    ``location`` at ``target`` with no roll."""
+    d = (target[0] - location[0], target[1] - location[1], target[2] - location[2])
+    horizontal = math.hypot(d[0], d[1])
+    return (math.atan2(horizontal, -d[2]), 0.0, math.atan2(-d[0], d[1]))
+
+
+def in_frame(location: Vec3, target: Vec3, lens: float, aspect: float, points: list[Vec3]) -> bool:
+    """True when every point projects inside ``FRAME_MARGIN`` of a camera at
+    ``location`` aimed at ``target`` (``aspect`` is width / height)."""
+    f = _unit((target[0] - location[0], target[1] - location[1], target[2] - location[2]))
+    right = _unit(_cross(f, (0.0, 0.0, 1.0)))
+    up = _cross(right, f)
+    long_half = SENSOR / 2 / lens
+    half_w = long_half if aspect >= 1 else long_half * aspect
+    half_h = long_half / aspect if aspect >= 1 else long_half
+    for p in points:
+        rel = (p[0] - location[0], p[1] - location[1], p[2] - location[2])
+        depth = _dot(rel, f)
+        if depth <= 0:
+            return False
+        x, y = _dot(rel, right) / depth, _dot(rel, up) / depth
+        if abs(x) > half_w * FRAME_MARGIN or abs(y) > half_h * FRAME_MARGIN:
+            return False
+    return True
+
+
+def kit_camera(entry: DeviceAsset, *, yaw: float, elevation: float, aspect: float) -> KitCamera:
+    """The camera on ``entry``'s screen: from the screen centre along the screen
+    normal turned ``yaw`` degrees about world Z (three-quarter at about 35) and
+    raised to ``elevation`` degrees, ``KIT_LENS`` mm, aimed at the screen centre.
+
+    The distance starts at ``KIT_DISTANCE`` scaled by the screen width relative to
+    the MacBook's and grows until the whole device (its normalised bounds) is in
+    frame at ``aspect``.
+    """
+    frame = entry.frame
+    n = _unit((frame.normal[0], frame.normal[1], 0.0))
+    a, e = math.radians(yaw), math.radians(elevation)
+    h = (n[0] * math.cos(a) - n[1] * math.sin(a), n[0] * math.sin(a) + n[1] * math.cos(a))
+    direction = (h[0] * math.cos(e), h[1] * math.cos(e), math.sin(e))
+    lo, hi = entry.bounds
+    corners = _corners(lo, hi)
+    c = frame.centre
+    distance = KIT_DISTANCE * frame.width / MACBOOK_PRO.frame.width
+    for _ in range(80):
+        loc = (
+            c[0] + direction[0] * distance,
+            c[1] + direction[1] * distance,
+            c[2] + direction[2] * distance,
+        )
+        if in_frame(loc, c, KIT_LENS, aspect, corners):
+            return KitCamera(
+                location=_round(loc, 4),
+                rotation=_round(look_rotation(loc, c), 6),
+                lens=KIT_LENS,
+                distance=round(distance, 4),
+            )
+        distance *= 1.04
+    raise DeviceAssetError(f"{entry.id}: no camera distance frames the whole device")
+
+
 # ---- vector and matrix helpers -------------------------------------------------------------
 
 Mat4 = list[list[float]]
@@ -244,9 +329,7 @@ def _z_up(p: Vec3) -> Vec3:
 
 
 def _corners(lo: Vec3, hi: Vec3) -> list[Vec3]:
-    return [
-        (x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])
-    ]
+    return [(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
 
 
 # ---- glTF reading --------------------------------------------------------------------------

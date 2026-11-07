@@ -386,8 +386,8 @@ def _pin(refs: dict[str, str], value: object) -> None:
 def referenced_assets(recipe: Recipe) -> dict[str, str]:
     """Asset relpath -> pinned sha256 for every pinned asset ``recipe`` loads.
 
-    ``material.apply_screen`` images, ``device.add`` screen frames or movie,
-    ``world.set_hdri`` environments and ``text.add`` fonts.
+    ``material.apply_screen`` images, ``device.add`` screen frames or movie and kit
+    ``model`` glb, ``world.set_hdri`` environments and ``text.add`` fonts.
     """
     refs: dict[str, str] = {}
     for step in recipe.steps:
@@ -403,6 +403,7 @@ def referenced_assets(recipe: Recipe) -> dict[str, str]:
                 for frame in frames if isinstance(frames, list) else []:
                     _pin(refs, frame)
                 _pin(refs, screen.get("movie"))
+            _pin(refs, args.get("model"))
         elif step.tool == "world.set_hdri":
             _pin(refs, args)
         elif step.tool == "text.add":
