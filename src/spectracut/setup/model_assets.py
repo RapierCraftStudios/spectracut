@@ -177,7 +177,14 @@ ASSETS: dict[str, ModelAsset] = {
                 WeightsSource(
                     "Tongyi-MAI/Z-Image-Turbo",
                     "f332072aa78be7aecdf3ee76d5c247082da564a6",
-                    ("model_index.json", "scheduler/*", "text_encoder/*", "tokenizer/*", "vae/*"),
+                    (
+                        "model_index.json",
+                        "scheduler/*",
+                        "text_encoder/*",
+                        "tokenizer/*",
+                        "transformer/config.json",
+                        "vae/*",
+                    ),
                 ),
             ),
             13.3,
