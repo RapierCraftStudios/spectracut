@@ -346,4 +346,8 @@ def launch_film(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Film]:
         settled, _ = store.load(LAUNCH_ID)
         rerun = invoke(["studio", "run", LAUNCH_ID, "--home", str(home)])
         graph, _ = store.load(LAUNCH_ID)
-        yield Film(home, store, graph, outputs, rerun, len(settled.ledger), provider, farm, voice)
+        film = Film(home, store, graph, outputs, rerun, len(settled.ledger), provider, farm, voice)
+    # Undo the env and factory patches before handing the film out: the fixture is
+    # session-scoped, so yielding inside the context would leak mock providers and fake
+    # farm/sound factories into every later test module (tests/cli/test_studio_run.py).
+    yield film
