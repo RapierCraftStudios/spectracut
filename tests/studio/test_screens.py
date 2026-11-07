@@ -19,8 +19,8 @@ from spectracut.studio.departments.capture import CaptureProvenance, ScreenCaptu
 from spectracut.studio.departments.screens import (
     CHROME_PAGES,
     CHROME_SIZES,
-    CaptureFrame,
     Chrome,
+    ScreenFrame,
     ScreenState,
     check_state,
     compose,
@@ -73,7 +73,7 @@ def _raw(tmp_path: Path, texts: list[Any] | None = None, device: str = "laptop")
         path = tmp_path / f"raw{i}.png"
         path.write_bytes(f"frame {i}".encode())
         frames.append(
-            CaptureFrame(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+            ScreenFrame(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
         )
     text = tmp_path / "text.json"
     text.write_text(

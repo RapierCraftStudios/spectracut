@@ -54,12 +54,14 @@ from spectracut.studio.departments.discovery import (
     ScreenStep,
 )
 from spectracut.studio.departments.screens import (
-    CaptureFrame,
     Chrome,
     DeviceId,
     ScreenState,
     Sha256,
     compose,
+)
+from spectracut.studio.departments.screens import (
+    ScreenFrame as CaptureFrame,
 )
 from spectracut.studio.graph import RunContext, Runner, RunResult
 from spectracut.studio.ledger import Usage

@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CHROME_PAGES",
     "CHROME_SIZES",
-    "CaptureFrame",
+    "ScreenFrame",
     "Chrome",
     "ScreenState",
     "check_state",
@@ -59,7 +59,7 @@ NOTCH_BAND_PX: Final = 37
 """Logical height of the black notch safe-area band (full screen MacBook)."""
 
 
-class CaptureFrame(StrictModel):
+class ScreenFrame(StrictModel):
     """One PNG and its sha256."""
 
     path: NonEmptyStr
@@ -101,7 +101,7 @@ class ScreenState(StrictModel):
     size: ScreenSize
     content_rect: Rect
     """Where the live page sits inside the chrome (logical px)."""
-    clip: list[CaptureFrame] = Field(min_length=1)
+    clip: list[ScreenFrame] = Field(min_length=1)
     """Composited frames, in order."""
     raw_still_sha256: Sha256
     values: list[str] = Field(default_factory=list)
@@ -109,7 +109,7 @@ class ScreenState(StrictModel):
     run's final ``text.json`` record (never typed in)."""
 
 
-def frame_at(state: ScreenState, t: float) -> CaptureFrame:
+def frame_at(state: ScreenState, t: float) -> ScreenFrame:
     """The composited frame at progress ``t`` in [0, 1]."""
     if not (0.0 <= t <= 1.0) or math.isnan(t):
         raise ValueError(f"t must be in [0, 1], got {t}")
@@ -176,7 +176,7 @@ def compose(
     if not result.frames:
         raise ValueError(f"screen {raw.key!r} in {chrome} chrome wrote no frames")
     clip = [
-        CaptureFrame(path=str(f), sha256=hashlib.sha256(Path(f).read_bytes()).hexdigest())
+        ScreenFrame(path=str(f), sha256=hashlib.sha256(Path(f).read_bytes()).hexdigest())
         for f in result.frames
     ]
     state = ScreenState(
