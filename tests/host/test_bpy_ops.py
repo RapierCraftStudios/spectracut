@@ -380,7 +380,7 @@ def test_registry_literal_matches_tools() -> None:
     names, same = got
     assert same is True
     assert set(names) == runtime_tool_names(RUNTIME / "tools.py")
-    assert NEW_TOOLS <= set(names) and len(names) == 36
+    assert NEW_TOOLS <= set(names) and len(names) == 39
 
 
 def test_error_codes_are_stable() -> None:
