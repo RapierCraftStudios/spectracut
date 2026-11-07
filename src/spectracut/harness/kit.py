@@ -55,7 +55,7 @@ _SCALED_VECTORS = ("location", "target", "offset")
 _TRANSLATED = ("location", "target")
 
 
-class Provenance(StrictModel):
+class KitProvenance(StrictModel):
     """Where a kit entry or file comes from: original work or CC0, with author and source."""
 
     origin: Literal["original", "CC0"]
@@ -125,7 +125,7 @@ class KitEntry(StrictModel):
     summary: NonEmptyStr
     params: dict[str, KitParam] = Field(default_factory=dict)
     calls: Annotated[list[KitCall], Field(min_length=1)]
-    provenance: Provenance
+    provenance: KitProvenance
 
 
 KitAsset = KitEntry
@@ -138,7 +138,7 @@ class KitFile(StrictModel):
     path: NonEmptyStr
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     license: NonEmptyStr
-    provenance: Provenance
+    provenance: KitProvenance
 
     @model_validator(mode="after")
     def _relative(self) -> KitFile:
@@ -449,7 +449,7 @@ __all__ = [
     "KitEntry",
     "KitFile",
     "KitParam",
-    "Provenance",
+    "KitProvenance",
     "kit_from",
     "load_kit",
 ]
