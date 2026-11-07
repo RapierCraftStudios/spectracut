@@ -2,8 +2,9 @@
 """Device templates: a logo-free laptop or phone with the product UI on its screen.
 
 The rig is the host's ``device.add`` (bevelled aluminium body, bezel, reflective
-glass cover, moire-free pixel-grid screen, untextured keyboard deck). The screen is a slot: a sha256-pinned image sequence or movie from the
-host assets dir. Its emission strength is calibrated with
+glass cover, moire-free pixel-grid screen, untextured keyboard deck). The screen
+is a slot: a sha256-pinned image sequence or movie from the host assets dir. Its
+emission strength is calibrated with
 :func:`spectracut.finishing.color.screen_white_strength` so UI white reads as
 display white under the shot's view transform. Lighting is a studio preset
 (``lighting``: key, fill and rim area lights from ``light.add``) over either a

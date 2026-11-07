@@ -282,7 +282,9 @@ class StoryboardArtist(Department):
         storyboard = Storyboard.model_validate(output)
         product = _input_of(inputs, kinds, PRODUCT)
         if product is not None:
-            _check_device_boards(cls.name, node_id, storyboard, ProductNotes.model_validate(product))
+            _check_device_boards(
+                cls.name, node_id, storyboard, ProductNotes.model_validate(product)
+            )
         refs = check_craft_refs(cls.name, node_id, storyboard.craft_refs, inputs, kinds)
         if refs is not None:
             measured = measure_storyboard(storyboard, refs)

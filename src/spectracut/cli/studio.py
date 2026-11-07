@@ -854,12 +854,22 @@ def _with_product_nodes(
     source: ProductSource,
     routes: Sequence[FrontendRoute],
 ) -> list[NodeSpec]:
-    """``specs`` plus the ``product`` and ``ui_capture`` nodes, shots rewired to the captures."""
+    """``specs`` plus the ``product`` and ``ui_capture`` nodes, shots rewired to the captures.
+
+    The storyboard also reads the product node (its device boards are checked against
+    the screen map, #339): product follows the script and the storyboard reads the
+    script, so this adds no cycle.
+    """
     product = _product_nodes(brief, specs, source, routes)
     if not product:
         return list(specs)
     added = product_capture_nodes(specs, source, product[0].id)
     rewired = {s.id: s for s in added[1:]}
+    pid = product[0].id
+    for s in specs:
+        if s.kind == art_depts.STORYBOARD and pid not in rewired.get(s.id, s).inputs:
+            spec = rewired.get(s.id, s)
+            rewired[s.id] = spec.model_copy(update={"inputs": (*spec.inputs, pid)})
     return [rewired.get(s.id, s) for s in specs] + [*product, added[0]]
 
 

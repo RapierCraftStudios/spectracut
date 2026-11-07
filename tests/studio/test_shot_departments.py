@@ -33,6 +33,7 @@ from spectracut.storyboard.models import Board, Storyboard
 from spectracut.studio import device_shot as ds
 from spectracut.studio.departments import STAGE_DEPARTMENTS, all_departments
 from spectracut.studio.departments import shots as sd
+from spectracut.studio.departments.capture import UI_CAPTURE, UICaptures
 from spectracut.studio.gates import GateMode
 from spectracut.studio.graph import ProductionGraph, RunContext, RunResult
 from spectracut.studio.ledger import Usage
@@ -639,3 +640,203 @@ def test_motion_steps_key_the_board_move_lens_and_frame_range(move: str, keyed: 
     assert [s.tool for s in moved.steps].count("camera.move") == int(keyed)
     again = dict(sd.motion_steps(board, moved))
     assert "camera.move" not in again
+
+
+# ---- device shots from UI captures (#339) ----------------------------------------
+
+
+def _capture(tmp_path: Path, frames: int = 3, fps: int = 12) -> UICaptures:
+    """A laptop capture of beat 'dashboard': ``frames`` distinct PNGs at ``fps``."""
+    root = tmp_path / "captures"
+    root.mkdir(exist_ok=True)
+    clip = []
+    for n in range(frames):
+        path = root / f"dash_{n:04d}.png"
+        path.write_bytes(solid_png(8, 8, (10 * n, 20, 30)))
+        clip.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    frames_sha = hashlib.sha256("\n".join(f["sha256"] for f in clip).encode()).hexdigest()
+    return UICaptures.model_validate(
+        {
+            "product_id": "alterlab",
+            "devices": ["laptop"],
+            "captures": [
+                {
+                    "key": "beat:dashboard",
+                    "beat": "dashboard",
+                    "route": "/runs",
+                    "url": "http://127.0.0.1:9/runs",
+                    "device": "laptop",
+                    "fps": fps,
+                    "clip": clip,
+                    "still": clip[-1],
+                    "manifest": str(root / "manifest.json"),
+                    "events": str(root / "events.json"),
+                    "text": str(root / "text.json"),
+                    "provenance": {
+                        "product_id": "alterlab",
+                        "url": "http://127.0.0.1:9/runs",
+                        "steps": [],
+                        "device": "laptop",
+                        "spec_sha256": _sha("spec"),
+                        "frames_sha256": frames_sha,
+                        "rig": "@spectracut/capture@0",
+                        "demo_check": "passed",
+                        "deterministic": True,
+                    },
+                }
+            ],
+        }
+    )
+
+
+class DeviceText(Text):
+    """Storyboard with a 3 s device push on 'dashboard' and a 1 s abstract close."""
+
+    def __init__(self, plan: dict[str, JsonValue], captures: UICaptures, close_s: float) -> None:
+        super().__init__(plan)
+        self.captures, self.close_s = captures, close_s
+
+    def __call__(self, ctx: RunContext) -> RunResult:
+        if ctx.spec.kind == "storyboard":
+            boards = [
+                Board.model_validate(
+                    {
+                        "shot_id": "open",
+                        "beat": "dashboard",
+                        "action": "the runs dashboard",
+                        "duration_s": 3.0,
+                        "move": "push",
+                        "device": "laptop",
+                    }
+                ),
+                Board(shot_id="close", action="end card", duration_s=self.close_s),
+            ]
+            return RunResult(output=Storyboard(boards=boards).model_dump(mode="json"))
+        if ctx.spec.kind == UI_CAPTURE:
+            return RunResult(output=self.captures.model_dump(mode="json"))
+        return super().__call__(ctx)
+
+
+def _device_rig(tmp_path: Path, close_s: float = 1.0) -> tuple[Rig, UICaptures]:
+    captures = _capture(tmp_path)
+    rig = Rig(tmp_path, _plan())
+    rig.text = DeviceText(rig.text.plan, captures, close_s)
+    rig.runner.inner = rig.text
+    graph = ProductionGraph("film", profile=rig.graph.profile, gates=rig.graph.gates)
+    specs = []
+    for node_id in rig.graph.order():
+        spec = rig.graph.spec(node_id)
+        if spec.kind in (sd.TEMPLATE_SHOTS, sd.SHOTS):
+            spec = spec.model_copy(update={"inputs": (*spec.inputs, UI_CAPTURE)})
+        specs.append(spec)
+    kit_assets = tmp_path / "kit-assets"
+    kit_assets.mkdir()
+    for i, spec in enumerate(specs):
+        if spec.kind in (sd.TEMPLATE_SHOTS, sd.SHOTS):
+            params = {**spec.params, ds.ASSETS_DIR_PARAM: str(kit_assets)}
+            specs[i] = spec.model_copy(update={"params": params})
+    specs.append(NodeSpec(id=UI_CAPTURE, kind=UI_CAPTURE, department="ui-capture"))
+    graph.add_nodes(specs)
+    rig.graph = graph
+    return rig, captures
+
+
+def test_device_board_renders_on_the_device_template_with_the_capture_on_screen(
+    tmp_path: Path,
+) -> None:
+    rig, captures = _device_rig(tmp_path)
+    report = rig.run()
+    assert not report.failed, {n: rig.graph.state(n).error for n in report.failed}
+    out = sd.RenderedShots.model_validate(rig.graph.output("template_shots"))
+    device = out.shots[0]
+    # The planner said 'typography'; the device board renders on device-laptop anyway.
+    assert device.template == "device-laptop" and device.variant == "three-quarter"
+    assert device.capture == "beat:dashboard" and device.frame_end == 72
+    recipe = Recipe.model_validate(device.recipe)
+    steps = {s.tool: s.args for s in recipe.steps}
+    # The capture is the screen: 3 frames at 12 fps resampled to 72 frames at 24 fps.
+    screen: Any = steps["device.add"]["screen"]
+    shas = [f["sha256"] for f in screen["frames"]]
+    clip = [f.sha256 for f in captures.captures[0].clip]
+    assert set(shas) == set(clip) and len(shas) == 72
+    assert all(f["path"].startswith("captures/") for f in screen["frames"])
+    # Focus on the device body, then a focus pull keyed on the camera.
+    dofs = [s.args for s in recipe.steps if s.tool == "camera.set_dof"]
+    assert dofs[0] == {"focus_object": "device.body", "fstop": sd.DEVICE_FSTOP}
+    # The Look's render rules follow (the AlterLab Look turns motion blur and DoF off).
+    assert dofs[1:] == [{"enabled": False}]
+    assert steps["render.set_property"] == {"property": "render.use_motion_blur", "value": False}
+    pulls = [
+        s.args for s in recipe.steps if s.tool == "camera.move" and "focus_distance" in str(s.args)
+    ]
+    keys: Any = pulls[0]["keys"]
+    assert keys[0]["focus_distance"] < keys[-1]["focus_distance"]
+    # The board's push is keyed and the frame range is the board's.
+    assert any(s.tool == "camera.move" and s.args is not pulls[0] for s in recipe.steps)
+    assert steps["render.set_frame_range"] == {"frame_start": 1, "frame_end": 72}
+    # The capture PNGs were staged beside the kit assets, verified by sha256, even
+    # with an assets-dir override (it cannot hold the production's captures).
+    assert rig.config.assets_dir
+    staged = next((rig.shared / "assets").iterdir())
+    assert (staged / screen["frames"][0]["path"]).read_bytes() == Path(
+        captures.captures[0].clip[0].path
+    ).read_bytes()
+    # The final shots node re-renders it at tier with the same recipe and frame range.
+    final = sd.RenderedShots.model_validate(rig.graph.output("shots"))
+    assert final.shots[0].recipe == device.recipe
+    assert (final.shots[0].capture, final.shots[0].frame_end) == ("beat:dashboard", 72)
+    jobs = [j for j in rig.fake.submitted if "open" in j["name"]]
+    assert [j["settings"]["frames"] for j in jobs] == ["1-72", "1-72"]
+    # The abstract board is unchanged: no capture recorded.
+    assert out.shots[1].template == "end-card" and out.shots[1].capture is None
+    assert "capture" not in out.shots[1].model_dump()
+
+
+def test_device_shots_under_the_runtime_share_fail_the_shot_plan(tmp_path: Path) -> None:
+    rig, _captures = _device_rig(tmp_path, close_s=3.0)
+    report = rig.run()
+    assert "template_shots" in report.failed
+    error = rig.graph.state("template_shots").error or ""
+    assert "50%" in error and "60%" in error and "close" in error
+    assert not rig.fake.submitted
+
+
+def test_device_board_without_a_matching_capture_fails_naming_board_and_key(
+    tmp_path: Path,
+) -> None:
+    captures = _capture(tmp_path)
+    board = Board.model_validate(
+        {"shot_id": "s", "action": "a", "duration_s": 1.0, "device": "phone", "beat": "dashboard"}
+    )
+    with pytest.raises(ValueError, match=r"'s'.*phone.*beat:dashboard"):
+        sd.board_capture(captures, board)
+
+
+def test_capture_frames_resample_to_the_shot_and_hold_the_last_frame(tmp_path: Path) -> None:
+    capture = _capture(tmp_path, frames=2, fps=12).captures[0]
+    pinned, extra = sd.capture_frames(capture, 6)
+    clip = [f.sha256 for f in capture.clip]
+    assert [p.sha256 for p in pinned] == [clip[0]] * 2 + [clip[1]] * 4
+    assert set(extra) == {p.path for p in pinned}
+    one = sd.capture_frames(_capture(tmp_path, frames=1).captures[0], 10)[0]
+    assert len(one) == 1
+
+
+def test_stage_assets_extra_files_join_the_manifest_and_default_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "kit"
+    (src / "ui").mkdir(parents=True)
+    (src / "ui" / "a.png").write_bytes(b"a")
+    plain = ds.stage_assets(src, tmp_path / "s1", {})
+    assert ds.stage_assets(src, tmp_path / "s2", {}, None) == plain
+    capture = tmp_path / "cap.png"
+    capture.write_bytes(b"cap")
+    sha = hashlib.sha256(b"cap").hexdigest()
+    staged = ds.stage_assets(
+        src, tmp_path / "s3", {"captures/x/0001.png": sha}, {"captures/x/0001.png": capture}
+    )
+    assert staged != plain
+    assert (tmp_path / "s3" / "assets" / staged / "captures/x/0001.png").read_bytes() == b"cap"
+    with pytest.raises(ValueError, match="relative"):
+        ds.stage_assets(src, tmp_path / "s4", {}, {"../x.png": capture})

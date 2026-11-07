@@ -8,6 +8,11 @@
   screen at several camera distances; the high-frequency energy in the screen
   region stays bounded and steady across distances, which moire would break
   (post-deploy check ``device-screen-moire-dolly-farm-e2e``).
+- ``test_e2e_device_hero_shot_has_dof_camera_motion_and_legible_ui`` (#339): a device
+  shot built from a UI capture by the shot runner's recipe renders at final tier on
+  legion; the camera moves between the first and last frame, the focus pull sharpens
+  the screen and the UI reads by OCR at delivery size (post-deploy check
+  ``device-hero-shot-legion-e2e``).
 
 Runs only with ``SPECTRACUT_E2E=1`` and ``SPECTRACUT_FLAMENCO_URL`` (plus
 ``SPECTRACUT_FLAMENCO_SHARED`` / ``SPECTRACUT_FLAMENCO_TAG``), like
@@ -112,6 +117,26 @@ def _kit() -> BrandKit:
     return load_brand_kit(KIT)
 
 
+def _render_frames(recipe: Recipe, assets: Path, frame_end: int, extra: Any) -> Path:
+    """Submit ``recipe`` (frames 1..frame_end) at final tier with ``extra`` staged."""
+    from spectracut.queue.flamenco import FlamencoClient
+    from spectracut.queue.signing import load_private_key
+
+    config = dataclasses.replace(ds.DeviceShotConfig.from_env(), assets_dir=None)
+    home = Path(os.environ.get("SPECTRACUT_HOME") or Path.home() / ".local/share/spectracut")
+    key = load_private_key(home=home)
+    client = FlamencoClient(config.flamenco_url)
+    assets_dir, _sha = ds.stage_for(config, str(assets), recipe, extra)
+    opts = ds.ExecutorOptions()
+    job_id = ds.fresh_job_id(config, f"e2e-{recipe.shot_id}"[:60])
+    out = config.out_dir(job_id)
+    envelope = ds.envelope(job_id, recipe, config, opts.now(), frame_end=frame_end)
+    job_file = ds.sign_to_shared(envelope, key, config.shared)
+    job = ds.blender_job(envelope, job_file, out, config, Tier.FINAL, assets_dir)
+    ds.executor(client, out, config, opts, assets_dir).run(job)
+    return out
+
+
 @pytest.mark.e2e
 @skip_unless_e2e
 @pytest.mark.parametrize("template_id", sorted(TEMPLATES))
@@ -198,3 +223,76 @@ def test_e2e_device_screen_dolly_has_no_moire(tmp_path: Path) -> None:
     print(dict(zip(DOLLY_DISTANCES, energies, strict=True)))
     assert max(energies) < 0.5, energies
     assert max(energies) <= 3 * max(min(energies), 1e-3), energies
+
+
+@pytest.mark.e2e
+@skip_unless_e2e
+def test_e2e_device_hero_shot_has_dof_camera_motion_and_legible_ui(tmp_path: Path) -> None:
+    from spectracut.qa.copy_ocr import available_reader
+    from spectracut.spec.brand import Look
+    from spectracut.storyboard.models import Board
+    from spectracut.studio.departments import shots as sd
+    from spectracut.studio.departments.capture import ScreenCapture
+
+    reader = available_reader()
+    assert reader is not None, "tesseract is needed on the controller for the legibility check"
+    assets, _device = _assets(tmp_path)
+    sha = _sha(SCREEN)
+    frame = {"path": str(SCREEN), "sha256": sha}
+    capture = ScreenCapture.model_validate(
+        {
+            "key": "beat:dashboard",
+            "beat": "dashboard",
+            "route": "/",
+            "url": "http://127.0.0.1/",
+            "device": "laptop",
+            "fps": 24,
+            "clip": [frame],
+            "still": frame,
+            "manifest": "m",
+            "events": "e",
+            "text": "t",
+            "provenance": {
+                "product_id": "alterlab",
+                "url": "http://127.0.0.1/",
+                "steps": [],
+                "device": "laptop",
+                "spec_sha256": sha,
+                "frames_sha256": hashlib.sha256(sha.encode()).hexdigest(),
+                "rig": "e2e",
+                "demo_check": "passed",
+                "deterministic": True,
+            },
+        }
+    )
+    board = Board.model_validate(
+        {
+            "shot_id": "device-hero",
+            "beat": "dashboard",
+            "action": "push in on the runs dashboard",
+            "duration_s": 0.5,
+            "move": "push",
+            "device": "laptop",
+        }
+    )
+    look = Look(id="device-hero", motion_blur=True, depth_of_field=True)
+    base, _slots, extra = sd.device_recipe(
+        _kit(), board, capture, variant="front", aspect="16:9", look=look
+    )
+    frames_n = sd.shot_frames(board)
+    out = _render_frames(sd.tier_recipe(base, Tier.FINAL), assets, frames_n, extra)
+    frames = sorted(out.glob("frame_*.png"))
+    assert len(frames) == frames_n, frames
+    first, last = (decode_png(f.read_bytes()) for f in (frames[0], frames[-1]))
+    assert (last.width, last.height) == (1920, 1080)
+    a, b = _luma(first), _luma(last)
+    # Camera motion: the push changes the frame.
+    diff = sum(abs(x - y) for ra, rb in zip(a, b, strict=True) for x, y in zip(ra, rb, strict=True))
+    assert diff / (last.width * last.height) > 0.01
+    # Depth of field: the focus pull lands on the screen, sharper at the end than the start.
+    cx, cy = last.width // 2, last.height // 2
+    box = (cx - last.width // 6, cy - last.height // 6, cx + last.width // 6, cy + last.height // 6)
+    assert high_frequency_energy(b, box) > 1.2 * high_frequency_energy(a, box)
+    # Legible at delivery size: OCR reads words of the UI off the in-focus frame.
+    words = [t for t in reader.read(frames[-1].read_bytes()) if len(t.text.strip()) >= 3]
+    assert len(words) >= 3, words

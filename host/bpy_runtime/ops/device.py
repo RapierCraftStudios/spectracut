@@ -434,7 +434,9 @@ def device_add(bpy: Any, args: dict[str, Any]) -> Report:
             bpy, f"deck.{name}", {"Base Color": (0.03, 0.03, 0.035, 1.0), "Roughness": 0.6}
         )
         for part, (dims, y) in (("keyboard", _KEYBOARD), ("trackpad", _TRACKPAD)):
-            obj = _mesh_object(bpy, f"{name}.{part}", box(*dims), body, (0.0, y, deck_top + dims[2] / 2))
+            obj = _mesh_object(
+                bpy, f"{name}.{part}", box(*dims), body, (0.0, y, deck_top + dims[2] / 2)
+            )
             _assign(obj, recess)
             parts.append(obj)
     _assign(body, _principled(bpy, f"body.{name}", FINISHES[p["finish"]]))

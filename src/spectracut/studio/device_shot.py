@@ -623,10 +623,17 @@ def stage_for(
     """``(job assets_dir, staged sha)``: the override verbatim, else stage ``source``.
 
     Raises :class:`ValueError` before anything is submitted when there is
-    neither an override nor a brand kit assets dir to stage.
+    neither an override nor a brand kit assets dir to stage. With ``extra`` files
+    (UI captures, #339) ``source`` is always staged: the override dir cannot
+    hold the production's captures.
     """
-    if config.assets_dir:
+    if config.assets_dir and not extra:
         return config.assets_dir, None
+    if source is None and extra:
+        raise ValueError(
+            "device shots stage the product's UI captures beside the brand kit assets; "
+            "the production has no brand kit assets dir (recreate it with --brand-kit)"
+        )
     if source is None:
         raise ValueError(
             "device-shot render has no brand kit assets dir to stage "

@@ -501,22 +501,24 @@ def _assets(
 
 SHOTS_KIND = "shots"
 """Kind of the node that renders the final shots (reads the captures)."""
+_CAPTURE_READERS = frozenset({SHOTS_KIND, "template_shots"})
 
 
 def product_capture_nodes(
     specs: Iterable[NodeSpec], source: ProductSource, product_id: str
 ) -> list[NodeSpec]:
-    """The ``ui_capture`` node for ``source`` and the ``shots`` nodes rewired to read it.
+    """The ``ui_capture`` node for ``source`` and the shot nodes rewired to read it.
 
-    The capture node reads the screen map of node ``product_id``; each ``shots`` node
-    of ``specs`` comes back with ``ui_capture`` added to its inputs, for the caller
-    to apply in place of the original.
+    The capture node reads the screen map of node ``product_id``; each ``shots`` and
+    ``template_shots`` node of ``specs`` comes back with ``ui_capture`` added to its
+    inputs, for the caller to apply in place of the original, so the shot plan and
+    its preview renders put the captures on device screens (#339).
     """
     node = capture_node(source, product_id)
     shots = [
         s.model_copy(update={"inputs": (*s.inputs, node.id)})
         for s in specs
-        if s.kind == SHOTS_KIND and node.id not in s.inputs
+        if s.kind in _CAPTURE_READERS and node.id not in s.inputs
     ]
     return [node, *shots]
 
