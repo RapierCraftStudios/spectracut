@@ -65,6 +65,14 @@ VALID: dict[str, dict[str, Any]] = {
         "voice": {"provider": "elevenlabs", "voice_id": "v1"},
         "forbidden_words": ["Revolutionary", "revolutionary"],
         "claim_sources": SOURCES,
+        "token_sources": {
+            "palette.primary": {
+                "path": "src/app/globals.css",
+                "line": 7,
+                "token": "--primary",
+                "value": "#1a2b3c",
+            }
+        },
     },
     "license_record": LICENSE,
     "asset": {
@@ -112,6 +120,12 @@ BAD: list[tuple[str, tuple[str | int, ...], Any, tuple[str | int, ...]]] = [
     ("look", ("lens",), {"vignette": 2.0}, ("lens", "vignette")),
     ("brand_kit", ("palette", "swatches", "primary"), "blue", ("palette", "swatches", "primary")),
     ("brand_kit", ("default_look_id",), "missing", ("default_look_id",)),
+    (
+        "brand_kit",
+        ("token_sources", "palette.primary", "line"),
+        0,
+        ("token_sources", "palette.primary", "line"),
+    ),
     ("license_record", ("non_commercial",), True, ("commercial_safe",)),
     ("asset", ("recipe_ref",), "r1", ("file_ref",)),
     ("asset", ("kind",), "video", ("kind",)),

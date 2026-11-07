@@ -175,14 +175,17 @@ class BrandKit(StrictModel):
     def _sources_name_values(
         cls, v: dict[str, TokenSource], info: ValidationInfo
     ) -> dict[str, TokenSource]:
+        # A section that failed its own validation is absent here: skip its keys rather
+        # than report a second error for the same fault.
         palette, typography = info.data.get("palette"), info.data.get("typography")
-        swatches = palette.swatches if palette is not None else {}
-        families = typography.families if typography is not None else {}
         for key in v:
             kind, _, name = key.partition(".")
-            known = (kind == "palette" and name in swatches) or (
-                kind == "typography" and name in families
-            )
+            if kind == "palette":
+                known = palette is None or name in palette.swatches
+            elif kind == "typography":
+                known = typography is None or name in typography.families
+            else:
+                known = False
             if not known:
                 raise ValueError(f"token_sources key {key} names no swatch or family")
         return v
