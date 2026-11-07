@@ -77,6 +77,7 @@ from spectracut.storyboard.explore import (
     explore,
 )
 from spectracut.storyboard.models import (
+    DEVICE_RUNTIME_SHARE,
     ArtDirection,
     ImageRecord,
     Storyboard,
@@ -90,7 +91,8 @@ from spectracut.studio.department import (
     Department,
     DepartmentOutputError,
 )
-from spectracut.studio.departments.discovery import BRIEF
+from spectracut.studio.departments.capture import capture_key
+from spectracut.studio.departments.discovery import BRIEF, PRODUCT, ProductNotes
 from spectracut.studio.departments.references import (
     REFERENCES,
     build_references,
@@ -254,6 +256,7 @@ class StoryboardArtist(Department):
         BRAND_KIT: BrandKit,
         ART_DIRECTION: ArtDirection,
         REFERENCES: ReferenceSet,
+        PRODUCT: ProductNotes,
     }
     output = Storyboard
     cost = CostEstimate(ai_requests=1, ai_input_tokens=5_000)
@@ -271,8 +274,17 @@ class StoryboardArtist(Department):
         With a references input: ``craft_refs`` cites craft points of the set, the
         average board length is within the cited references' pace range and no
         board's on-screen text exceeds the type bound (one idea per card).
+
+        With a product input (#339): device boards cover at least
+        ``DEVICE_RUNTIME_SHARE`` of the runtime, none sits on an interlude beat and
+        each shows a captured (non-interlude) screen of the product's screen map.
         """
         storyboard = Storyboard.model_validate(output)
+        product = _input_of(inputs, kinds, PRODUCT)
+        if product is not None:
+            _check_device_boards(
+                cls.name, node_id, storyboard, ProductNotes.model_validate(product)
+            )
         refs = check_craft_refs(cls.name, node_id, storyboard.craft_refs, inputs, kinds)
         if refs is not None:
             measured = measure_storyboard(storyboard, refs)
@@ -297,6 +309,43 @@ class StoryboardArtist(Department):
             problems.append(f"script beats with VO have no board: {missing}")
         if problems:
             raise DepartmentOutputError(cls.name, node_id, "; ".join(problems))
+
+
+def _check_device_boards(
+    name: str, node_id: str, storyboard: Storyboard, notes: ProductNotes
+) -> None:
+    """Device boards dominate the runtime and each shows a captured product screen."""
+    problems = []
+    share = storyboard.device_share()
+    if share < DEVICE_RUNTIME_SHARE:
+        abstract = [b.shot_id for b in storyboard.boards if b.device is None]
+        problems.append(
+            f"device boards cover {share:.0%} of the runtime, need at least "
+            f"{DEVICE_RUNTIME_SHARE:.0%} (abstract boards: {', '.join(abstract)})"
+        )
+    interludes = {_norm(m.beat) for m in notes.screens if m.interlude}
+    screens = {_norm(capture_key(m)) for m in notes.screens if not m.interlude}
+    on_interlude = [
+        f"{b.shot_id}={b.beat!r}"
+        for b in storyboard.boards
+        if b.device is not None and _norm(b.beat) in interludes
+    ]
+    if on_interlude:
+        problems.append(f"device boards on interlude beats: {', '.join(on_interlude)}")
+    unmapped = [
+        f"{b.shot_id}={b.capture_key!r}"
+        for b in storyboard.boards
+        if b.device is not None
+        and _norm(b.beat) not in interludes
+        and _norm(b.capture_key) not in screens
+    ]
+    if unmapped:
+        problems.append(
+            f"device boards show no mapped product screen: {', '.join(unmapped)} "
+            f"(screens: {', '.join(sorted(screens))})"
+        )
+    if problems:
+        raise DepartmentOutputError(name, node_id, "; ".join(problems))
 
 
 class AnimaticEditor(Department):

@@ -339,8 +339,9 @@ def test_product_ui_asset_becomes_the_capture_node_feeding_shots() -> None:
     assert (ui.node, ui.kind, ui.source) == (UI_CAPTURE, UI_CAPTURE, "product:fixture-app")
     nodes = product_capture_nodes(with_product.nodes, _source(), PRODUCT)
     assert nodes[0].id == UI_CAPTURE
-    assert [s.kind for s in nodes[1:]] == ["shots"]
-    assert UI_CAPTURE in nodes[1].inputs
+    # Both shot nodes read the captures: the plan and preview renders put them on devices.
+    assert sorted(s.kind for s in nodes[1:]) == ["shots", "template_shots"]
+    assert all(UI_CAPTURE in s.inputs for s in nodes[1:])
 
 
 def test_studio_new_with_product_plans_the_capture_node(tmp_path: Path) -> None:
@@ -353,6 +354,10 @@ def test_studio_new_with_product_plans_the_capture_node(tmp_path: Path) -> None:
     order = graph.order()
     assert order.index(PRODUCT) < order.index(UI_CAPTURE) < order.index("shots")
     assert UI_CAPTURE in graph.spec("shots").inputs
+    assert UI_CAPTURE in graph.spec("template_shots").inputs
+    # The storyboard checks its device boards against the product's screen map.
+    assert PRODUCT in graph.spec("storyboard").inputs
+    assert order.index(PRODUCT) < order.index("storyboard")
     _, plain = create_production(store, _brief(), production_id="plain", profile="standard")
     assert UI_CAPTURE not in plain.order()
 

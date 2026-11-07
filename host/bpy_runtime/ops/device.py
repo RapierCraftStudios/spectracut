@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Device rig op: ``device.add`` builds a logo-free laptop or phone with a live screen.
 
-The rig is plain geometry (body, bezel, glass and, for a laptop, a base deck) with
-no text, logos or OEM marks. The screen plane uses the ``SC_Screen`` node group:
+The rig is plain geometry (a bevelled body, bezel, glass cover and, for a laptop, a
+base deck with an untextured keyboard well and trackpad) with no text, logos or OEM
+marks. The body takes a brushed-aluminium (or graphite) principled finish and the
+glass a reflective, low-roughness IOR 1.5 material. The screen image is read as
+sRGB so the UI keeps its display gamma. The screen plane uses the ``SC_Screen`` node group:
 the product UI (a sha256-pinned image sequence or movie from the host assets dir)
 drives an Emission shader, darkened by a pixel-grid mask. The grid's contrast is
 multiplied by :func:`grid_fade` of its screen-space footprint, estimated as a box
@@ -20,6 +23,7 @@ from typing import Any
 from bpy_runtime.ops import (
     Report,
     ToolError,
+    as_choice,
     as_int,
     as_name,
     as_num,
@@ -40,6 +44,34 @@ _DIMS: dict[str, dict[str, Any]] = {
     "laptop": {"body": (0.310, 0.007, 0.210), "screen": (0.290, 0.181), "grid": (2560, 1600)},
 }
 _LAPTOP_BASE = (0.310, 0.215, 0.012)
+# Keyboard well and trackpad on the laptop deck: (width, depth, height), y offset.
+_KEYBOARD = ((0.270, 0.105, 0.0008), -0.055)
+_TRACKPAD = ((0.110, 0.068, 0.0004), -0.165)
+# Default corner bevel (metres) per kind; bevel 0 keeps sharp corners.
+BEVEL: dict[str, float] = {"phone": 0.004, "laptop": 0.003}
+MAX_BEVEL = 0.01
+# Body finishes: principled values for the shell (brushed metal reads as anisotropy).
+FINISHES: dict[str, dict[str, Any]] = {
+    "aluminium": {
+        "Base Color": (0.80, 0.80, 0.81, 1.0),
+        "Metallic": 1.0,
+        "Roughness": 0.28,
+        "Anisotropic": 0.6,
+    },
+    "graphite": {
+        "Base Color": (0.09, 0.09, 0.10, 1.0),
+        "Metallic": 1.0,
+        "Roughness": 0.32,
+        "Anisotropic": 0.4,
+    },
+}
+GLASS = {
+    "Roughness": 0.02,
+    "IOR": 1.5,
+    "Transmission Weight": 1.0,
+    "Specular IOR Level": 0.5,
+    "Alpha": 0.08,
+}
 
 # Default angular size of one render pixel (36 mm sensor, 50 mm lens, 1920 px wide).
 PIXEL_ANGLE = 36.0 / 50.0 / 1920.0
@@ -142,7 +174,17 @@ def _resolve(path: str, want: str, suffixes: tuple[str, ...]) -> Path:
 def _parse(args: dict[str, Any]) -> dict[str, Any]:
     check_only(
         args,
-        {"kind", "name", "location", "rotation", "screen", "emission_strength", "grid"},
+        {
+            "kind",
+            "name",
+            "location",
+            "rotation",
+            "screen",
+            "emission_strength",
+            "grid",
+            "bevel",
+            "finish",
+        },
         TOOL,
     )
     kind = args.get("kind")
@@ -158,6 +200,8 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
         "strength": as_num(args.get("emission_strength", 1.0), "emission_strength", 0, 100),
         "grid": _grid(args.get("grid"), kind),
         "screen": _screen(args["screen"]),
+        "bevel": as_num(args.get("bevel", BEVEL[kind]), "bevel", 0, MAX_BEVEL),
+        "finish": as_choice(args.get("finish", "aluminium"), "finish", {k: k for k in FINISHES}),
     }
     if len(p["name"]) > 48:
         raise ToolError(f"{TOOL}: name must be at most 48 characters")
@@ -205,6 +249,16 @@ def _mesh_object(bpy: Any, name: str, geo: Geometry, parent: Any, offset: tuple[
         obj.parent = parent
     obj.location = offset
     return obj
+
+
+def _bevel(obj: Any, width: float) -> None:
+    """Round the body's corners with a bevel modifier (no-op for width 0)."""
+    if width <= 0:
+        return
+    mod = obj.modifiers.new(name="bevel", type="BEVEL")
+    mod.width = width
+    mod.segments = 4
+    mod.limit_method = "ANGLE"
 
 
 def _principled(bpy: Any, name: str, values: dict[str, Any]) -> Any:
@@ -307,6 +361,9 @@ def _screen_material(bpy: Any, p: dict[str, Any], screen_w: float) -> Any:
     output = tree.nodes.new("ShaderNodeOutputMaterial")
     texture = tree.nodes.new("ShaderNodeTexImage")
     image = bpy.data.images.load(str(screen["paths"][0]), check_existing=True)
+    # UI captures are display-referred sRGB: read them as such so the emissive screen
+    # keeps the product's gamma under the scene view transform.
+    image.colorspace_settings.name = "sRGB"
     user = texture.image_user
     if "movie" in screen:
         image.source = "MOVIE"
@@ -346,6 +403,7 @@ def device_add(bpy: Any, args: dict[str, Any]) -> Report:
     front = -bd / 2
     body = _mesh_object(bpy, f"{name}.body", box(bw, bd, bh), None, p["location"])
     body.rotation_euler = p["rotation"]
+    _bevel(body, p["bevel"])
     parts = [body]
     bezel = _mesh_object(
         bpy, f"{name}.bezel", box(bw - 0.002, 0.0005, bh - 0.002), body, (0.0, front, 0.0)
@@ -368,9 +426,20 @@ def device_add(bpy: Any, args: dict[str, Any]) -> Report:
             body,
             (0.0, -_LAPTOP_BASE[1] / 2, -bh / 2 - _LAPTOP_BASE[2] / 2),
         )
-        _assign(base, _principled(bpy, f"base.{name}", {"Metallic": 1.0, "Roughness": 0.35}))
+        _bevel(base, p["bevel"])
+        _assign(base, _principled(bpy, f"base.{name}", FINISHES[p["finish"]]))
         parts.append(base)
-    _assign(body, _principled(bpy, f"body.{name}", {"Metallic": 1.0, "Roughness": 0.3}))
+        deck_top = -bh / 2  # the base's top face, in body space
+        recess = _principled(
+            bpy, f"deck.{name}", {"Base Color": (0.03, 0.03, 0.035, 1.0), "Roughness": 0.6}
+        )
+        for part, (dims, y) in (("keyboard", _KEYBOARD), ("trackpad", _TRACKPAD)):
+            obj = _mesh_object(
+                bpy, f"{name}.{part}", box(*dims), body, (0.0, y, deck_top + dims[2] / 2)
+            )
+            _assign(obj, recess)
+            parts.append(obj)
+    _assign(body, _principled(bpy, f"body.{name}", FINISHES[p["finish"]]))
     _assign(
         bezel,
         _principled(
@@ -382,7 +451,7 @@ def device_add(bpy: Any, args: dict[str, Any]) -> Report:
         _principled(
             bpy,
             f"glass.{name}",
-            {"Roughness": 0.02, "IOR": 1.5, "Transmission Weight": 1.0, "Alpha": 0.08},
+            GLASS,
         ),
     )
     mat = _screen_material(bpy, p, sw)
@@ -395,6 +464,8 @@ def device_add(bpy: Any, args: dict[str, Any]) -> Report:
         "screen_material": str(mat.name),
         "node_group": NODE_GROUP,
         "emission_strength": p["strength"],
+        "bevel": p["bevel"],
+        "finish": p["finish"],
     }
     if "movie" in p["screen"]:
         report["movie"] = p["screen"]["movie"][0]

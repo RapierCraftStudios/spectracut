@@ -28,6 +28,7 @@ builds declarative recipes and never imports ``bpy``.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
@@ -50,15 +51,22 @@ from spectracut.critique.scene_verifier import PACK as SCENE_PACK
 from spectracut.critique.scene_verifier import is_blank, scene_verifier_prompt
 from spectracut.edit.timeline import Edit
 from spectracut.finishing.color import BRAND_PIPELINE, ColorPipeline
+from spectracut.finishing.looks import render_rules
 from spectracut.queue.queue import JobQueue
 from spectracut.spec._base import Slug, StrictModel
-from spectracut.spec.brand import BrandKit
+from spectracut.spec.brand import BrandKit, Look
 from spectracut.spec.recipe import Recipe, RecipeStep
-from spectracut.storyboard.models import ArtDirection, Board, MoodEntry, Storyboard
+from spectracut.storyboard.models import (
+    DEVICE_RUNTIME_SHARE,
+    ArtDirection,
+    Board,
+    MoodEntry,
+    Storyboard,
+)
 from spectracut.studio import device_shot as ds
 from spectracut.studio.department import SKILLS_ROOT, CostEstimate, Department
 from spectracut.studio.departments.art import ANIMATIC, STORYBOARD
-from spectracut.studio.departments.capture import UI_CAPTURE, UICaptures
+from spectracut.studio.departments.capture import UI_CAPTURE, ScreenCapture, UICaptures
 from spectracut.studio.estimate import STAGE_RATES
 from spectracut.studio.gates import Critic, CriticVerdict, Finding, Severity
 from spectracut.studio.graph import RunContext, Runner, RunResult
@@ -68,10 +76,13 @@ from spectracut.templates import TEMPLATES
 from spectracut.templates.base import (
     RESOLUTIONS,
     Call,
+    PinnedAsset,
     Template,
     TemplateAspect,
     require_clean_copy,
+    swatch,
 )
+from spectracut.templates.devices import DEVICE
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -265,6 +276,8 @@ class RenderedShot(StrictModel):
     """Last frame of a scene-built shot (``round(duration_s * fps)``); templates use theirs."""
     description: str | None = None
     """The brief a scene-built shot was built and vision-scored against."""
+    capture: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """A device shot's UI capture key (``beat:<beat>`` / ``proof:<claim>``); omitted otherwise."""
 
 
 class SceneBuilderShot(StrictModel):
@@ -312,7 +325,12 @@ class TemplateShotsDepartment(Department):
 
     name = "template-shots"
     produces = frozenset({TEMPLATE_SHOTS})
-    inputs: ClassVar[dict[str, type[BaseModel]]] = {STORYBOARD: Storyboard, ANIMATIC: Edit}
+    inputs: ClassVar[dict[str, type[BaseModel]]] = {
+        STORYBOARD: Storyboard,
+        ANIMATIC: Edit,
+        UI_CAPTURE: UICaptures,
+    }
+    """Boards and animatic, and the product's UI captures for device shots (``--product``)."""
     output = RenderedShots
     skill_pack = SKILLS_ROOT / "motion-designer"
     uses_gpu = True
@@ -531,6 +549,131 @@ def with_motion(recipe: Recipe, board: Board, *, fps: int = FPS) -> Recipe:
     return recipe.model_copy(update={"steps": out})
 
 
+# ---- device shots (#339) -----------------------------------------------------------------
+
+DEVICE_VARIANTS = ("front", "three-quarter")
+DEVICE_FSTOP = 2.8
+_HDRI_SUFFIXES = (".hdr", ".exr")
+
+
+def board_capture(captures: UICaptures, board: Board) -> ScreenCapture:
+    """The capture a device board shows: its capture key on its device kind."""
+    key = board.capture_key
+    for capture in captures.captures:
+        if capture.key == key and capture.device == board.device:
+            return capture
+    raise ValueError(
+        f"board {board.shot_id!r}: no {board.device} capture for {key!r} "
+        f"(captured: {', '.join(sorted({f'{c.key}@{c.device}' for c in captures.captures}))})"
+    )
+
+
+def capture_frames(
+    capture: ScreenCapture, frames: int, fps: int = FPS
+) -> tuple[list[PinnedAsset], dict[str, Path]]:
+    """The capture clip resampled to ``frames`` frames at ``fps``, last frame held.
+
+    Returns the screen frames pinned as ``captures/<clip sha256>/<NNNN>.png`` (the
+    host plays numbered sequences) and the staging map relpath -> capture file.
+    A clip that holds one image for the whole shot is a single still frame.
+    """
+    clip = capture.clip
+    picks = [clip[min(i * capture.fps // fps, len(clip) - 1)] for i in range(frames)]
+    if len({f.sha256 for f in picks}) == 1:
+        picks = picks[:1]
+    digest = hashlib.sha256("".join(f.sha256 for f in picks).encode()).hexdigest()
+    pinned: list[PinnedAsset] = []
+    extra: dict[str, Path] = {}
+    for n, frame in enumerate(picks, start=1):
+        rel = f"captures/{digest}/{n:04d}.png"
+        pinned.append(PinnedAsset(path=rel, sha256=frame.sha256))
+        extra[rel] = Path(frame.path)
+    return pinned, extra
+
+
+def device_lighting(kit: BrandKit, assets: str | None) -> dict[str, JsonValue]:
+    """Lighting slots from the kit: a dark set for a dark surface swatch, else soft;
+    the kit's HDRI (first ``.hdr``/``.exr`` in its assets dir) only when it pins one."""
+    r, g, b = (float(c) for c in swatch(kit, "surface")[:3])  # type: ignore[arg-type]
+    slots: dict[str, JsonValue] = {
+        "lighting": "studio-dark" if 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.05 else "studio-soft"
+    }
+    root = Path(assets) if assets else None
+    if root is not None and root.is_dir():
+        hdris = sorted(
+            p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in _HDRI_SUFFIXES
+        )
+        if hdris:
+            sha = hashlib.sha256(hdris[0].read_bytes()).hexdigest()
+            slots["hdri"] = {"path": hdris[0].relative_to(root).as_posix(), "sha256": sha}
+    return slots
+
+
+def focus_steps(recipe: Recipe, board: Board, look: Look, *, fps: int = FPS) -> list[Call]:
+    """DoF on the device with a focus pull, then the Look's render rules.
+
+    ``camera.set_dof`` focuses the device body at ``DEVICE_FSTOP``; a ``camera.move``
+    keys ``focus_distance`` from half the device distance to the device by 40% of
+    the shot (following the board's move); the Look's rules set motion blur and
+    turn DoF off when the Look forbids it.
+    """
+    calls: list[Call] = []
+    cam = _camera_state(recipe)
+    if cam is not None:
+        _name, loc, rot = cam
+        end = shot_frames(board, fps)
+        pull = max(2, min(end, round(end * 0.4)))
+        at = loc
+        if board.move not in ("static", "handheld"):
+            end_loc, _rot = _move_end(board.move, loc, rot)
+            t = (pull - 1) / max(1, end - 1)
+            at = [a + (b - a) * t for a, b in zip(loc, end_loc, strict=True)]
+        near = math.dist(at, (0.0, 0.0, 0.0))
+        calls.append(("camera.set_dof", {"focus_object": f"{DEVICE}.body", "fstop": DEVICE_FSTOP}))
+        keys: list[JsonValue] = [
+            {"frame": 1, "focus_distance": round(near * 0.5, 4)},
+            {"frame": pull, "focus_distance": round(near, 4)},
+        ]
+        calls.append(("camera.move", {"keys": keys, "easing": "ease_in_out"}))
+    calls += [(step.tool, step.args) for step in render_rules(look)]
+    return calls
+
+
+def device_recipe(
+    kit: BrandKit,
+    board: Board,
+    capture: ScreenCapture,
+    *,
+    variant: str | None,
+    aspect: TemplateAspect,
+    look: Look,
+    assets: str | None = None,
+) -> tuple[Recipe, dict[str, JsonValue], dict[str, Path]]:
+    """A device board's recipe: the device template with the capture on its screen,
+    the board's camera move and frame range, a focus pull and the Look's rules.
+
+    Returns ``(recipe, slots, staging map)``.
+    """
+    assert board.device is not None
+    screen, extra = capture_frames(capture, shot_frames(board))
+    slots: dict[str, JsonValue] = {
+        "screen_frames": [p.model_dump(mode="json") for p in screen],
+        **device_lighting(kit, assets),
+    }
+    template = TEMPLATES[f"device-{board.device}"]
+    variant = variant if variant in DEVICE_VARIANTS else "three-quarter"
+    base = with_motion(template.build(kit, slots, variant=variant, aspect=aspect), board)
+    out = list(base.steps)
+    for tool, args in focus_steps(base, board, look):
+        out.append(RecipeStep(index=len(out), tool=tool, args=args))
+    return base.model_copy(update={"steps": out}), slots, extra
+
+
+def _captures(ctx: RunContext) -> UICaptures | None:
+    raw = ctx.inputs.get(UI_CAPTURE)
+    return UICaptures.model_validate(raw) if raw is not None else None
+
+
 def shot_brief_text(description: str, board: Board) -> str:
     """The scene brief of a scene-built shot: the plan's description plus its board."""
     lines = [
@@ -659,8 +802,24 @@ class ShotRunner:
         builds: list[tuple[TemplateShot, Recipe, Recipe]] = []
         pending: list[SceneBuilderShot] = []
         scene: list[tuple[TemplateShot, Board]] = []
-        boards = {b.shot_id: b for b in Storyboard.model_validate(ctx.inputs[STORYBOARD]).boards}
+        storyboard = Storyboard.model_validate(ctx.inputs[STORYBOARD])
+        boards = {b.shot_id: b for b in storyboard.boards}
+        captures = _captures(ctx)
+        devices: list[tuple[TemplateShot, Recipe, Recipe, int, str, dict[str, Path]]] = []
+        if captures is not None:
+            share = storyboard.device_share()
+            if share < DEVICE_RUNTIME_SHARE:
+                abstract = [b.shot_id for b in storyboard.boards if b.device is None]
+                raise ValueError(
+                    f"node {ctx.spec.id!r}: device shots cover {share:.0%} of the storyboard "
+                    f"runtime, need at least {DEVICE_RUNTIME_SHARE:.0%} "
+                    f"(abstract boards: {', '.join(abstract) or 'none'})"
+                )
         for shot in shots:
+            board = boards[shot.shot_id]
+            if captures is not None and board.device is not None:
+                devices.append(self._device_shot(ctx, shot, board, kit, captures))
+                continue
             if shot.template is None and self.scene_builder is not None:
                 scene.append((shot, boards[shot.shot_id]))
                 continue
@@ -686,6 +845,12 @@ class ShotRunner:
             self._render(ctx, s, base, rendered, Tier.PREVIEW, TEMPLATES[str(s.template)].frames)
             for s, base, rendered in builds
         ]
+        for s, base, rendered, frame_end, key, extra in devices:
+            done.append(
+                self._render(
+                    ctx, s, base, rendered, Tier.PREVIEW, frame_end, capture=key, extra=extra
+                )
+            )
         for shot, board in scene:
             built, used = self._scene_shot(ctx, shot, board, kit)
             done.append(built)
@@ -693,6 +858,37 @@ class ShotRunner:
         order = {s.shot_id: n for n, s in enumerate(shots)}
         done.sort(key=lambda d: order[d[0].shot_id])
         return self._result(ctx, done, usage, pending)
+
+    def _device_shot(
+        self,
+        ctx: RunContext,
+        shot: TemplateShot,
+        board: Board,
+        kit: BrandKit,
+        captures: UICaptures,
+    ) -> tuple[TemplateShot, Recipe, Recipe, int, str, dict[str, Path]]:
+        """A device board on ``device-<kind>`` with its capture on the screen (#339)."""
+        assert board.device is not None
+        template = f"device-{board.device}"
+        variant = shot.variant if shot.variant in DEVICE_VARIANTS else "three-quarter"
+        try:
+            capture = board_capture(captures, board)
+            base, slots, extra = device_recipe(
+                kit,
+                board,
+                capture,
+                variant=variant,
+                aspect=shot.aspect,
+                look=ds.qa_look(ctx),
+                assets=_assets(ctx.spec),
+            )
+        except (ValueError, ValidationError) as exc:
+            raise ValueError(f"shot {shot.shot_id!r} ({template}): {exc}") from None
+        planned = shot.model_copy(
+            update={"template": template, "scene_builder": None, "variant": variant, "slots": slots}
+        )
+        rendered = tier_recipe(base, Tier.PREVIEW, shot.aspect)
+        return planned, base, rendered, shot_frames(board), board.capture_key, extra
 
     def _art(self, ctx: RunContext, kit: BrandKit) -> ArtDirection:
         art = self.art_for(ctx.spec) if self.art_for is not None else None
@@ -742,6 +938,22 @@ class ShotRunner:
         for prior in upstream.shots:
             base = Recipe.model_validate(prior.recipe)
             rendered = tier_recipe(base, ctx.tier, prior.aspect)
+            if prior.capture is not None:
+                extra = _restage(ctx, prior, base)
+                frames = prior.frame_end or TEMPLATES[prior.template].frames
+                done.append(
+                    self._render(
+                        ctx,
+                        prior,
+                        base,
+                        rendered,
+                        ctx.tier,
+                        frames,
+                        capture=prior.capture,
+                        extra=extra,
+                    )
+                )
+                continue
             if prior.template == SCENE_BUILDER:
                 art = self._art(ctx, _kit(ctx.spec))
                 frames = prior.frame_end or 1
@@ -777,19 +989,26 @@ class ShotRunner:
         template: str | None = None,
         description: str | None = None,
         art: ArtDirection | None = None,
+        capture: str | None = None,
+        extra: Mapping[str, Path] | None = None,
     ) -> tuple[RenderedShot, Usage]:
         """Render one shot as one signed Blender job pinned to the config's worker tag.
 
         A scene-built shot passes ``template`` (:data:`SCENE_BUILDER`), its
         ``description`` and ``art``: its vision QA scores the first frame against the
         description with the scene verifier's prompt instead of the generic rubric.
+        A device shot passes its ``capture`` key and the capture files to stage
+        (``extra``); it records the key and its ``frame_end``.
         """
         config, opts = self.config, self.options
         shot_id = shot.shot_id
         template = template or shot.template
         if template is None:
             raise ValueError(f"shot {shot_id!r} has no template to render")
-        assets_dir, _sha = ds.stage_for(config, _assets(ctx.spec), recipe)
+        if extra is None:
+            assets_dir, _sha = ds.stage_for(config, _assets(ctx.spec), recipe)
+        else:
+            assets_dir, _sha = ds.stage_for(config, _assets(ctx.spec), recipe, extra)
         base_id = f"{self.production_id}-{ctx.spec.id}-{shot_id}"[:96]
         job_id = ds.fresh_job_id(config, f"{base_id}-{recipe.content_hash[7:19]}")
         envelope = ds.envelope(job_id, recipe, config, opts.now(), frame_end=frame_end)
@@ -831,8 +1050,9 @@ class ShotRunner:
                 failures=[str(f) for f in failures] if isinstance(failures, list) else [],
             ),
             vision_qa=VisionQA(score=float(verdict.score), notes=verdict.notes),
-            frame_end=frame_end if template == SCENE_BUILDER else None,
+            frame_end=frame_end if template == SCENE_BUILDER or capture is not None else None,
             description=description if template == SCENE_BUILDER else None,
+            capture=capture,
         )
         return rendered, usage
 
@@ -851,6 +1071,24 @@ class ShotRunner:
             shots=[s for s, _u in done], scene_builder=list(scene_builder or [])
         ).model_dump(mode="json")
         return RunResult(output=dept.validate_output(ctx.spec.id, output), usage=total)
+
+
+def _restage(ctx: RunContext, prior: RenderedShot, base: Recipe) -> dict[str, Path]:
+    """The capture files a device shot's recipe pins, found by sha256 in the UI captures."""
+    captures = _captures(ctx)
+    if captures is None:
+        raise ValueError(
+            f"shot {prior.shot_id!r} shows capture {prior.capture!r} but node "
+            f"{ctx.spec.id!r} has no {UI_CAPTURE} input"
+        )
+    by_sha = {f.sha256: Path(f.path) for c in captures.captures for f in c.clip}
+    extra: dict[str, Path] = {}
+    for rel, sha in ds.referenced_assets(base).items():
+        if rel.startswith("captures/"):
+            if sha not in by_sha:
+                raise ValueError(f"shot {prior.shot_id!r}: capture frame {rel} is not captured")
+            extra[rel] = by_sha[sha]
+    return extra
 
 
 def _add(a: Usage, b: Usage) -> Usage:

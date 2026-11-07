@@ -77,7 +77,11 @@ def _keys(value: Any) -> list[dict[str, Any]]:
     for i, key in enumerate(value):
         if not isinstance(key, dict):
             raise ToolError(f"keys[{i}] must be an object")
-        check_only(key, {"frame", "location", "rotation", "lens"}, f"camera.move keys[{i}]")
+        check_only(
+            key,
+            {"frame", "location", "rotation", "lens", "focus_distance"},
+            f"camera.move keys[{i}]",
+        )
         frame = as_int(key.get("frame"), f"keys[{i}].frame", 0, MAX_FRAME)
         if last is not None and frame <= last:
             raise ToolError("keys must have strictly increasing frames")
@@ -89,8 +93,12 @@ def _keys(value: Any) -> list[dict[str, Any]]:
             parsed["rotation"] = as_vec3(key["rotation"], f"keys[{i}].rotation")
         if "lens" in key:
             parsed["lens"] = as_num(key["lens"], f"keys[{i}].lens", 1, 5000)
+        if "focus_distance" in key:
+            parsed["focus_distance"] = as_num(
+                key["focus_distance"], f"keys[{i}].focus_distance", 0, 1e6
+            )
         if len(parsed) == 1:
-            raise ToolError(f"keys[{i}] needs location, rotation or lens")
+            raise ToolError(f"keys[{i}] needs location, rotation, lens or focus_distance")
         keys.append(parsed)
     return keys
 
@@ -128,6 +136,12 @@ def camera_move(bpy: Any, args: dict[str, Any]) -> Report:
         if "lens" in key:
             camera.data.lens = key["lens"]
             camera.data.keyframe_insert(data_path="lens", frame=frame)
+        if "focus_distance" in key:
+            dof = camera.data.dof
+            dof.use_dof = True
+            dof.focus_object = None
+            dof.focus_distance = key["focus_distance"]
+            camera.data.keyframe_insert(data_path="dof.focus_distance", frame=frame)
     interpolation, ease = EASINGS[easing]
     for fc in _fcurves(camera) + _fcurves(camera.data):
         for point in fc.keyframe_points:

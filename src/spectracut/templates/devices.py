@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Device templates: a logo-free laptop or phone with the product UI on its screen.
 
-The rig is the host's ``device.add`` (body, bezel, glass, moire-free pixel-grid
-screen). The screen is a slot: a sha256-pinned image sequence or movie from the
-host assets dir. Its emission strength is calibrated with
+The rig is the host's ``device.add`` (bevelled aluminium body, bezel, reflective
+glass cover, moire-free pixel-grid screen, untextured keyboard deck). The screen
+is a slot: a sha256-pinned image sequence or movie from the host assets dir. Its
+emission strength is calibrated with
 :func:`spectracut.finishing.color.screen_white_strength` so UI white reads as
-display white under the shot's view transform. Lighting is an HDRI world
-(``world.set_hdri``) plus area key and rim lights (``light.add``); the floor
-takes its colour from the kit palette.
+display white under the shot's view transform. Lighting is a studio preset
+(``lighting``: key, fill and rim area lights from ``light.add``) over either a
+pinned HDRI world (``world.set_hdri``) or, when no HDRI is pinned, a neutral
+studio gradient (``world.set_gradient``). The floor is a glossy plastic in the
+kit's surface colour so the device reflects in it. No step adds text or a logo.
 """
 
 from __future__ import annotations
@@ -27,6 +30,18 @@ FLOOR = "floor"
 DeviceKind = Literal["laptop", "phone"]
 # Half the device height (metres), so the floor sits just under the rig.
 _HALF_HEIGHT: dict[str, float] = {"laptop": 0.11, "phone": 0.08}
+Lighting = Literal["studio-soft", "studio-dark", "studio-bright"]
+# Area-light energies (W) for key, fill and rim, and the gradient world (bottom,
+# top grey in scene-linear, strength) used when no HDRI is pinned.
+LIGHTING: dict[str, dict[str, tuple[float, ...]]] = {
+    "studio-soft": {"energy": (60, 25, 40), "world": (0.02, 0.12, 0.6)},
+    "studio-dark": {"energy": (45, 8, 70), "world": (0.004, 0.03, 0.4)},
+    "studio-bright": {"energy": (90, 45, 35), "world": (0.08, 0.4, 0.9)},
+}
+FLOOR_PRESET = "glossy_plastic"
+FINISH = "aluminium"
+# Corner bevel (metres) passed to the host rig per kind.
+_BEVEL: dict[str, float] = {"laptop": 0.003, "phone": 0.004}
 
 
 def _deg(*angles: float) -> tuple[float, float, float]:
@@ -35,8 +50,8 @@ def _deg(*angles: float) -> tuple[float, float, float]:
 
 
 class DeviceSlots(StrictModel):
-    """The screen content (frames or a movie) and the HDRI world (``hdri``, required:
-    the pinned HDRI file lighting the device)."""
+    """The screen content (frames or a movie), the studio ``lighting`` preset and an
+    optional pinned HDRI world (``hdri``; without it a studio gradient lights the set)."""
 
     screen_frames: list[PinnedAsset] | None = Field(
         default=None,
@@ -50,7 +65,12 @@ class DeviceSlots(StrictModel):
     frame_offset: Annotated[int, Field(ge=0)] = Field(
         default=0, description="Frames to skip at the start of the screen content."
     )
-    hdri: PinnedAsset
+    lighting: Lighting = Field(
+        default="studio-soft", description="Studio lighting preset: key, fill and rim lights."
+    )
+    hdri: PinnedAsset | None = Field(
+        default=None, description="A pinned HDRI world; omit for the studio gradient world."
+    )
     hdri_strength: Annotated[float, Field(ge=0, le=1000)] = Field(
         default=1.0, description="Brightness of the HDRI world."
     )
@@ -76,6 +96,24 @@ class DeviceSlots(StrictModel):
 def _scene(kind: DeviceKind) -> object:
     def scene(kit: BrandKit, slots: DeviceSlots, pipeline: ColorPipeline) -> list[Call]:
         floor_z = -_HALF_HEIGHT[kind]
+        preset = LIGHTING[slots.lighting]
+        key, fill, rim = preset["energy"]
+        bottom, top, strength = preset["world"]
+        world: Call = (
+            (
+                "world.set_hdri",
+                {
+                    **slots.hdri.arg(),
+                    "strength": slots.hdri_strength,
+                    "rotation": slots.hdri_rotation,
+                },
+            )
+            if slots.hdri is not None
+            else (
+                "world.set_gradient",
+                {"bottom": [bottom] * 3, "top": [top] * 3, "strength": strength},
+            )
+        )
         return [
             (
                 "object.add_primitive",
@@ -83,7 +121,7 @@ def _scene(kind: DeviceKind) -> object:
             ),
             (
                 "material.apply_preset",
-                {"object": FLOOR, "preset": "matte_plastic", "color": swatch(kit, "surface")},
+                {"object": FLOOR, "preset": FLOOR_PRESET, "color": swatch(kit, "surface")},
             ),
             (
                 "device.add",
@@ -94,22 +132,17 @@ def _scene(kind: DeviceKind) -> object:
                     "rotation": [0, 0, 0],
                     "screen": slots.screen_arg(),  # type: ignore[dict-item]
                     "emission_strength": screen_white_strength(pipeline),
+                    "bevel": _BEVEL[kind],
+                    "finish": FINISH,
                 },
             ),
-            (
-                "world.set_hdri",
-                {
-                    **slots.hdri.arg(),
-                    "strength": slots.hdri_strength,
-                    "rotation": slots.hdri_rotation,
-                },
-            ),
+            world,
             (
                 "light.add",
                 {
                     "kind": "area",
                     "name": "key",
-                    "energy": 60,
+                    "energy": key,
                     "location": [0.8, -0.9, 0.8],
                     "rotation": list(_deg(55, 0, 40)),
                 },
@@ -118,8 +151,18 @@ def _scene(kind: DeviceKind) -> object:
                 "light.add",
                 {
                     "kind": "area",
+                    "name": "fill",
+                    "energy": fill,
+                    "location": [-0.9, -0.7, 0.3],
+                    "rotation": list(_deg(70, 0, -50)),
+                },
+            ),
+            (
+                "light.add",
+                {
+                    "kind": "area",
                     "name": "rim",
-                    "energy": 40,
+                    "energy": rim,
                     "location": [-0.7, 0.6, 0.5],
                     "rotation": list(_deg(-60, 0, -130)),
                 },

@@ -381,3 +381,50 @@ def test_chatgpt_images_do_not_need_the_local_image_model(real_providers: None) 
     assert concept_skip_reason({"image_provider": "chatgpt"}, runtime=runtime) is None
     assert concept_skip_reason(runtime=runtime) is not None
     assert concept_skip_reason(runtime=None) is None
+
+
+# ---- device boards (#339) ----------------------------------------------------------
+
+
+def _product_notes() -> dict[str, JsonValue]:
+    step = {"action": "visit", "target": "/runs"}
+    return {
+        "summary": "AlterLab runs agents.",
+        "sources": [{"id": "docs", "title": "Docs", "ref": "https://example.test/docs"}],
+        "features": [{"text": "A runs dashboard", "source_id": "docs"}],
+        "screens": [
+            {"beat": "dashboard", "route": "/runs", "steps": [step]},
+            {"proof_point": "Every run in one view", "route": "/runs", "steps": [step]},
+            {"beat": "the beam", "interlude": True},
+        ],
+    }
+
+
+def _device_board(shot_id: str, beat: str, seconds: float, **extra: Any) -> dict[str, Any]:
+    return {"shot_id": shot_id, "beat": beat, "action": "a", "duration_s": seconds, **extra}
+
+
+def test_storyboard_device_boards_must_dominate_and_show_mapped_screens() -> None:
+    inputs: dict[str, JsonValue] = {"product": _product_notes()}
+    kinds = _kinds("product")
+    ok = {
+        "boards": [
+            _device_board("s1", "dashboard", 4.0, device="laptop"),
+            _device_board(
+                "s2", "proof", 2.0, device="phone", capture="proof:Every run in one view"
+            ),
+            _device_board("s3", "the beam", 3.0),
+        ]
+    }
+    StoryboardArtist.check_output("storyboard", ok, inputs, kinds)  # 6 of 9 s: 67%
+    few = {**ok, "boards": [*ok["boards"][:1], _device_board("s3", "the beam", 4.0)]}
+    with pytest.raises(DepartmentOutputError, match=r"50%.*60%.*abstract boards: s3"):
+        StoryboardArtist.check_output("storyboard", few, inputs, kinds)
+    on_interlude = {"boards": [_device_board("s1", "the beam", 4.0, device="laptop")]}
+    with pytest.raises(DepartmentOutputError, match="interlude beats: s1='the beam'"):
+        StoryboardArtist.check_output("storyboard", on_interlude, inputs, kinds)
+    unmapped = {"boards": [_device_board("s1", "pricing", 4.0, device="laptop")]}
+    with pytest.raises(DepartmentOutputError, match="no mapped product screen: s1='beat:pricing'"):
+        StoryboardArtist.check_output("storyboard", unmapped, inputs, kinds)
+    # Without a product input the same abstract-heavy storyboard passes (unchanged checks).
+    StoryboardArtist.check_output("storyboard", few, {}, {})

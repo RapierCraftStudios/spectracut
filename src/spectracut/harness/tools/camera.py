@@ -40,6 +40,8 @@ class CameraKey(ToolArgs):
     location: Vec3 | None = None
     rotation: Vec3 | None = None
     lens: Lens | None = None
+    focus_distance: Annotated[float, Field(ge=0)] | None = None
+    """Depth-of-field focus distance (metres) at this key: keys a focus pull."""
 
 
 class CameraMove(ToolArgs):

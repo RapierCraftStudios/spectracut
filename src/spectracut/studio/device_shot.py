@@ -425,7 +425,12 @@ def _verify_staged(staged: Path, referenced: Mapping[str, str]) -> None:
             )
 
 
-def stage_assets(source: Path, shared: Path, referenced: Mapping[str, str]) -> str:
+def stage_assets(
+    source: Path,
+    shared: Path,
+    referenced: Mapping[str, str],
+    extra: Mapping[str, Path] | None = None,
+) -> str:
     """Stage ``source`` once under ``<shared>/assets/<sha>/`` and return ``<sha>``.
 
     ``<sha>`` is the sha256 of the sorted ``(relpath, file sha256)`` manifest of
@@ -434,9 +439,23 @@ def stage_assets(source: Path, shared: Path, referenced: Mapping[str, str]) -> s
     place, so concurrent renders copy at most once each and an existing staged
     dir is never rewritten. Every ``referenced`` relpath must then exist in the
     staged dir with its pinned sha256, else :class:`ValueError`.
+
+    ``extra`` maps more relpaths to absolute files (product UI captures, #339)
+    staged beside the tree and included in the manifest; an extra relpath
+    replaces a tree file of the same name. ``None`` stages the tree alone.
     """
     source = Path(source)
     manifest = _asset_manifest(source)
+    files: dict[str, Path] = {}
+    if extra:
+        for rel in extra:
+            parts = PurePosixPath(rel).parts
+            if PurePosixPath(rel).is_absolute() or ".." in parts or not parts:
+                raise ValueError(f"extra asset {rel!r} must be relative to the assets dir")
+        files = {rel: Path(path) for rel, path in extra.items()}
+        merged = dict(manifest)
+        merged.update({rel: _sha256(path) for rel, path in files.items()})
+        manifest = sorted(merged.items())
     sha = hashlib.sha256(
         "".join(f"{rel}\0{digest}\n" for rel, digest in manifest).encode("utf-8")
     ).hexdigest()
@@ -449,7 +468,8 @@ def stage_assets(source: Path, shared: Path, referenced: Mapping[str, str]) -> s
             for rel, _digest in manifest:
                 dest = tmp.joinpath(*PurePosixPath(rel).parts)
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source.joinpath(*PurePosixPath(rel).parts), dest)
+                origin = files.get(rel) or source.joinpath(*PurePosixPath(rel).parts)
+                shutil.copyfile(origin, dest)
             tmp.mkdir(parents=True, exist_ok=True)
             try:
                 os.replace(tmp, staged)
@@ -595,21 +615,31 @@ def _shot_assets_source(ctx: RunContext) -> str | None:
 
 
 def stage_for(
-    config: DeviceShotConfig, source: str | None, recipe: Recipe
+    config: DeviceShotConfig,
+    source: str | None,
+    recipe: Recipe,
+    extra: Mapping[str, Path] | None = None,
 ) -> tuple[str | None, str | None]:
     """``(job assets_dir, staged sha)``: the override verbatim, else stage ``source``.
 
     Raises :class:`ValueError` before anything is submitted when there is
-    neither an override nor a brand kit assets dir to stage.
+    neither an override nor a brand kit assets dir to stage. With ``extra`` files
+    (UI captures, #339) ``source`` is always staged: the override dir cannot
+    hold the production's captures.
     """
-    if config.assets_dir:
+    if config.assets_dir and not extra:
         return config.assets_dir, None
+    if source is None and extra:
+        raise ValueError(
+            "device shots stage the product's UI captures beside the brand kit assets; "
+            "the production has no brand kit assets dir (recreate it with --brand-kit)"
+        )
     if source is None:
         raise ValueError(
             "device-shot render has no brand kit assets dir to stage "
             "(recreate the production with --brand-kit) and SPECTRACUT_ASSETS_DIR is unset"
         )
-    sha = stage_assets(Path(source), config.shared, referenced_assets(recipe))
+    sha = stage_assets(Path(source), config.shared, referenced_assets(recipe), extra)
     return storage_assets_dir(sha), sha
 
 
