@@ -311,3 +311,62 @@ def test_scene_renderer_with_no_recipe_names_the_frame(tmp_path: Path) -> None:
     frame = StyleFrame(id="cta", description="End card", prompt="the logo")
     with pytest.raises(ValueError, match="style frame 'cta'.*no recipe"):
         render(frame, ART, tmp_path / "out" / "cta.png")
+
+
+class KitText:
+    """The builder's text model placing kit entries (#346)."""
+
+    name = "kit-text"
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def complete(self, system: str, prompt: str, *, schema: dict[str, Any]) -> Completion:
+        self.prompts.append(prompt)
+        calls: list[JsonValue] = [
+            {"tool": "scene.clear", "args": {}},
+            {"kit": "glass_tiers", "args": {"name": "tiers"}},
+            {"kit": "studio_softbox", "args": {"hdri_strength": 0.5}},
+            {"tool": "camera.add", "args": {"name": "cam", "location": [0, -6, 1]}},
+            {"tool": "camera.use", "args": {"name": "cam"}},
+        ]
+        return Completion(output={"plan": "kit", "calls": calls}, usage={"claude_requests": 1})
+
+
+def test_scene_renderer_stages_the_kit_hdri_the_recipe_pins(tmp_path: Path) -> None:
+    from spectracut.harness.kit import KITS_DIR, load_kit
+    from spectracut.studio.profiles import load_profile
+
+    kit = load_kit(KITS_DIR / "one-beam")
+    fake, text = FakeFlamenco(), KitText()
+    render = SceneStyleFrameRenderer(
+        lambda: text,
+        lambda: SceneJudge(0.95),
+        load_profile("standard"),
+        _scene_deps(tmp_path, fake, []),
+        "film",
+        tmp_path / "work",
+        kit=lambda: kit,
+    )
+    record, _usage = render(
+        StyleFrame(id="hero", description="tiers", prompt="glass"), ART, tmp_path / "o.png"
+    )
+    assert record.provider == PROVIDER
+    assert "Kit assets and lighting presets" in text.prompts[0]
+    hdr = kit.file("hdri/studio-softbox.hdr")
+    staged = list((tmp_path / "shared").rglob("studio-softbox.hdr"))
+    assert staged and all(p.as_posix().endswith(kit.staged_path(hdr.path)) for p in staged)
+    assert {hashlib.sha256(p.read_bytes()).hexdigest() for p in staged} == {hdr.sha256}
+    for job in fake.submitted:  # preview candidates and the final render both pin the HDRI
+        signed = json.loads(Path(job["settings"]["job_file"]).read_text("utf-8"))
+        steps = signed["envelope"]["recipe"]["steps"]
+        hdri = [s["args"] for s in steps if s["tool"] == "world.set_hdri"]
+        assert hdri == [hdri[0]] and hdri[0]["path"] == kit.staged_path(hdr.path)
+
+
+def test_recipe_renderer_without_a_kit_stages_an_empty_dir(tmp_path: Path) -> None:
+    from spectracut.studio.departments.style_frame_farm import stage_kit_files
+
+    assert stage_kit_files(None, tmp_path) == [] and not any(tmp_path.iterdir())
+    render = FarmRecipeRenderer(lambda: None, "film", tmp_path)  # type: ignore[arg-type,return-value]
+    assert render.kit is None
