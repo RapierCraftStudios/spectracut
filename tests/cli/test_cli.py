@@ -114,6 +114,35 @@ def test_studio_new_rejects_bad_brief_and_profile(
     assert not (home / "productions" / "spellwise").exists()
 
 
+def test_studio_new_with_product_records_source_and_plans_screen_map(
+    home: Path, brief_file: Path
+) -> None:
+    fixture = Path(__file__).resolve().parents[1] / "studio" / "fixtures" / "product.yaml"
+    result = runner.invoke(
+        app, ["studio", "new", str(brief_file), "--profile", "standard", "--product", str(fixture)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "product fixture-app: 7 routes from" in result.output
+    meta = ProductionStore(home).meta("spellwise")
+    assert meta.product is not None and meta.product.id == "fixture-app"
+    assert meta.product.demo_login is not None
+    assert meta.product.demo_login.password_env == "FIXTURE_DEMO_PASSWORD"
+    graph = json.loads((home / "productions" / "spellwise" / "graph.json").read_text())
+    text = json.dumps(graph)
+    assert '"product-understanding"' in text and "/dashboard/billing" in text
+    assert "Fast spellcheck" in text  # the brief's proof point reaches the node params
+
+
+def test_studio_new_rejects_a_bad_product_source(
+    home: Path, tmp_path: Path, brief_file: Path
+) -> None:
+    bad = tmp_path / "product.yaml"
+    bad.write_text("id: x\nrepo: .\nrun: {}\n", encoding="utf-8")
+    result = runner.invoke(app, ["studio", "new", str(brief_file), "--product", str(bad)])
+    assert result.exit_code == 2 and "error:" in result.output
+    assert not (home / "productions" / "spellwise").exists()
+
+
 # ---- (b) studio run / approve / status ---------------------------------------
 
 

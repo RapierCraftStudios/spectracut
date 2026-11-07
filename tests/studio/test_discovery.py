@@ -326,3 +326,153 @@ def test_copy_gate_error_is_a_department_output_error() -> None:
     )
     assert isinstance(err, DepartmentOutputError)
     assert "copy gate: line 0 unsourced: x" in str(err)
+
+
+# ---- #337: screen map --------------------------------------------------------
+
+ROUTES = [
+    {"path": "/playground", "file": "src/app/playground/page.tsx"},
+    {"path": "/dashboard/billing", "file": "src/app/dashboard/billing/page.tsx"},
+    {"path": "/integrations/[platform]", "file": "src/app/integrations/[platform]/page.tsx"},
+]
+POINTS = [p["claim"] for p in BRIEF["proof_points"]]
+
+
+def _screens(**extra: Any) -> list[dict[str, Any]]:
+    visit = [{"action": "visit", "target": "/playground"}, {"action": "click", "target": "Send"}]
+    return [
+        {"proof_point": POINTS[0], "route": "/playground", "steps": visit, "source_id": "home"},
+        {"proof_point": POINTS[1], "route": "/integrations/n8n", "steps": visit},
+        {"beat": "Hook", "route": "/dashboard/billing", "steps": visit},
+        {"beat": "Interlude", "interlude": True},
+        *extra.get("more", []),
+    ]
+
+
+def _script_input() -> dict[str, Any]:
+    script = _script("concept-1")
+    script["lines"].append({**script["lines"][0], "beat": "Interlude"})
+    return script
+
+
+def test_screen_map_covers_every_proof_point_and_beat() -> None:
+    from spectracut.studio.departments.discovery import ProductUnderstanding
+
+    out = {**PRODUCT, "screens": _screens()}
+    ProductUnderstanding.check_output(
+        "product", out, {"script-1": _script_input()}, {"script-1": "script"}
+    )
+    ProductUnderstanding.check_params("product", out, {"routes": ROUTES, "proof_points": POINTS})
+    # outputs without screens and nodes without screen-map params are unchanged
+    ProductUnderstanding.check_output("product", PRODUCT, {"intake": {}}, {"intake": "intake"})
+    ProductUnderstanding.check_params("product", PRODUCT, {"pages": []})
+
+
+@pytest.mark.parametrize(
+    ("screens", "match"),
+    [
+        (_screens()[1:], "proof point .* has no screen"),
+        (
+            _screens(
+                more=[
+                    {
+                        "beat": "Hook",
+                        "route": "/admin",
+                        "steps": [{"action": "click", "target": "x"}],
+                    }
+                ]
+            ),
+            "is not a front-end route",
+        ),
+    ],
+)
+def test_screen_map_rejects_missing_proof_points_and_unknown_routes(
+    screens: list[dict[str, Any]], match: str
+) -> None:
+    from spectracut.studio.department import DepartmentOutputError
+    from spectracut.studio.departments.discovery import ProductUnderstanding
+
+    with pytest.raises(DepartmentOutputError, match=match):
+        ProductUnderstanding.check_params(
+            "product", {**PRODUCT, "screens": screens}, {"routes": ROUTES, "proof_points": POINTS}
+        )
+
+
+def test_screen_map_rejects_an_unmapped_beat_and_bad_mappings() -> None:
+    from spectracut.studio.department import DepartmentOutputError
+    from spectracut.studio.departments.discovery import ProductNotes, ProductUnderstanding
+
+    no_interlude = [s for s in _screens() if not s.get("interlude")]
+    with pytest.raises(DepartmentOutputError, match="beat 'Interlude' has no screen"):
+        ProductUnderstanding.check_output(
+            "product", {**PRODUCT, "screens": no_interlude}, {"s": _script_input()}, {"s": "script"}
+        )
+    for bad in (
+        {"proof_point": POINTS[0], "interlude": True},  # a proof point needs a screen
+        {"beat": "Hook", "route": "/playground"},  # no steps
+        {
+            "beat": "Hook",
+            "proof_point": POINTS[0],
+            "route": "/",
+            "steps": [{"action": "wait", "target": "1s"}],
+        },
+        {
+            "beat": "Hook",
+            "route": "/",
+            "steps": [{"action": "click", "target": "x"}],
+            "source_id": "nope",
+        },
+    ):
+        with pytest.raises(ValueError):
+            ProductNotes.model_validate({**PRODUCT, "screens": [bad]})
+
+
+def test_runner_fails_the_product_node_on_an_unknown_route() -> None:
+    from spectracut.spec.product import FrontendRoute, ProductSource
+    from spectracut.studio.departments.discovery import product_screen_node
+
+    source = ProductSource.model_validate(
+        {"id": "alterlab", "repo": "/r", "run": {"url": "http://x"}}
+    )
+    routes = [FrontendRoute.model_validate(r) for r in ROUTES]
+    pages = [{"url": f"repo:{r.file}", "text": r.path} for r in routes]
+
+    def run(screens: list[dict[str, Any]]) -> ProductionGraph:
+        graph = ProductionGraph("alterlab-launch", gates=GatePolicy(defaults={}))
+        graph.add_nodes(discovery_nodes(FIXTURE["answers"], FIXTURE["pages"]))
+        graph.add_nodes(development_nodes(n=1))
+        graph.add_nodes(
+            [
+                NodeSpec(
+                    id="script",
+                    kind="script",
+                    department="script-writer",
+                    inputs=("brief", "concept-1"),
+                    params={"concept_id": "concept-1"},
+                ),
+            ]
+        )
+        node = product_screen_node(source, routes, pages, POINTS, "script")
+        graph.add_nodes([node.model_copy(update={"id": "screens"})])
+        script = {"concept_id": "concept-1", "lines": _script_input()["lines"]}
+        studio = Studio(script=script)
+        product_calls = iter([PRODUCT, {**PRODUCT, "screens": screens}])
+        studio.overrides["product"] = None
+
+        def respond(system: str, prompt: str, schema: dict[str, Any]) -> JsonValue:
+            if system.splitlines()[0] == "# Product understanding":
+                return next(product_calls)  # type: ignore[return-value]
+            return studio(system, prompt, schema)
+
+        inner = DepartmentRunner(DEPARTMENTS, MockTextProvider(respond=respond), graph=graph)
+        graph.run(inner)
+        if graph.status("concept-1") is NodeStatus.AWAITING_APPROVAL:
+            pick_concept(graph, "concept-1")
+            graph.run(inner)
+        return graph
+
+    ok = run(_screens())
+    assert ok.status("screens") is NodeStatus.CLEAN, ok.state("screens").error
+    bad = run([{**s, "route": "/admin"} if s.get("beat") == "Hook" else s for s in _screens()])
+    assert bad.status("screens") is NodeStatus.FAILED
+    assert "/admin" in str(bad.state("screens").error)

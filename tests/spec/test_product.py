@@ -94,9 +94,7 @@ def test_run_needs_a_command_or_url() -> None:
 
 def test_alterlab_product_source_has_no_secrets() -> None:
     raw = yaml.safe_load(ALTERLAB.read_text())
-    source = ProductSource.model_validate(
-        {**raw, "repo": str(Path(raw["repo"]).expanduser())}
-    )
+    source = ProductSource.model_validate({**raw, "repo": str(Path(raw["repo"]).expanduser())})
     assert source.id == "alterlab" and source.framework == "nextjs"
     assert source.run.command == "npm run dev" and source.seed_command
     assert source.demo_login is not None

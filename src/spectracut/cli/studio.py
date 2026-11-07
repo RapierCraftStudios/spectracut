@@ -681,7 +681,9 @@ def new(
         routes = len(meta.product.routes) or _product_route_count(graph)
         typer.echo(f"product {meta.product.id}: {routes} routes from {meta.product.frontend}")
         if discovery_depts.PRODUCT not in graph.order():
-            typer.echo("no script node: the product source is recorded but no screen map is planned")
+            typer.echo(
+                "no script node: the product source is recorded but no screen map is planned"
+            )
     if not device and brand_kit is None and art_depts.ART_DIRECTION in quality.stages:
         typer.echo("no --brand-kit: art direction has no brand kit to draw from")
     est = estimate(graph, DEPARTMENTS)
