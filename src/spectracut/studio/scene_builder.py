@@ -42,6 +42,7 @@ from spectracut.harness.errors import HarnessError
 from spectracut.harness.recorder import Recorder
 from spectracut.harness.tools import Session, build_tools, get_tool
 from spectracut.providers.base import TextProvider
+from spectracut.queue.queue import JobFailed
 from spectracut.skills import pack_dir
 from spectracut.spec._base import NonEmptyStr, Slug, StrictModel, content_hash
 from spectracut.spec.brand import BrandKit
@@ -390,6 +391,17 @@ class _Candidate:
     output: JsonValue = None
     usage: Usage = field(default_factory=Usage)
     repairs: list[SceneRepair] = field(default_factory=list)
+    prompt: str = ""
+    calls: JsonValue = None
+
+
+HOST_REFUSAL = re.compile(r"^.*\brefused: .*$", re.MULTILINE)
+
+
+def host_error_lines(message: str) -> list[str]:
+    """The render host's refusal lines in a failed render's message, else the message."""
+    lines = [m.group(0).strip() for m in HOST_REFUSAL.finditer(message)]
+    return list(dict.fromkeys(lines)) or [message.strip()]
 
 
 def _add(a: Usage, b: Usage) -> Usage:
@@ -494,16 +506,33 @@ class SceneBuilder:
         parts += ["", 'Answer as JSON: {"plan": "...", "calls": [{"tool": ..., "args": {...}}]}.']
         return "\n".join(parts)
 
-    def repair_prompt(self, prompt: str, calls: JsonValue, errors: Sequence[str]) -> str:
-        """The repair prompt: the original prompt, the rejected calls and their exact errors."""
+    def repair_prompt(
+        self,
+        prompt: str,
+        calls: JsonValue,
+        errors: Sequence[str],
+        *,
+        host: bool = False,
+    ) -> str:
+        """The repair prompt: the original prompt, the rejected calls and their exact errors.
+
+        ``host`` says the render host refused the compiled recipe (the runner's message,
+        ``step N`` counts recipe steps) instead of validation rejecting it before rendering.
+        """
+        if host:
+            rejected = "Your previous answer compiled but the render host refused it. Its calls:"
+            heading = "Render host errors (step N is the recipe step for calls[N]):"
+        else:
+            rejected = "Your previous answer was rejected before rendering. Its calls:"
+            heading = "Validation errors (calls[index] tool: message):"
         return "\n".join(
             [
                 prompt,
                 "",
-                "Your previous answer was rejected before rendering. Its calls:",
+                rejected,
                 _dumps(calls),
                 "",
-                "Validation errors (calls[index] tool: message):",
+                heading,
                 *(f"- {e}" for e in errors),
                 "",
                 "Fix every error and answer again with the whole corrected recipe, "
@@ -523,20 +552,34 @@ class SceneBuilder:
                 return str(out.get("plan") or ""), out.get("calls")
             return "", None
 
-        def generate(request: RevisionRequest) -> JsonValue:
-            cand = _Candidate(attempt=request.attempt, candidate=request.candidate)
-            candidates[(cand.attempt, cand.candidate)] = cand
-            prompt = self.prompt(brief, request)
-            completion = self.text.complete(system, prompt, schema=CALLS_SCHEMA)
-            cand.usage = _prefixed(completion.usage)
-            cand.plan, calls = answer(completion.output)
+        def folder_of(cand: _Candidate) -> Path:
             folder = root / f"a{cand.attempt}-c{cand.candidate}"
             folder.mkdir(parents=True, exist_ok=True)
-            for turn in range(REPAIR_BUDGET + 1):
+            return folder
+
+        def repair(cand: _Candidate, errors: list[str], *, host: bool) -> None:
+            """One repair turn: the exact errors go back to the builder; no revise attempt."""
+            turn = SceneRepair(round=len(cand.repairs) + 1, errors=errors)
+            cand.repairs.append(turn)
+            (folder_of(cand) / f"repair-{turn.round}.json").write_text(
+                _dumps({"plan": cand.plan, "calls": cand.calls, "errors": errors}) + "\n",
+                encoding="utf-8",
+            )
+            completion = self.text.complete(
+                system,
+                self.repair_prompt(cand.prompt, cand.calls, errors, host=host),
+                schema=CALLS_SCHEMA,
+            )
+            cand.usage = _add(cand.usage, _prefixed(completion.usage))
+            cand.plan, cand.calls = answer(completion.output)
+
+        def settle(cand: _Candidate) -> None:
+            """Compile the candidate's calls, repairing validation errors within the budget."""
+            while True:
                 errors: list[str] = []
                 try:
                     recipe = compile_calls(
-                        calls,
+                        cand.calls,
                         recipe_id=f"{brief.id}-a{cand.attempt}-c{cand.candidate}"[:128],
                         shot_id=brief.id,
                     )
@@ -544,32 +587,21 @@ class SceneBuilder:
                     cand.recipe, cand.error = recipe, ""
                     break
                 except HarnessError as exc:
-                    cand.error = str(exc)
+                    cand.recipe, cand.error = None, str(exc)
                     problems = exc.details.get("problems")
                     errors = problem_lines(problems) if isinstance(problems, list) else [str(exc)]
                 except CopyRefused as exc:
-                    cand.error = str(exc)
+                    cand.recipe, cand.error = None, str(exc)
                     errors = [str(exc)]
-                if turn == REPAIR_BUDGET:
+                if len(cand.repairs) >= REPAIR_BUDGET:
                     break
-                # A repair turn: the exact errors go back to the builder; no render,
-                # no revise attempt.
-                repair = SceneRepair(round=turn + 1, errors=errors)
-                cand.repairs.append(repair)
-                (folder / f"repair-{repair.round}.json").write_text(
-                    _dumps({"plan": cand.plan, "calls": calls, "errors": errors}) + "\n",
-                    encoding="utf-8",
-                )
-                completion = self.text.complete(
-                    system, self.repair_prompt(prompt, calls, errors), schema=CALLS_SCHEMA
-                )
-                cand.usage = _add(cand.usage, _prefixed(completion.usage))
-                cand.plan, calls = answer(completion.output)
+                repair(cand, errors, host=False)
+            folder = folder_of(cand)
             (folder / "calls.json").write_text(
                 _dumps(
                     {
                         "plan": cand.plan,
-                        "calls": calls,
+                        "calls": cand.calls,
                         "error": cand.error,
                         "repairs": len(cand.repairs),
                     }
@@ -577,31 +609,57 @@ class SceneBuilder:
                 + "\n",
                 encoding="utf-8",
             )
-            recipe_json: JsonValue = None
             if cand.recipe is not None:
                 (folder / "recipe.json").write_text(
                     cand.recipe.model_dump_json(indent=2) + "\n", encoding="utf-8"
                 )
-                recipe_json = cand.recipe.model_dump(mode="json")
+
+        def state_of(cand: _Candidate) -> dict[str, JsonValue]:
             return {
                 "attempt": cand.attempt,
                 "candidate": cand.candidate,
                 "plan": cand.plan,
-                "recipe": recipe_json,
+                "recipe": cand.recipe.model_dump(mode="json") if cand.recipe else None,
                 "error": cand.error or None,
             }
 
+        def generate(request: RevisionRequest) -> JsonValue:
+            cand = _Candidate(attempt=request.attempt, candidate=request.candidate)
+            candidates[(cand.attempt, cand.candidate)] = cand
+            cand.prompt = self.prompt(brief, request)
+            completion = self.text.complete(system, cand.prompt, schema=CALLS_SCHEMA)
+            cand.usage = _prefixed(completion.usage)
+            cand.plan, cand.calls = answer(completion.output)
+            settle(cand)
+            return state_of(cand)
+
         def render(state: JsonValue) -> JsonValue:
-            assert isinstance(state, Mapping)
+            assert isinstance(state, dict)
             cand = candidates[(cast(int, state["attempt"]), cast(int, state["candidate"]))]
-            if cand.recipe is None:
-                cand.output = {"frames": [], "error": cand.error, "candidate": dict(state)}
-                return cand.output
             frame = root / f"a{cand.attempt}-c{cand.candidate}" / "frame.png"
-            record, used = self.renderer(cand.recipe, frame)
-            cand.render = record
-            cand.usage = _add(cand.usage, used)
-            cand.output = {"frames": [record.path]}
+            while cand.recipe is not None:
+                try:
+                    record, used = self.renderer(cand.recipe, frame)
+                except JobFailed as exc:
+                    # A host refusal or render failure is a repairable candidate error:
+                    # the runner's message goes back to the builder (#330).
+                    cand.usage = _add(cand.usage, exc.usage)
+                    cand.error = str(exc)
+                    errors = host_error_lines(cand.error)
+                    if len(cand.repairs) >= REPAIR_BUDGET:
+                        cand.recipe = None
+                        break
+                    repair(cand, errors, host=True)
+                    settle(cand)
+                    continue
+                cand.render = record
+                cand.usage = _add(cand.usage, used)
+                cand.output = {"frames": [record.path]}
+                state.update(state_of(cand))
+                return cand.output
+            # The loop keeps this dict as the candidate's recipe: show what was refused.
+            state.update(state_of(cand))
+            cand.output = {"frames": [], "error": cand.error, "candidate": dict(state)}
             return cand.output
 
         loop = ReviseLoop.from_profile(generate, render, critic, spec, self.profile)
@@ -697,6 +755,7 @@ __all__ = [
     "REPAIR_BUDGET",
     "SCENE_BUILD",
     "CopyRefused",
+    "HOST_REFUSAL",
     "RecipeRenderer",
     "SceneBrief",
     "SceneBuild",
@@ -705,6 +764,7 @@ __all__ = [
     "SceneRepair",
     "check_recipe_copy",
     "compile_calls",
+    "host_error_lines",
     "problem_lines",
     "scene_build_runner",
     "tool_cheat_sheet",

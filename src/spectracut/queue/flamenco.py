@@ -214,6 +214,20 @@ class FlamencoClient:
             raise FlamencoError(f"{method} {path} failed: {exc}") from None
         return json.loads(raw) if raw else None
 
+    def _request_text(self, path: str) -> str:
+        """``GET path`` read as text (the task log tail is ``text/plain``)."""
+        req = urllib.request.Request(self.base_url + path, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            body = _error_body(exc)
+            detail = f": {body}" if body else ""
+            raise FlamencoError(f"GET {path} failed: HTTP {exc.code}{detail}") from None
+        except (urllib.error.URLError, OSError) as exc:
+            raise FlamencoError(f"GET {path} failed: {exc}") from None
+        return bytes(raw).decode("utf-8", errors="replace")
+
     def list_tags(self) -> list[WorkerTag]:
         payload = cast(dict[str, Any], self._request("GET", "/api/v3/worker-mgt/tags") or {})
         return [_tag(t) for t in payload.get("tags", [])]
@@ -257,3 +271,20 @@ class FlamencoClient:
     def job_status(self, job_id: str) -> str:
         job = cast(dict[str, Any], self._request("GET", f"/api/v3/jobs/{job_id}"))
         return str(job["status"])
+
+    def job_tasks(self, job_id: str) -> list[dict[str, Any]]:
+        """The job's task summaries (``GET /api/v3/jobs/{id}/tasks``): id, name, status."""
+        payload = cast(dict[str, Any], self._request("GET", f"/api/v3/jobs/{job_id}/tasks") or {})
+        return [dict(t) for t in payload.get("tasks") or []]
+
+    def task_log_tail(self, task_id: str) -> str:
+        """The last lines of a task's log (``GET /api/v3/tasks/{id}/logtail``); ``''`` if none."""
+        return self._request_text(f"/api/v3/tasks/{task_id}/logtail")
+
+    def cancel_job(self, job_id: str, reason: str) -> None:
+        """Ask the Manager to cancel a job (``POST /api/v3/jobs/{id}/setstatus``)."""
+        self._request(
+            "POST",
+            f"/api/v3/jobs/{job_id}/setstatus",
+            {"status": "cancel-requested", "reason": reason},
+        )

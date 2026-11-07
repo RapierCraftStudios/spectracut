@@ -462,3 +462,113 @@ def test_tool_cheat_sheet_matches_the_harness_schemas() -> None:
     b, _ = builder(Path("/nonexistent"), text, FakeVision({}))
     request = RevisionRequest(attempt=1, candidate=0, state=None, notes="", window=())
     assert sheet in b.prompt(brief(), request)
+
+
+# ---- #330: a render-host refusal is a repairable candidate error ---------------------------
+
+HOST_REFUSAL = (
+    "spectracut runner: refused: step 18 (material.apply_preset) [args.invalid]: "
+    "material.apply_preset: 'Tok_url' is not a mesh or curve object"
+)
+
+
+class RefusingRenderer(FakeRenderer):
+    """The farm: the first ``refusals`` renders fail like a refused Flamenco job."""
+
+    def __init__(self, refusals: int) -> None:
+        super().__init__()
+        self.refusals = refusals
+        self.attempted: list[Recipe] = []
+
+    def __call__(self, recipe: Recipe, path: Path) -> tuple[ImageRecord, Usage]:
+        from spectracut.queue.queue import JobFailed
+
+        self.attempted.append(recipe)
+        if len(self.attempted) <= self.refusals:
+            raise JobFailed(
+                f"scene recipe {recipe.id!r}: job j-{len(self.attempted)} failed: "
+                "FlamencoJobFailed: flamenco job fl-1 ended soft-failed (task render-1-1 "
+                "soft-failed and no worker took it within 60s; job was active, cancelled); "
+                "task log tail:\n"
+                f"Blender 4.5\n{HOST_REFUSAL}",
+                usage=Usage(gpu_minutes=0.25),
+            )
+        return super().__call__(recipe, path)
+
+
+def refusing_builder(
+    tmp: Path, text: FakeText, vision: FakeVision, refusals: int, *, budget: int = 0
+) -> tuple[SceneBuilder, RefusingRenderer]:
+    prof = profile(budget, 1)
+    critic = scene_critic(vision, profile=prof, description=DESCRIPTION, art=ART)
+    renderer = RefusingRenderer(refusals)
+    return SceneBuilder(text, renderer, critic, prof, tmp / "work"), renderer
+
+
+def test_host_refusal_triggers_a_repair_turn_and_the_frame_renders(tmp_path: Path) -> None:
+    text = FakeText([answer("key"), answer("rim")])
+    vision = FakeVision({"a1-c0": 0.9})
+    b, renderer = refusing_builder(tmp_path, text, vision, refusals=1)
+    build = b.build(brief())
+    assert build.status == "accepted" and build.attempts == 1
+    assert len(renderer.attempted) == 2 and len(renderer.recipes) == 1
+    repair_prompt = text.prompts[1]
+    assert repair_prompt.startswith(text.prompts[0])
+    assert "render host refused it" in repair_prompt and HOST_REFUSAL in repair_prompt
+    assert "Blender 4.5" not in repair_prompt
+    (it,) = build.iterations
+    assert it.passed and it.render is not None
+    assert it.plan == "slab stack lit by rim"
+    (repair,) = it.repairs
+    assert repair.round == 1 and repair.errors == [HOST_REFUSAL]
+    assert build.recipe is not None and build.recipe == renderer.recipes[0]
+    assert build.usage.gpu_minutes == pytest.approx(0.75)
+    assert build.usage.ai_usage["scene_builder_claude_requests"] == 2
+    folder = tmp_path / "work/one-beam/a1-c0"
+    assert json.loads((folder / "repair-1.json").read_text("utf-8"))["errors"] == [HOST_REFUSAL]
+    calls_json = json.loads((folder / "calls.json").read_text("utf-8"))
+    assert calls_json["repairs"] == 1 and calls_json["error"] == ""
+    assert calls_json["plan"] == "slab stack lit by rim"
+
+
+def test_host_refusals_are_bounded_then_the_candidate_fails_without_raising(
+    tmp_path: Path,
+) -> None:
+    from spectracut.studio.scene_builder import REPAIR_BUDGET
+
+    text = FakeText([answer("key")])
+    vision = FakeVision({})
+    b, renderer = refusing_builder(tmp_path, text, vision, refusals=99)
+    build = b.build(brief())
+    assert len(renderer.attempted) == 1 + REPAIR_BUDGET and renderer.recipes == []
+    assert len(text.prompts) == 1 + REPAIR_BUDGET and vision.calls == []
+    assert build.status == "escalated" and build.recipe is None
+    (it,) = build.iterations
+    assert [r.round for r in it.repairs] == list(range(1, REPAIR_BUDGET + 1))
+    assert HOST_REFUSAL in it.notes
+    assert build.usage.gpu_minutes == pytest.approx(0.25 * (1 + REPAIR_BUDGET))
+
+
+def test_validation_and_host_repairs_share_the_budget(tmp_path: Path) -> None:
+    from spectracut.studio.scene_builder import REPAIR_BUDGET
+
+    text = FakeText([rigless_distance(), answer("key")])
+    vision = FakeVision({})
+    b, renderer = refusing_builder(tmp_path, text, vision, refusals=99)
+    build = b.build(brief())
+    (it,) = build.iterations
+    assert len(it.repairs) == REPAIR_BUDGET
+    assert "apply only with rig" in it.repairs[0].errors[0]
+    assert all(r.errors == [HOST_REFUSAL] for r in it.repairs[1:])
+    assert len(renderer.attempted) == REPAIR_BUDGET
+
+
+def test_host_error_lines_keep_refusals_or_the_whole_message() -> None:
+    from spectracut.studio.scene_builder import host_error_lines
+
+    assert host_error_lines(f"job failed; task log tail:\nnoise\n{HOST_REFUSAL}\n") == [
+        HOST_REFUSAL
+    ]
+    assert host_error_lines("job x failed: FlamencoTimeout: still active") == [
+        "job x failed: FlamencoTimeout: still active"
+    ]

@@ -16,7 +16,7 @@ import json
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from spectracut.queue.executors.base import JobResult, JobStatus, Resources
 from spectracut.queue.flamenco import (
@@ -81,15 +81,41 @@ def gpu_share(devices: list[str]) -> float:
     return sum(1 for d in devices if d == "GPU") / len(devices)
 
 
-class FlamencoJobFailed(RuntimeError):
-    """The Flamenco job ended ``failed`` or ``canceled``."""
+#: Flamenco task statuses that mean a worker failed the task.
+FAILED_TASK_STATUSES: Final[frozenset[str]] = frozenset({"soft-failed", "failed"})
 
-    def __init__(self, flamenco_id: str, status: str, *, usage: Usage | None = None) -> None:
+#: How much of a failed task's log the error carries.
+LOG_TAIL_LINES: Final[int] = 40
+LOG_TAIL_CHARS: Final[int] = 4000
+
+
+def trim_log_tail(text: str) -> str:
+    """The last :data:`LOG_TAIL_LINES` lines of ``text``, at most :data:`LOG_TAIL_CHARS` chars."""
+    tail = "\n".join(text.strip().splitlines()[-LOG_TAIL_LINES:])
+    return tail[-LOG_TAIL_CHARS:]
+
+
+class FlamencoJobFailed(RuntimeError):
+    """The Flamenco job ended ``failed`` or ``canceled``, or a task stayed soft-failed."""
+
+    def __init__(
+        self,
+        flamenco_id: str,
+        status: str,
+        *,
+        usage: Usage | None = None,
+        log_tail: str = "",
+    ) -> None:
         self.flamenco_id = flamenco_id
         self.status = status
         self.usage = usage if usage is not None else Usage()
         """GPU minutes the job held before it ended (submit to failure)."""
-        super().__init__(f"flamenco job {flamenco_id} ended {status}")
+        self.log_tail = log_tail
+        """The tail of the failed task's log (the host's error lines), or ``''``."""
+        message = f"flamenco job {flamenco_id} ended {status}"
+        if log_tail:
+            message += f"; task log tail:\n{log_tail}"
+        super().__init__(message)
 
 
 class FlamencoTimeout(RuntimeError):
@@ -109,6 +135,17 @@ class FlamencoApi(Protocol):
     def submit(self, job: dict[str, Any]) -> dict[str, Any]: ...
 
     def job_status(self, job_id: str) -> str: ...
+
+
+@runtime_checkable
+class FlamencoTaskApi(Protocol):
+    """Task calls a client may offer; without them a soft-failed task waits for the timeout."""
+
+    def job_tasks(self, job_id: str) -> list[dict[str, Any]]: ...
+
+    def task_log_tail(self, task_id: str) -> str: ...
+
+    def cancel_job(self, job_id: str, reason: str) -> None: ...
 
 
 def map_status(flamenco_status: str) -> JobStatus:
@@ -132,6 +169,7 @@ class FlamencoExecutor:
         on_status: Callable[[Job, JobStatus], None] | None = None,
         assets_dir: str | None = None,
         clock: Callable[[], float] = time.monotonic,
+        soft_fail_grace_s: float = 60.0,
     ) -> None:
         self.name = name
         self.client = client
@@ -144,6 +182,9 @@ class FlamencoExecutor:
         self._on_status = on_status
         self.assets_dir = assets_dir
         self._clock = clock
+        self.soft_fail_grace_s = soft_fail_grace_s
+        """How long a soft-failed task may wait for another worker before the job is
+        cancelled and failed (Flamenco keeps such a job active indefinitely)."""
 
     def can_ever_run(self, req: Resources) -> bool:
         cap = self.capacity
@@ -166,6 +207,32 @@ class FlamencoExecutor:
 
     def _usage_since(self, started: float) -> Usage:
         return Usage(gpu_minutes=max(0.0, self._clock() - started) / 60.0)
+
+    def _failed_task(self, flamenco_id: str) -> dict[str, Any] | None:
+        """The first soft-failed or failed task of the job, if the client can list tasks."""
+        if not isinstance(self.client, FlamencoTaskApi):
+            return None
+        try:
+            tasks = self.client.job_tasks(flamenco_id)
+        except Exception:  # noqa: BLE001 - task listing is best-effort; keep polling
+            return None
+        return next((t for t in tasks if t.get("status") in FAILED_TASK_STATUSES), None)
+
+    def _log_tail(self, task: dict[str, Any] | None) -> str:
+        if task is None or not isinstance(self.client, FlamencoTaskApi):
+            return ""
+        try:
+            return trim_log_tail(self.client.task_log_tail(str(task["id"])))
+        except Exception:  # noqa: BLE001 - never mask the job failure
+            return ""
+
+    def _cancel(self, flamenco_id: str, reason: str) -> None:
+        if not isinstance(self.client, FlamencoTaskApi):
+            return
+        try:
+            self.client.cancel_job(flamenco_id, reason)
+        except Exception:  # noqa: BLE001 - never mask the job failure
+            pass
 
     def run(self, job: Job) -> JobResult:
         payload = job.payload
@@ -191,6 +258,7 @@ class FlamencoExecutor:
         )
         flamenco_id = str(submitted["id"])
         waited = 0.0
+        soft_failed_since: float | None = None
         while True:
             raw = self.client.job_status(flamenco_id)
             status = map_status(raw)
@@ -211,8 +279,32 @@ class FlamencoExecutor:
                     usage=Usage(gpu_minutes=usage.gpu_minutes * gpu_share(devices)),
                 )
             if status is JobStatus.FAILED:
-                raise FlamencoJobFailed(flamenco_id, raw, usage=self._usage_since(started))
+                raise FlamencoJobFailed(
+                    flamenco_id,
+                    raw,
+                    usage=self._usage_since(started),
+                    log_tail=self._log_tail(self._failed_task(flamenco_id)),
+                )
             self._observe(job, status)
+            failed = self._failed_task(flamenco_id)
+            if failed is None:
+                soft_failed_since = None
+            else:
+                if soft_failed_since is None:
+                    soft_failed_since = waited
+                if waited - soft_failed_since >= self.soft_fail_grace_s:
+                    task_status = str(failed.get("status"))
+                    reason = (
+                        f"task {failed.get('name') or failed.get('id')} {task_status} "
+                        f"and no worker took it within {self.soft_fail_grace_s:g}s"
+                    )
+                    self._cancel(flamenco_id, f"spectracut: {reason}")
+                    raise FlamencoJobFailed(
+                        flamenco_id,
+                        f"{task_status} ({reason}; job was {raw}, cancelled)",
+                        usage=self._usage_since(started),
+                        log_tail=self._log_tail(failed),
+                    )
             if self.timeout_s is not None and waited >= self.timeout_s:
                 raise FlamencoTimeout(
                     f"flamenco job {flamenco_id} still {raw} after {waited}s",
