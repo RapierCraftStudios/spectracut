@@ -1,0 +1,455 @@
+{
+ "id": "one-beam-smoke",
+ "shot_id": "one-beam-smoke",
+ "version": 1,
+ "blender_version": "4.5",
+ "steps": [
+  {
+   "index": 0,
+   "tool": "scene.clear",
+   "args": {}
+  },
+  {
+   "index": 1,
+   "tool": "world.set_gradient",
+   "args": {
+    "bottom": [
+     0.01,
+     0.02,
+     0.05
+    ],
+    "top": [
+     0.05,
+     0.09,
+     0.2
+    ],
+    "strength": 1.0
+   }
+  },
+  {
+   "index": 2,
+   "tool": "object.add_slab",
+   "args": {
+    "name": "slab_1",
+    "dimensions": [
+     3.0,
+     2.0,
+     0.2
+    ],
+    "bevel_width": 0.03,
+    "location": [
+     0,
+     0,
+     0.0
+    ]
+   }
+  },
+  {
+   "index": 3,
+   "tool": "material.apply_preset",
+   "args": {
+    "object": "slab_1",
+    "preset": "clear_glass",
+    "color": [
+     0.8,
+     0.9,
+     1.0
+    ]
+   }
+  },
+  {
+   "index": 4,
+   "tool": "object.add_slab",
+   "args": {
+    "name": "slab_2",
+    "dimensions": [
+     3.0,
+     2.0,
+     0.2
+    ],
+    "bevel_width": 0.03,
+    "location": [
+     0,
+     0,
+     0.5
+    ]
+   }
+  },
+  {
+   "index": 5,
+   "tool": "material.apply_preset",
+   "args": {
+    "object": "slab_2",
+    "preset": "frosted_glass",
+    "color": [
+     0.8,
+     0.9,
+     1.0
+    ]
+   }
+  },
+  {
+   "index": 6,
+   "tool": "object.add_slab",
+   "args": {
+    "name": "slab_3",
+    "dimensions": [
+     3.0,
+     2.0,
+     0.2
+    ],
+    "bevel_width": 0.03,
+    "location": [
+     0,
+     0,
+     1.0
+    ]
+   }
+  },
+  {
+   "index": 7,
+   "tool": "material.apply_preset",
+   "args": {
+    "object": "slab_3",
+    "preset": "clear_glass",
+    "color": [
+     0.8,
+     0.9,
+     1.0
+    ]
+   }
+  },
+  {
+   "index": 8,
+   "tool": "object.add_slab",
+   "args": {
+    "name": "slab_4",
+    "dimensions": [
+     3.0,
+     2.0,
+     0.2
+    ],
+    "bevel_width": 0.03,
+    "location": [
+     0,
+     0,
+     1.5
+    ]
+   }
+  },
+  {
+   "index": 9,
+   "tool": "material.apply_preset",
+   "args": {
+    "object": "slab_4",
+    "preset": "frosted_glass",
+    "color": [
+     0.8,
+     0.9,
+     1.0
+    ]
+   }
+  },
+  {
+   "index": 10,
+   "tool": "object.add_slab",
+   "args": {
+    "name": "slab_5",
+    "dimensions": [
+     3.0,
+     2.0,
+     0.2
+    ],
+    "bevel_width": 0.03,
+    "location": [
+     0,
+     0,
+     2.0
+    ]
+   }
+  },
+  {
+   "index": 11,
+   "tool": "material.apply_preset",
+   "args": {
+    "object": "slab_5",
+    "preset": "clear_glass",
+    "color": [
+     0.8,
+     0.9,
+     1.0
+    ]
+   }
+  },
+  {
+   "index": 12,
+   "tool": "curve.add",
+   "args": {
+    "name": "beam",
+    "kind": "poly",
+    "points": [
+     [
+      0,
+      0,
+      -1.5
+     ],
+     [
+      0,
+      0,
+      3.5
+     ]
+    ],
+    "bevel_depth": 0.06
+   }
+  },
+  {
+   "index": 13,
+   "tool": "material.apply_preset",
+   "args": {
+    "object": "beam",
+    "preset": "emissive",
+    "color": [
+     0.1,
+     0.4,
+     1.0
+    ],
+    "emission_strength": 40
+   }
+  },
+  {
+   "index": 14,
+   "tool": "object.add_slab",
+   "args": {
+    "name": "readout_plate",
+    "dimensions": [
+     3.0,
+     0.1,
+     0.8
+    ],
+    "bevel_width": 0.01,
+    "location": [
+     0,
+     -1.5,
+     -0.8
+    ]
+   }
+  },
+  {
+   "index": 15,
+   "tool": "material.apply_preset",
+   "args": {
+    "object": "readout_plate",
+    "preset": "anodised_metal",
+    "color": [
+     0.6,
+     0.6,
+     0.65
+    ]
+   }
+  },
+  {
+   "index": 16,
+   "tool": "text.add",
+   "args": {
+    "body": "ONE BEAM",
+    "name": "readout_text",
+    "mode": "cutout",
+    "plate": "readout_plate",
+    "size": 0.4,
+    "extrude": 0.4,
+    "location": [
+     -1.2,
+     -1.5,
+     -0.95
+    ],
+    "rotation": [
+     1.5708,
+     0,
+     0
+    ]
+   }
+  },
+  {
+   "index": 17,
+   "tool": "light.add",
+   "args": {
+    "kind": "area",
+    "name": "key",
+    "energy": 800,
+    "size": 3,
+    "location": [
+     3,
+     -4,
+     4
+    ],
+    "rotation": [
+     0.9,
+     0.4,
+     0.6
+    ],
+    "color": [
+     1,
+     0.95,
+     0.9
+    ]
+   }
+  },
+  {
+   "index": 18,
+   "tool": "light.add",
+   "args": {
+    "kind": "area",
+    "name": "fill",
+    "energy": 300,
+    "size": 4,
+    "location": [
+     -4,
+     -4,
+     2
+    ],
+    "rotation": [
+     1.1,
+     -0.5,
+     -0.7
+    ],
+    "color": [
+     0.7,
+     0.8,
+     1
+    ]
+   }
+  },
+  {
+   "index": 19,
+   "tool": "light.add",
+   "args": {
+    "kind": "area",
+    "name": "rim",
+    "energy": 600,
+    "size": 2,
+    "location": [
+     0,
+     4,
+     3
+    ],
+    "rotation": [
+     2.3,
+     0,
+     0
+    ],
+    "color": [
+     0.4,
+     0.6,
+     1
+    ]
+   }
+  },
+  {
+   "index": 20,
+   "tool": "camera.add",
+   "args": {
+    "name": "Camera",
+    "location": [
+     -1.5,
+     -7,
+     1
+    ],
+    "rotation": [
+     1.5708,
+     0,
+     0
+    ],
+    "lens": 50
+   }
+  },
+  {
+   "index": 21,
+   "tool": "camera.use",
+   "args": {
+    "name": "Camera"
+   }
+  },
+  {
+   "index": 22,
+   "tool": "render.set_frame_range",
+   "args": {
+    "frame_start": 1,
+    "frame_end": 12
+   }
+  },
+  {
+   "index": 23,
+   "tool": "object.keyframe",
+   "args": {
+    "object": "Camera",
+    "keys": [
+     {
+      "frame": 1,
+      "location": [
+       -1.5,
+       -7,
+       1
+      ]
+     },
+     {
+      "frame": 12,
+      "location": [
+       1.5,
+       -7,
+       1.4
+      ]
+     }
+    ],
+    "easing": "ease_in_out"
+   }
+  },
+  {
+   "index": 24,
+   "tool": "object.keyframe",
+   "args": {
+    "object": "slab_5",
+    "keys": [
+     {
+      "frame": 1,
+      "rotation": [
+       0,
+       0,
+       0
+      ]
+     },
+     {
+      "frame": 12,
+      "rotation": [
+       0,
+       0,
+       0.5
+      ]
+     }
+    ],
+    "easing": "ease_in_out"
+   }
+  },
+  {
+   "index": 25,
+   "tool": "render.set_engine",
+   "args": {
+    "engine": "eevee"
+   }
+  },
+  {
+   "index": 26,
+   "tool": "render.set_resolution",
+   "args": {
+    "width": 640,
+    "height": 360
+   }
+  },
+  {
+   "index": 27,
+   "tool": "render.set_output",
+   "args": {
+    "format": "PNG"
+   }
+  }
+ ]
+}

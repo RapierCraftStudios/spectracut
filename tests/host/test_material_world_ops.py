@@ -121,10 +121,37 @@ class Light:
         self.energy = self.size = self.color = self.spot_size = None
 
 
+class Points(list):
+    def __init__(self):
+        super().__init__([MagicMock()])
+
+    def add(self, n):
+        self.extend(MagicMock() for _ in range(n))
+
+
+class Spline:
+    def __init__(self):
+        self.points, self.bezier_points, self.use_cyclic_u = Points(), Points(), False
+
+
+class Splines:
+    def new(self, kind):
+        return Spline()
+
+
+class CurveData:
+    def __init__(self, name, type):
+        self.name, self.splines, self.materials = name, Splines(), []
+
+
 def _new_object(name, data=None):
     o = MagicMock(name="obj_" + name)
     o.name = name
-    o.type = "LIGHT" if isinstance(data, Light) else "MESH"
+    o.type = "MESH"
+    if isinstance(data, Light):
+        o.type = "LIGHT"
+    elif isinstance(data, CurveData):
+        o.type = "CURVE"
     o.data = data if data is not None else MagicMock(name="meshdata_" + name)
     o.location, o.rotation_euler, o.scale = (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
     _objects.append(o)
@@ -161,6 +188,7 @@ _bpy.data.objects.get.side_effect = lambda n: next((o for o in _objects if o.nam
 _bpy.data.objects.__iter__.side_effect = lambda: iter(list(_objects))
 _bpy.data.materials.new.side_effect = _material
 _bpy.data.lights.new.side_effect = _light
+_bpy.data.curves.new.side_effect = CurveData
 _bpy.data.worlds.new.side_effect = World
 _bpy.ops.mesh.primitive_cube_add.side_effect = _primitive
 _bpy.context.scene.camera = None
@@ -323,6 +351,14 @@ def test_new_presets_set_their_sockets(blender: Path, tmp_path: Path, preset: st
         "material": f"{preset}.Slab",
         "preset": preset,
     }
+
+
+def test_emissive_preset_applies_to_a_curve_object(blender: Path, tmp_path: Path) -> None:
+    beam = ("curve.add", {"name": "Beam", "kind": "poly", "points": [[0, 0, 0], [0, 0, 3]]})
+    step = {"object": "Beam", "preset": "emissive", "color": [0.1, 0.4, 1.0]}
+    run = ok(run_steps(blender, tmp_path, [beam, ("material.apply_preset", step)]))
+    assert run.report("material.apply_preset")["material"] == "emissive.Beam"
+    assert run.state["materials"]["emissive.Beam"]["Emission Color"] == [0.1, 0.4, 1.0, 1.0]
 
 
 def test_emissive_glows_in_its_base_colour(blender: Path, tmp_path: Path) -> None:
