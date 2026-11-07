@@ -33,6 +33,7 @@ from pydantic import JsonValue
 
 from spectracut.critique.scene_verifier import scene_critic
 from spectracut.finishing.color import hex_to_linear
+from spectracut.harness.kit import Kit
 from spectracut.providers.base import TextProvider, VisionJudge
 from spectracut.queue.executors.base import JobStatus
 from spectracut.queue.queue import JobFailed, JobQueue
@@ -244,9 +245,10 @@ class FarmRecipeRenderer:
     """Renders any declarative recipe (a scene builder candidate) on the farm.
 
     The recipe gets :func:`~spectracut.studio.departments.shots.tier_recipe` steps at
-    ``tier`` (preview by default) and renders as one signed job with an empty assets
-    dir; ``deps`` is called once, on the first render. It is the scene builder's
-    ``RecipeRenderer``: ``(recipe, path) -> (ImageRecord, Usage)``.
+    ``tier`` (preview by default) and renders as one signed job with an assets dir
+    holding only ``kit``'s pinned files (empty without a kit); ``deps`` is called
+    once, on the first render. It is the scene builder's ``RecipeRenderer``:
+    ``(recipe, path) -> (ImageRecord, Usage)``.
     """
 
     def __init__(
@@ -257,8 +259,10 @@ class FarmRecipeRenderer:
         *,
         tier: Tier = Tier.PREVIEW,
         node_id: str = SCENE_BUILD,
+        kit: Kit | None = None,
     ) -> None:
         self._factory = deps
+        self.kit = kit
         self._deps: FarmDeps | None = None
         self._lock = threading.Lock()
         self.production_id = production_id
@@ -277,6 +281,7 @@ class FarmRecipeRenderer:
         if source.exists():
             shutil.rmtree(source)
         source.mkdir(parents=True)
+        stage_kit_files(self.kit, source)
         tiered = tier_recipe(recipe, self.tier)
         base_id = f"{self.production_id}-{self.node_id}-{recipe.id}"[:96]
         return render_recipe(
@@ -289,6 +294,24 @@ class FarmRecipeRenderer:
             node_id=self.node_id,
             label=f"scene recipe {recipe.id!r}",
         )
+
+
+def stage_kit_files(kit: Kit | None, source: Path) -> list[str]:
+    """Copy ``kit``'s pinned files (and licence sidecars) into the assets dir ``source``.
+
+    Each file lands at the relpath the expanded build calls reference
+    (``kits/<kit id>/<relpath>``), so ``stage_for`` verifies it against its pin.
+    Returns the staged relpaths; ``None`` stages nothing.
+    """
+    if kit is None:
+        return []
+    staged: list[str] = []
+    for rel, src in sorted(kit.files_to_stage().items()):
+        dest = source / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+        staged.append(rel)
+    return staged
 
 
 def _add_usage(a: Usage, b: Usage) -> Usage:
@@ -328,6 +351,7 @@ class SceneStyleFrameRenderer:
         *,
         brand_kit: Callable[[], BrandKit | None] = lambda: None,
         node_id: str = STYLE_FRAMES,
+        kit: Callable[[], Kit | None] = lambda: None,
     ) -> None:
         self._text_factory = text
         self._vision_factory = vision
@@ -336,6 +360,7 @@ class SceneStyleFrameRenderer:
         self._lock = threading.Lock()
         self.profile = profile
         self.brand_kit = brand_kit
+        self.kit = kit
         self.production_id = production_id
         self.workdir = Path(workdir)
         self.node_id = node_id
@@ -361,10 +386,14 @@ class SceneStyleFrameRenderer:
     ) -> tuple[ImageRecord, Usage]:
         text, vision = self._models()
         kit = self.brand_kit()
+        lookdev = self.kit()
+        self.preview.kit = self.final.kit = lookdev
         description = frame.description.strip()
         if frame.prompt.strip() and frame.prompt.strip() != description:
             description = f"{description}\n\n{frame.prompt.strip()}"
-        brief = SceneBrief(id=frame.id, description=description, art=art, brand_kit=kit)
+        brief = SceneBrief(
+            id=frame.id, description=description, art=art, brand_kit=kit, kit=lookdev
+        )
         critic = scene_critic(
             vision, profile=self.profile, description=description, art=art, brand_kit=kit
         )
