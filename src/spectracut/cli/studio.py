@@ -94,6 +94,8 @@ if TYPE_CHECKING:
     from spectracut.audio.music_edit import Stretcher
     from spectracut.audio.render import ArdourRunner
     from spectracut.audio.vo import VoiceOver
+    from spectracut.finishing.comp import CompGraph
+    from spectracut.harness.kit import Kit
     from spectracut.providers.local.registry import LocalProvider
 
 studio_app = typer.Typer(
@@ -437,6 +439,8 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                         graph.production_id,
                         workdir,
                         brand_kit=lambda: _brand_kit_of(graph),
+                        kit=_one_beam_kit,
+                        comp=_one_beam_comp,
                     ),
                     voice=art_depts.default_voice(runtime=runtime),
                     workdir=workdir,
@@ -991,6 +995,26 @@ def _brand_kit_of(graph: ProductionGraph) -> BrandKit | None:
         return BrandKit.model_validate(raw) if raw is not None else None
     except ValidationError:
         return None
+
+
+ONE_BEAM = "one-beam"
+"""The lookdev kit and comp graph abstract style frames are built and finished with."""
+
+
+def _one_beam_kit() -> Kit | None:
+    """The One Beam lookdev kit, or ``None`` when the repo's kits dir is absent (a wheel)."""
+    from spectracut.harness.kit import KITS_DIR, load_kit
+
+    path = KITS_DIR / ONE_BEAM
+    return load_kit(path) if path.is_dir() else None
+
+
+def _one_beam_comp() -> CompGraph | None:
+    """The ``one-beam`` comp graph, or ``None`` when the repo's comps dir lacks it."""
+    from spectracut.finishing import comp
+
+    directory = comp.default_comps_dir()
+    return comp.load_comps(directory).get(ONE_BEAM) if directory.is_dir() else None
 
 
 def _pass_score(graph: ProductionGraph) -> float:

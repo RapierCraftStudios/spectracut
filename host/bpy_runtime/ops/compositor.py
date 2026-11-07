@@ -10,9 +10,13 @@ gives the device-screen matte. Then each op runs in order:
   Balance offset/power/slope + Hue/Saturation), ``ui_sharpen`` (Filter
   SHARPEN), ``screen_glow`` (Glare FOG_GLOW on the matte-isolated screen,
   added back);
-* scene ops are mixed in only outside it (inverted matte): ``glints`` (Glare
-  STREAKS), ``light_wrap`` (blurred plate screened over the matte edge),
-  ``lens`` (Lens Distortion with dispersion);
+* scene ops are mixed in only outside it (inverted matte): ``bloom`` (Glare
+  FOG_GLOW or BLOOM), ``glints`` (Glare STREAKS), ``light_wrap`` (blurred plate
+  screened over the matte edge), ``lens`` (Lens Distortion with dispersion);
+
+With ``screen_matte: null`` (an abstract shot, no device screen) there is no
+Cryptomatte node: scene ops apply to the whole frame, and screen ops and
+``light_wrap`` are refused before bpy is touched.
 
 and a Composite node writes the result. Arguments are checked in full before
 bpy is touched; frames are read only from the confined assets dir. The op
@@ -34,7 +38,9 @@ EXR_SUFFIXES = (".exr",)
 MAX_FRAMES = 100000
 MAX_OPS = 16
 SCREEN_OPS = ("screen_grade", "ui_sharpen", "screen_glow")
-SCENE_OPS = ("glints", "light_wrap", "lens")
+SCENE_OPS = ("bloom", "glints", "light_wrap", "lens")
+MATTE_OPS = (*SCREEN_OPS, "light_wrap")
+GLARE_TYPES = ("FOG_GLOW", "BLOOM")
 
 
 def _num(params: dict[str, Any], name: str, lo: float, hi: float, default: float) -> float:
@@ -72,6 +78,19 @@ def _screen_glow(p: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _bloom(p: dict[str, Any]) -> dict[str, Any]:
+    check_only(p, {"op", "glare_type", "threshold", "strength", "size"}, TOOL)
+    glare_type = p.get("glare_type", "FOG_GLOW")
+    if glare_type not in GLARE_TYPES:
+        raise ToolError(f"{TOOL}: bloom.glare_type must be one of {list(GLARE_TYPES)}")
+    return {
+        "glare_type": glare_type,
+        "threshold": _num(p, "threshold", 0.0, 10.0, 1.0),
+        "strength": _num(p, "strength", 0.0, 1.0, 0.0),
+        "size": as_int(p.get("size", 6), f"{TOOL} bloom.size", 1, 9),
+    }
+
+
 def _glints(p: dict[str, Any]) -> dict[str, Any]:
     check_only(p, {"op", "threshold", "strength", "streaks"}, TOOL)
     return {
@@ -98,6 +117,7 @@ OPS = {
     "screen_grade": _screen_grade,
     "ui_sharpen": _ui_sharpen,
     "screen_glow": _screen_glow,
+    "bloom": _bloom,
     "glints": _glints,
     "light_wrap": _light_wrap,
     "lens": _lens,
@@ -169,7 +189,13 @@ class _Tree:
         return mix
 
     def masked(self, effect: Any, role: str, screen: bool) -> None:
-        """Keep ``effect`` only inside the screen matte (or only outside it)."""
+        """Keep ``effect`` only inside the screen matte (or only outside it).
+
+        With no matte (an abstract shot) a scene op's effect is the whole frame.
+        """
+        if self.matte is None and not screen:
+            self.tail = effect
+            return
         mask = self.matte if screen else self.outside
         self.tail = self.mix("MIX", role, mask, self.tail.outputs[0], effect.outputs[0])
 
@@ -204,6 +230,16 @@ def _screen_glow_nodes(t: _Tree, p: dict[str, Any]) -> None:
     glare.mix = 1.0
     t.link(iso.outputs[0], glare, "Image")
     t.tail = t.mix("ADD", "screen_glow", p["strength"], base, glare.outputs[0])
+
+
+def _bloom_nodes(t: _Tree, p: dict[str, Any]) -> None:
+    glare = t.node("CompositorNodeGlare", "bloom_glare")
+    glare.glare_type = p["glare_type"]
+    glare.size = p["size"]
+    glare.threshold = p["threshold"]
+    _put(glare, "Strength", p["strength"])
+    t.link(t.tail.outputs[0], glare, "Image")
+    t.masked(glare, "bloom", screen=False)
 
 
 def _glints_nodes(t: _Tree, p: dict[str, Any]) -> None:
@@ -242,6 +278,7 @@ BUILDERS = {
     "screen_grade": _screen_grade_nodes,
     "ui_sharpen": _ui_sharpen_nodes,
     "screen_glow": _screen_glow_nodes,
+    "bloom": _bloom_nodes,
     "glints": _glints_nodes,
     "light_wrap": _light_wrap_nodes,
     "lens": _lens_nodes,
@@ -249,7 +286,10 @@ BUILDERS = {
 
 
 def _build(
-    bpy: Any, frames: list[Path], screen_matte: str, ops: list[tuple[str, dict[str, Any]]]
+    bpy: Any,
+    frames: list[Path],
+    screen_matte: str | None,
+    ops: list[tuple[str, dict[str, Any]]],
 ) -> list[str]:
     scene = bpy.context.scene
     scene.use_nodes = True
@@ -267,15 +307,16 @@ def _build(
     src.frame_duration = len(frames)
     t.tail = src
 
-    crypto = t.node("CompositorNodeCryptomatteV2", "screen_matte")
-    crypto.source = "IMAGE"
-    crypto.image = image
-    crypto.matte_id = screen_matte
-    t.link(src.outputs[0], crypto, "Image")
-    t.matte = crypto.outputs["Matte"]
-    invert = t.node("CompositorNodeInvert", "scene_matte")
-    t.link(t.matte, invert, "Color")
-    t.outside = invert.outputs[0]
+    if screen_matte is not None:
+        crypto = t.node("CompositorNodeCryptomatteV2", "screen_matte")
+        crypto.source = "IMAGE"
+        crypto.image = image
+        crypto.matte_id = screen_matte
+        t.link(src.outputs[0], crypto, "Image")
+        t.matte = crypto.outputs["Matte"]
+        invert = t.node("CompositorNodeInvert", "scene_matte")
+        t.link(t.matte, invert, "Color")
+        t.outside = invert.outputs[0]
 
     for name, params in ops:
         BUILDERS[name](t, params)
@@ -289,8 +330,13 @@ def comp_apply_graph(bpy: Any, args: dict[str, Any]) -> Report:
     check_only(args, ARGS, TOOL)
     comp_id = as_name(args.get("comp_id"), f"{TOOL} comp_id")
     version = as_int(args.get("comp_version", 1), f"{TOOL} comp_version", 1, 1_000_000)
-    screen_matte = as_name(args.get("screen_matte", "device_screen"), f"{TOOL} screen_matte")
+    raw_matte = args.get("screen_matte", "device_screen")
+    screen_matte = None if raw_matte is None else as_name(raw_matte, f"{TOOL} screen_matte")
     ops = _ops(args.get("ops"))
+    if screen_matte is None:
+        matted = [name for name, _ in ops if name in MATTE_OPS]
+        if matted:
+            raise ToolError(f"{TOOL}: op(s) {matted} need a screen_matte, which is null")
     frames = _frames(args.get("frames"))
     nodes = _build(bpy, frames, screen_matte, ops)
     return {

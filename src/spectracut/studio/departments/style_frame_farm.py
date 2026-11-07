@@ -19,11 +19,20 @@ verifier scores each candidate against the description
 (:func:`~spectracut.critique.scene_verifier.scene_critic`), and the best recipe is
 re-rendered at the final tier to the requested path. The control plane never imports
 ``bpy``.
+
+Given a comp graph (``one-beam`` in production) and a brand kit, that final render
+of an abstract frame is finished as three signed jobs: the scene renders with passes
+to multilayer EXR, a compositor-only job runs the comp graph (bloom, glints, lens
+dispersion) on it, and a second compositor-only job applies the brand kit's Look
+(grain, vignette, CA) and writes the PNG. Each stage's output is staged
+content-addressed for the next, as the device-shot ``comp``/``finish`` nodes do.
 """
 
 from __future__ import annotations
 
+import hashlib
 import shutil
+import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -32,13 +41,16 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import JsonValue
 
 from spectracut.critique.scene_verifier import scene_critic
-from spectracut.finishing.color import hex_to_linear
+from spectracut.finishing import comp as comp_lib
+from spectracut.finishing import looks
+from spectracut.finishing.color import BRAND_PIPELINE, hex_to_linear
+from spectracut.finishing.comp import CompGraph
 from spectracut.harness.kit import Kit
 from spectracut.providers.base import TextProvider, VisionJudge
 from spectracut.queue.executors.base import JobStatus
 from spectracut.queue.queue import JobFailed, JobQueue
 from spectracut.spec.brand import BrandKit
-from spectracut.spec.recipe import Recipe
+from spectracut.spec.recipe import Recipe, RecipeStep
 from spectracut.storyboard.explore import record_image
 from spectracut.storyboard.models import ArtDirection, ImageRecord, StyleFrame
 from spectracut.studio import device_shot as ds
@@ -48,7 +60,7 @@ from spectracut.studio.ledger import Usage
 from spectracut.studio.node import Tier
 from spectracut.studio.profiles import QualityProfile
 from spectracut.studio.scene_builder import SceneBrief, SceneBuilder
-from spectracut.templates.base import Call, CameraVariant, camera_calls, steps
+from spectracut.templates.base import RESOLUTIONS, Call, CameraVariant, camera_calls, steps
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -214,8 +226,29 @@ def render_recipe(
     ``source`` is the assets dir to stage (may be empty); the first rendered frame is
     copied to ``path``. Returns its :class:`ImageRecord` and the GPU minutes used.
     """
+    assets_dir, _sha = ds.stage_for(deps.config, str(source), recipe)
+    out, usage = _run_job(
+        deps, recipe, assets_dir, base_id, tier=tier, node_id=node_id, label=label
+    )
+    _scene, frames = ds.render_record(out)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(out / sorted(frames)[0], path)
+    return record_image(path, PROVIDER), usage
+
+
+def _run_job(
+    deps: FarmDeps,
+    recipe: Recipe,
+    assets_dir: str | None,
+    base_id: str,
+    *,
+    tier: Tier,
+    node_id: str,
+    label: str,
+) -> tuple[Path, Usage]:
+    """Sign and run ``recipe`` as one farm job; its output dir and the GPU minutes used."""
     config, opts = deps.config, deps.options or ds.ExecutorOptions()
-    assets_dir, _sha = ds.stage_for(config, str(source), recipe)
     job_id = ds.fresh_job_id(config, f"{base_id}-{recipe.content_hash[7:19]}")
     envelope = ds.envelope(job_id, recipe, config, opts.now())
     job_file = ds.sign_to_shared(envelope, deps.key, config.shared)
@@ -230,11 +263,43 @@ def render_recipe(
             f"{label}: job {job.id} {job.status.value}: {job.error}",
             usage=job.failed_usage or Usage(),
         )
-    _scene, frames = ds.render_record(out)
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(out / sorted(frames)[0], path)
-    return record_image(path, PROVIDER), Usage(gpu_minutes=job.result.usage.gpu_minutes)
+    return out, Usage(gpu_minutes=job.result.usage.gpu_minutes)
+
+
+def _first_frame(out: Path, suffix: str, label: str) -> Path:
+    names = sorted(n for n in ds.frame_hashes(out) if n.lower().endswith(suffix))
+    if not names:
+        raise RuntimeError(f"{label}: job in {out} produced no {suffix} frame")
+    return out / names[0]
+
+
+def _stage_frame(deps: FarmDeps, frame: Path) -> tuple[str, str]:
+    """Stage ``frame`` content-addressed as ``frames/<name>``: ``(assets_dir, relpath)``."""
+    rel = f"{comp_lib.FRAMES_SUBDIR}/{frame.name}"
+    tmp = Path(tempfile.mkdtemp(prefix="spectracut-style-frame-"))
+    try:
+        dest = tmp / rel
+        dest.parent.mkdir(parents=True)
+        shutil.copyfile(frame, dest)
+        sha = hashlib.sha256(dest.read_bytes()).hexdigest()
+        assets_sha = ds.stage_assets(tmp, deps.config.shared, {rel: sha})
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return ds.storage_assets_dir(assets_sha), rel
+
+
+def _compositor_recipe(base: Recipe, suffix: str, tail: list[RecipeStep]) -> Recipe:
+    """``scene.clear``, ``base``'s output resolution, then ``tail`` (renumbered)."""
+    resolution = [s for s in base.steps if s.tool == "render.set_resolution"][-1:]
+    calls = [RecipeStep(index=0, tool="scene.clear", args={})]
+    calls += [s.model_copy(update={"index": 1}) for s in resolution]
+    calls += [s.model_copy(update={"index": len(calls) + i}) for i, s in enumerate(tail)]
+    return Recipe(
+        id=f"{base.id}-{suffix}"[:128],
+        shot_id=base.shot_id,
+        blender_version=base.blender_version,
+        steps=calls,
+    )
 
 
 SCENE_BUILD = "scene_build"
@@ -338,6 +403,11 @@ class SceneStyleFrameRenderer:
 
     ``text``, ``vision`` and ``deps`` are factories called on the first frame, so
     text-only runs never touch the farm or a model.
+
+    When ``comp()`` and ``brand_kit()`` both return a value, the final render is
+    finished instead (:meth:`finish`): passes to EXR, the comp graph, then the brand
+    kit's Look, as three signed jobs. Otherwise it is one straight-PNG
+    :func:`~spectracut.studio.departments.shots.tier_recipe` job.
     """
 
     def __init__(
@@ -352,6 +422,7 @@ class SceneStyleFrameRenderer:
         brand_kit: Callable[[], BrandKit | None] = lambda: None,
         node_id: str = STYLE_FRAMES,
         kit: Callable[[], Kit | None] = lambda: None,
+        comp: Callable[[], CompGraph | None] = lambda: None,
     ) -> None:
         self._text_factory = text
         self._vision_factory = vision
@@ -361,6 +432,7 @@ class SceneStyleFrameRenderer:
         self.profile = profile
         self.brand_kit = brand_kit
         self.kit = kit
+        self.comp = comp
         self.production_id = production_id
         self.workdir = Path(workdir)
         self.node_id = node_id
@@ -408,5 +480,65 @@ class SceneStyleFrameRenderer:
                 f"style frame {frame.id!r}: the scene builder produced no recipe "
                 f"({build.status}: {build.notes or 'no candidate rendered'})"
             )
-        record, final = self.final(build.recipe, Path(path))
+        graph = self.comp()
+        if graph is not None and kit is not None:
+            record, final = self.finish(build.recipe, kit, graph, Path(path))
+        else:
+            record, final = self.final(build.recipe, Path(path))
         return record, _add_usage(build.usage, final)
+
+    def finish(
+        self, recipe: Recipe, brand_kit: BrandKit, graph: CompGraph, path: Path
+    ) -> tuple[ImageRecord, Usage]:
+        """Render ``recipe`` with passes, comp it with ``graph``, apply the kit's Look.
+
+        Three signed farm jobs under :attr:`node_id`, each stage's frame staged
+        content-addressed for the next; the Look's PNG is copied to ``path``.
+        Raises :class:`ValueError` before submitting when the Look grades with a LUT.
+        """
+        look = looks.resolve_look(brand_kit)
+        if look.grade.lut is not None:
+            raise ValueError(
+                f"look {look.id!r} grades with LUT {look.grade.lut!r}; "
+                f"style frames cannot stage a LUT"
+            )
+        deps = self.final.deps()
+        label = f"style frame recipe {recipe.id!r}"
+        base_id = f"{self.production_id}-{self.node_id}-{recipe.id}"[:96]
+
+        def run(job: Recipe, assets_dir: str | None) -> tuple[Path, Usage]:
+            return _run_job(
+                deps, job, assets_dir, base_id, tier=Tier.FINAL, node_id=self.node_id, label=label
+            )
+
+        width, height = RESOLUTIONS["16:9"]
+        passes = ds.scene_render_recipe(recipe, look, BRAND_PIPELINE, passes=True)
+        sized = [
+            s.model_copy(update={"args": {**s.args, "width": width, "height": height}})
+            if s.tool == "render.set_resolution"
+            else s
+            for s in passes.steps
+        ]
+        passes = passes.model_copy(update={"steps": sized})
+        source = self.workdir / "final" / "stage" / recipe.id
+        if source.exists():
+            shutil.rmtree(source)
+        source.mkdir(parents=True)
+        stage_kit_files(self.final.kit, source)
+        assets_dir, _sha = ds.stage_for(deps.config, str(source), passes)
+        out, usage = run(passes, assets_dir)
+
+        assets_dir, rel = _stage_frame(deps, _first_frame(out, ".exr", label))
+        comped = _compositor_recipe(passes, f"comp-{graph.id}", comp_lib.comp_steps(graph, [rel]))
+        out, used = run(comped, assets_dir)
+        usage = _add_usage(usage, used)
+
+        assets_dir, rel = _stage_frame(deps, _first_frame(out, ".exr", label))
+        tail = looks.finish_steps(look, BRAND_PIPELINE, [rel])
+        finished = _compositor_recipe(passes, f"finish-{look.id}", tail)
+        out, used = run(finished, assets_dir)
+        usage = _add_usage(usage, used)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(_first_frame(out, ".png", label), path)
+        return record_image(path, PROVIDER), usage

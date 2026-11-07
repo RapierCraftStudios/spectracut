@@ -1,0 +1,21 @@
+# One Beam: lookdev glare for abstract (screenless) shots. No screen matte, so
+# every op applies to the whole frame: a soft fog glow round the beam's hot
+# core and the glass highlights, faint streak glints on the brightest edges,
+# and a little lens dispersion for subtle chromatic aberration. Vignette and
+# grain come later, from the brand kit's Look.
+id: one-beam
+version: 1
+screen_matte: null
+ops:
+  - op: bloom
+    glare_type: FOG_GLOW
+    threshold: 0.9
+    strength: 0.35
+    size: 7
+  - op: glints
+    threshold: 1.5
+    strength: 0.15
+    streaks: 4
+  - op: lens
+    distortion: 0.0
+    dispersion: 0.01
