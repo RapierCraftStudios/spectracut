@@ -31,6 +31,13 @@ from spectracut.providers.local.runtime import ModelRuntime
 from spectracut.queue.executors.flamenco import FlamencoApi
 from spectracut.spec.brand import BrandKit, load_brand_kit
 from spectracut.spec.brief import Brief, CreativeBrief
+from spectracut.spec.product import (
+    FrontendRoute,
+    ProductSource,
+    frontend_pages,
+    load_product_source,
+    product_routes,
+)
 from spectracut.storyboard.models import ArtDirection
 from spectracut.studio import device_shot as ds
 from spectracut.studio import intake
@@ -38,6 +45,7 @@ from spectracut.studio.autonomy import AutonomyPolicy, BudgetApproval, load_auto
 from spectracut.studio.department import Department
 from spectracut.studio.departments import all_departments
 from spectracut.studio.departments import art as art_depts
+from spectracut.studio.departments import discovery as discovery_depts
 from spectracut.studio.departments import finishing as finishing_depts
 from spectracut.studio.departments import shots as shot_depts
 from spectracut.studio.departments import sound as sound_depts
@@ -626,6 +634,12 @@ def new(
     ] = None,
     autonomy: AutonomyOpt = None,
     delegate: DelegateOpt = None,
+    product: Annotated[
+        Path | None,
+        typer.Option(
+            "--product", help="product.yaml: where the product's repo and front end live."
+        ),
+    ] = None,
 ) -> None:
     """Create a production from a brief file and print its estimate.
 
@@ -652,6 +666,7 @@ def new(
             policy=lambda: _policy(autonomy, delegate, None),
             force=force,
             from_idea=idea is not None,
+            product=product,
         )
     except (ProductionError, ValueError, OSError) as exc:
         raise _fail(str(exc)) from exc
@@ -660,6 +675,13 @@ def new(
     assert quality is not None
     device = quality.name == ds.PROFILE
     typer.echo(f"production {pid} created at {path}")
+    if product is not None:
+        meta = ProductionStore(home).meta(pid)
+        assert meta.product is not None
+        routes = len(meta.product.routes) or _product_route_count(graph)
+        typer.echo(f"product {meta.product.id}: {routes} routes from {meta.product.frontend}")
+        if discovery_depts.PRODUCT not in graph.order():
+            typer.echo("no script node: the product source is recorded but no screen map is planned")
     if not device and brand_kit is None and art_depts.ART_DIRECTION in quality.stages:
         typer.echo("no --brand-kit: art direction has no brand kit to draw from")
     est = estimate(graph, DEPARTMENTS)
@@ -681,10 +703,15 @@ def create_production(
     policy: Callable[[], AutonomyPolicy | None] = lambda: None,
     force: bool = False,
     from_idea: bool = False,
+    product: Path | None = None,
 ) -> tuple[Path, ProductionGraph]:
     """Plan ``brief`` under ``profile`` and store it as a new production.
 
     Writes ``assumptions.md`` for a brief generated from an idea (``from_idea``).
+    With a ``product`` (``product.yaml``) the product source is recorded on the
+    production and, outside the device-shot profile, a ``product`` node is added
+    after the script node: it maps each proof point and beat to the scanned
+    front-end routes.
     Raises :class:`ValueError` (bad profile, missing brand kit, bad plan) or
     :class:`ProductionError` (the production exists and ``force`` is not set).
     """
@@ -718,12 +745,55 @@ def create_production(
                 else s
                 for s in specs
             ]
+    source: ProductSource | None = None
+    if product is not None:
+        source = load_product_source(product)
+        routes = product_routes(source)
+        if quality.name != ds.PROFILE:
+            specs.extend(_product_nodes(brief, specs, source, routes))
     graph.add_nodes(specs)
     limited = caps if caps is not None and caps.limits() else None
-    path = store.create(pid, brief, graph, force=force, caps=limited, autonomy=autonomy)
+    path = store.create(
+        pid, brief, graph, force=force, caps=limited, autonomy=autonomy, product=source
+    )
     if isinstance(brief, CreativeBrief) and from_idea:
         write_atomic(path / "assumptions.md", intake.assumptions_markdown(brief).encode())
     return path, graph
+
+
+def _product_nodes(
+    brief: Brief | CreativeBrief,
+    specs: Sequence[NodeSpec],
+    source: ProductSource,
+    routes: Sequence[FrontendRoute],
+) -> list[NodeSpec]:
+    """The ``product`` screen-map node after the plan's script node (none without one).
+
+    Not a breakdown seed: the strategist declares a ``product`` input, so seeding it
+    before the brief would make brief -> product -> script a cycle.
+    """
+    script = next((s for s in specs if s.kind == discovery_depts.SCRIPT), None)
+    if script is None:
+        return []
+    carried = {k: script.params[k] for k in (BRIEF_PARAM,) if k in script.params}
+    return [
+        discovery_depts.product_screen_node(
+            source,
+            routes,
+            frontend_pages(source, routes),
+            [p.claim for p in brief.proof_points],
+            script.id,
+            extra=carried,
+        )
+    ]
+
+
+def _product_route_count(graph: ProductionGraph) -> int:
+    try:
+        routes = graph.spec(discovery_depts.PRODUCT).params.get("routes")
+    except KeyError:
+        return 0
+    return len(routes) if isinstance(routes, list) else 0
 
 
 def _ask_doubts(batch: Sequence[intake.Aspect]) -> list[int]:
