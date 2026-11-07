@@ -29,7 +29,7 @@ Seed = Annotated[int, Field(ge=0, le=2**31 - 1)]
 
 
 class KeyframeInputs(ToolArgs):
-    """Allowlisted Principled BSDF inputs of the object's material."""
+    """Allowlisted Principled BSDF inputs of the object's material; at least one is set."""
 
     emission_strength: Annotated[float, Field(ge=0, le=1000)] | None = None
     alpha: Annotated[float, Field(ge=0, le=1)] | None = None
@@ -44,6 +44,8 @@ class KeyframeInputs(ToolArgs):
 
 
 class KeyframeKey(ToolArgs):
+    """A key needs at least one of location, rotation, scale, lens or inputs."""
+
     frame: Frame
     location: Vec3 | None = None
     rotation: Vec3 | None = None
@@ -62,6 +64,11 @@ class KeyframeKey(ToolArgs):
 
 
 class ObjectKeyframe(ToolArgs):
+    """keys have strictly increasing frames; material applies only to keys with inputs.
+
+    Each key needs at least one of location, rotation, scale, lens or inputs.
+    """
+
     object: Name
     keys: Annotated[list[KeyframeKey], Field(min_length=2, max_length=1000)]
     material: Name | None = Field(
@@ -80,6 +87,8 @@ class ObjectKeyframe(ToolArgs):
 
 
 class SetFrameRange(ToolArgs):
+    """frame_end must be after frame_start."""
+
     frame_start: Frame
     frame_end: Frame
 
@@ -100,6 +109,12 @@ PRESET_FIELDS: dict[str, frozenset[str]] = {
 
 
 class ObjectAnimate(ToolArgs):
+    """frame_end must be after frame_start; each preset takes only its own options.
+
+    turntable: degrees, axis. reveal: from, offset (offset only, and required, when
+    from is position). shatter and assemble: pieces, seed, distance.
+    """
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     object: Name

@@ -14,6 +14,8 @@ Frame = Annotated[int, Field(ge=0, le=1_048_574)]
 
 
 class ParticlesAdd(ToolArgs):
+    """frame_end must not be before frame_start; an emitter cannot instance itself."""
+
     emitter: Name = Field(description="mesh object that emits the particles")
     name: Name | None = Field(default=None, description="system name (default Dust)")
     count: Annotated[int, Field(ge=1, le=100_000)] | None = None

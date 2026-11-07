@@ -85,6 +85,8 @@ Dimension = Annotated[float, Field(gt=0, le=1000)]
 
 
 class AddSlab(ToolArgs):
+    """bevel_width must be at most half the smallest dimension."""
+
     dimensions: Annotated[list[Dimension], Field(min_length=3, max_length=3)] = Field(
         description="box size in m along x, y, z"
     )
@@ -116,6 +118,8 @@ class ObjectArray(ToolArgs):
 
 
 class ObjectBoolean(ToolArgs):
+    """object and cutter must be different objects."""
+
     object: Name
     cutter: Name = Field(description="mesh to cut with; hidden from renders")
     operation: Literal["difference", "union", "intersect"] | None = None
@@ -128,6 +132,8 @@ class ObjectBoolean(ToolArgs):
 
 
 class ObjectParent(ToolArgs):
+    """child and parent must be different objects."""
+
     child: Name
     parent: Name
 
@@ -144,6 +150,8 @@ class TextFont(ToolArgs):
 
 
 class TextAdd(ToolArgs):
+    """plate is required for mode 'cutout' and only allowed there."""
+
     body: Annotated[str, Field(min_length=1, max_length=500)]
     name: Name | None = None
     size: Annotated[float, Field(ge=0.001, le=1000)] | None = None

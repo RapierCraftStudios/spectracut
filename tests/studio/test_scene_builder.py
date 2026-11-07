@@ -17,9 +17,10 @@ import pytest
 from pydantic import JsonValue
 from spectracut_host.guard import runtime_tool_names
 
+from spectracut.critique.revise import RevisionRequest
 from spectracut.critique.scene_verifier import scene_critic, scene_verifier_prompt
 from spectracut.harness.errors import HarnessError
-from spectracut.harness.tools import get_tool
+from spectracut.harness.tools import build_tools, get_tool
 from spectracut.providers.base import Completion, VisionScore
 from spectracut.spec.brand import BrandKit
 from spectracut.spec.recipe import Recipe
@@ -364,3 +365,100 @@ def test_runner_in_a_graph_records_gpu_minutes_and_ai_usage(tmp_path: Path) -> N
     assert totals.ai_usage["scene_builder_claude_input_tokens"] == 80
     assert totals.ai_usage["critic_requests"] == 2
     assert totals.ai_usage["critic_input_tokens"] == 200
+
+
+# ---- #328: validation errors go back to the builder for bounded repair turns -----------
+
+
+def rigless_distance() -> JsonValue:
+    """The live failure: ``distance`` on a single light (it applies only with ``rig``)."""
+    bad = calls("key")
+    bad[3] = {"tool": "light.add", "args": {"kind": "area", "name": "key", "distance": 4}}
+    return {"plan": "slab stack, key at 4 m", "calls": bad}
+
+
+def test_invalid_tool_argument_triggers_a_repair_turn_and_the_frame_renders(
+    tmp_path: Path,
+) -> None:
+    text = FakeText([rigless_distance(), answer("key")])
+    vision = FakeVision({"a1-c0": 0.9})
+    b, renderer = builder(tmp_path, text, vision, budget=0)
+    build = b.build(brief())
+    assert build.status == "accepted" and build.attempts == 1
+    assert build.recipe is not None and len(renderer.recipes) == 1
+    assert len(text.prompts) == 2 and len(vision.calls) == 1
+    repair_prompt = text.prompts[1]
+    assert "calls[3] light.add" in repair_prompt and "apply only with rig" in repair_prompt
+    assert repair_prompt.startswith(text.prompts[0])
+    (it,) = build.iterations
+    assert it.passed and it.recipe is not None
+    (repair,) = it.repairs
+    assert repair.round == 1
+    assert repair.errors == [
+        "calls[3] light.add: args: Value error, ['distance'] apply only with rig"
+    ]
+    assert build.usage.ai_usage["scene_builder_claude_requests"] == 2
+    folder = tmp_path / "work/one-beam/a1-c0"
+    assert json.loads((folder / "repair-1.json").read_text("utf-8"))["errors"] == repair.errors
+    assert json.loads((folder / "calls.json").read_text("utf-8"))["error"] == ""
+    node = build.model_dump(mode="json")
+    assert node["iterations"][0]["repairs"][0]["errors"] == repair.errors
+
+
+def test_repairs_are_bounded_then_the_candidate_fails(tmp_path: Path) -> None:
+    from spectracut.studio.scene_builder import REPAIR_BUDGET
+
+    text = FakeText([rigless_distance()])
+    vision = FakeVision({})
+    b, renderer = builder(tmp_path, text, vision, budget=0)
+    build = b.build(brief())
+    assert len(text.prompts) == 1 + REPAIR_BUDGET
+    assert renderer.recipes == [] and vision.calls == []
+    assert build.status == "escalated" and build.recipe is None
+    (it,) = build.iterations
+    assert [r.round for r in it.repairs] == list(range(1, REPAIR_BUDGET + 1))
+    assert it.notes.startswith("failed candidate:") and "apply only with rig" in it.notes
+
+
+def test_repair_turns_do_not_use_revise_attempts(tmp_path: Path) -> None:
+    text = FakeText([rigless_distance(), rigless_distance(), answer("a"), answer("b")])
+    vision = FakeVision({"a1-c0": 0.3, "a2-c0": 0.9})
+    b, renderer = builder(tmp_path, text, vision, budget=1)
+    build = b.build(brief())
+    assert build.status == "accepted" and build.attempts == 2
+    assert len(renderer.recipes) == 2
+    assert [len(it.repairs) for it in build.iterations] == [2, 0]
+
+
+def test_compile_calls_reports_every_invalid_call() -> None:
+    bad = calls("key")
+    bad[3] = {"tool": "light.add", "args": {"name": "key", "distance": 4}}
+    bad.append({"tool": "inspect.bounds", "args": {"object": "slab"}})
+    with pytest.raises(HarnessError) as info:
+        compile_calls(bad, recipe_id="r", shot_id="s")
+    problems = info.value.details["problems"]
+    assert [(p["index"], p["tool"]) for p in problems] == [
+        (3, "light.add"),
+        (len(bad) - 1, "inspect.bounds"),
+    ]
+    assert "calls[3] light.add: " in str(info.value)
+
+
+def test_tool_cheat_sheet_matches_the_harness_schemas() -> None:
+    from spectracut.studio.scene_builder import CHEAT_SHEET, PACK, tool_cheat_sheet
+
+    sheet = tool_cheat_sheet()
+    assert (PACK / CHEAT_SHEET).read_text(encoding="utf-8") == sheet, (
+        "regenerate skills/scene-builder/tools.md from tool_cheat_sheet()"
+    )
+    for tool in build_tools():
+        assert f"## {tool.name}\n" in sheet
+        for arg in tool.schema().get("properties", {}):
+            assert f"`{arg}`" in sheet
+    light = sheet.split("## light.add\n", 1)[1].split("\n## ", 1)[0]
+    assert "Either one light or a preset rig" in light
+    assert "- `distance` (optional): number (> 0, <= 1000). rig light distance" in light
+    text = FakeText([answer()])
+    b, _ = builder(Path("/nonexistent"), text, FakeVision({}))
+    request = RevisionRequest(attempt=1, candidate=0, state=None, notes="", window=())
+    assert sheet in b.prompt(brief(), request)
