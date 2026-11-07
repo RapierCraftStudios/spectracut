@@ -286,6 +286,40 @@
       "title": "QAThresholds",
       "type": "object"
     },
+    "TokenSource": {
+      "additionalProperties": false,
+      "description": "Where a kit value was read from in the product: file, line, token and raw value.",
+      "properties": {
+        "line": {
+          "minimum": 1,
+          "title": "Line",
+          "type": "integer"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "token": {
+          "minLength": 1,
+          "title": "Token",
+          "type": "string"
+        },
+        "value": {
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "token",
+        "value"
+      ],
+      "title": "TokenSource",
+      "type": "object"
+    },
     "Typography": {
       "additionalProperties": false,
       "description": "Font family per role, e.g. ``{\"display\": \"Inter\"}``.",
@@ -423,6 +457,14 @@
     },
     "palette": {
       "$ref": "#/$defs/Palette"
+    },
+    "token_sources": {
+      "additionalProperties": {
+        "$ref": "#/$defs/TokenSource"
+      },
+      "description": "Where each palette swatch and font family was read from, keyed palette.<swatch> or typography.<role>",
+      "title": "Token Sources",
+      "type": "object"
     },
     "tone": {
       "minLength": 1,

@@ -105,6 +105,18 @@ class VoiceChoice(StrictModel):
     style: str = ""
 
 
+class TokenSource(StrictModel):
+    """Where a kit value was read from in the product: file, line, token and raw value."""
+
+    path: NonEmptyStr
+    """File relative to the product repo, e.g. ``src/app/globals.css``."""
+    line: int = Field(ge=1)
+    token: NonEmptyStr
+    """Token read, e.g. ``--background`` or ``next/font/google``."""
+    value: NonEmptyStr
+    """Raw value, e.g. ``oklch(10% 0 0)`` or ``Inter``."""
+
+
 class BrandKit(StrictModel):
     """Palette, type, hero object, logo, tone, Looks, voice, forbidden words and claim sources."""
 
@@ -120,6 +132,13 @@ class BrandKit(StrictModel):
     voice: VoiceChoice | None = None
     forbidden_words: list[NonEmptyStr] = Field(default_factory=list)
     claim_sources: list[ClaimSource] = Field(default_factory=list)
+    token_sources: dict[str, TokenSource] = Field(
+        default_factory=dict,
+        description=(
+            "Where each palette swatch and font family was read from, keyed "
+            "palette.<swatch> or typography.<role>"
+        ),
+    )
 
     @field_validator("looks")
     @classmethod
@@ -149,6 +168,23 @@ class BrandKit(StrictModel):
     @classmethod
     def _unique_sources(cls, v: list[ClaimSource]) -> list[ClaimSource]:
         ensure_unique_ids(v, "claim source")
+        return v
+
+    @field_validator("token_sources")
+    @classmethod
+    def _sources_name_values(
+        cls, v: dict[str, TokenSource], info: ValidationInfo
+    ) -> dict[str, TokenSource]:
+        palette, typography = info.data.get("palette"), info.data.get("typography")
+        swatches = palette.swatches if palette is not None else {}
+        families = typography.families if typography is not None else {}
+        for key in v:
+            kind, _, name = key.partition(".")
+            known = (kind == "palette" and name in swatches) or (
+                kind == "typography" and name in families
+            )
+            if not known:
+                raise ValueError(f"token_sources key {key} names no swatch or family")
         return v
 
 

@@ -48,6 +48,7 @@ from spectracut.spec.references import (
     ReferenceSet,
     load_reference_set,
 )
+from spectracut.spec.theme import kit_drift, read_product_theme
 from spectracut.storyboard.models import ArtDirection
 from spectracut.studio import device_shot as ds
 from spectracut.studio import intake
@@ -730,6 +731,9 @@ def new(
             )
         elif UI_CAPTURE in graph.order():
             typer.echo(f"{UI_CAPTURE} node planned: captures every mapped screen per device")
+    if product is not None and brand_kit is not None:
+        for line in _brand_drift(product, brand_kit):
+            typer.echo(line)
     if not device and brand_kit is None and art_depts.ART_DIRECTION in quality.stages:
         typer.echo("no --brand-kit: art direction has no brand kit to draw from")
     est = estimate(graph, DEPARTMENTS)
@@ -737,6 +741,18 @@ def new(
         typer.echo(line)
     if not device and est.unknown_departments:
         typer.echo("no department registered yet for: " + ", ".join(est.unknown_departments))
+
+
+def _brand_drift(product: Path, kit_path: Path) -> list[str]:
+    """Drift lines between the brand kit and the product's theme (a warning, never a failure)."""
+    try:
+        kit = load_brand_kit(kit_path)
+        drift = kit_drift(kit, read_product_theme(load_product_source(product)))
+    except ValueError as exc:
+        return [f"brand drift: cannot read product theme: {exc}"]
+    if not drift:
+        return [f"brand kit {kit.id} matches the product theme"]
+    return [f"brand drift: {line}" for line in drift]
 
 
 class LazyReferenceJudge:
