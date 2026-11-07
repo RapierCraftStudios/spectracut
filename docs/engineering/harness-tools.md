@@ -44,6 +44,28 @@ Arguments (all optional except `object` and `preset`):
 
 Overrides are applied after the preset, and the runtime report echoes them.
 
+Surface detail (optional; builds a procedural node graph only when a strength is > 0):
+
+| Argument | Range | Nodes built |
+| --- | --- | --- |
+| `bump_strength` | [0, 1] | Noise or Voronoi texture -> Bump -> BSDF Normal (micro-texture) |
+| `bump_kind` | `noise` (default) or `voronoi` | pattern for `bump_strength` |
+| `bump_scale` | (0, 1000], default 150 | texture frequency per object unit |
+| `brushing` | [0, 1] | stretched noise streaks into the bump, Anisotropic raised to at least this |
+| `brushing_angle` | [0, 360) degrees | streak direction; Anisotropic Rotation = angle / 360 |
+| `scratches` | [0, 1] | stretched Voronoi edges: fine lines in the bump and rougher Roughness |
+| `edge_wear` | [0, 1] | Bevel node (radius up to 3 cm) into the bump Normal: edge highlights, Cycles only |
+| `seed` | integer [0, 2^31 - 1], default 0 | offsets every pattern's coordinates; same seed, same surface |
+
+All height sources share one Bump node. The report echoes the detail arguments and the
+seed used.
+
+```json
+{"tool": "material.apply_preset",
+ "args": {"object": "Body", "preset": "anodised_metal", "brushing": 0.6, "brushing_angle": 90,
+          "edge_wear": 0.4, "seed": 3}}
+```
+
 ```json
 {"tool": "material.apply_preset",
  "args": {"object": "Beam", "preset": "emissive", "color": [0.1, 0.4, 1.0], "emission_strength": 40}}

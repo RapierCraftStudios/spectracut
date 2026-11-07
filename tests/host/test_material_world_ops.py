@@ -221,6 +221,19 @@ def _dump():
                      if s.default_value is not None}
             for m in _materials
         },
+        "material_trees": {
+            m.name: {
+                "nodes": [n.bl_idname for n in m.node_tree.nodes],
+                "links": [[o.node.bl_idname, str(o.name), i.node.bl_idname, str(i.name)]
+                          for o, i in m.node_tree.links],
+                "values": [{str(s.name): _val(s.default_value) for s in n.inputs.values()
+                            if s.default_value is not None} for n in m.node_tree.nodes],
+                "attrs": [{k: getattr(n, k) for k in ("feature", "operation", "samples")
+                           if isinstance(getattr(n, k, None), str | int)}
+                          for n in m.node_tree.nodes],
+            }
+            for m in _materials
+        },
         "lights": {l.name: {"type": l.type, "energy": l.energy, "size": l.size,
                             "color": _val(l.color), "spot_size": l.spot_size}
                    for l in _lights},
@@ -449,6 +462,157 @@ def test_material_overrides_are_validated_before_bpy(
     blender: Path, tmp_path: Path, extra: dict[str, Any]
 ) -> None:
     step = {"object": "Slab", "preset": "clear_glass", **extra}
+    refused(run_steps(blender, tmp_path, [CUBE, ("material.apply_preset", step)]))
+
+
+# --- material.apply_preset surface detail (#335) --------------------------------------------
+
+PRINCIPLED = "ShaderNodeBsdfPrincipled"
+
+
+def detail_tree(
+    blender: Path, tmp_path: Path, extra: dict[str, Any], preset: str = "rubber"
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    step = {"object": "Slab", "preset": preset, **extra}
+    run = ok(run_steps(blender, tmp_path, [CUBE, ("material.apply_preset", step)]))
+    name = f"{preset}.Slab"
+    return (
+        run.state["material_trees"][name],
+        run.state["materials"][name],
+        run.report("material.apply_preset"),
+    )
+
+
+def node_values(tree: dict[str, Any], bl_idname: str) -> list[dict[str, Any]]:
+    return [v for n, v in zip(tree["nodes"], tree["values"], strict=True) if n == bl_idname]
+
+
+def node_attrs(tree: dict[str, Any], bl_idname: str) -> list[dict[str, Any]]:
+    return [a for n, a in zip(tree["nodes"], tree["attrs"], strict=True) if n == bl_idname]
+
+
+def test_no_detail_keeps_the_plain_principled_tree(blender: Path, tmp_path: Path) -> None:
+    tree, _, report = detail_tree(blender, tmp_path, {"roughness": 0.5})
+    assert tree["nodes"] == [PRINCIPLED]
+    assert tree["links"] == []
+    assert "seed" not in report
+
+
+def test_seed_without_a_detail_strength_builds_nothing(blender: Path, tmp_path: Path) -> None:
+    tree, _, report = detail_tree(blender, tmp_path, {"seed": 4, "bump_strength": 0})
+    assert tree["nodes"] == [PRINCIPLED]
+    assert report["seed"] == 4 and report["bump_strength"] == 0.0
+
+
+def test_noise_bump_drives_the_bsdf_normal(blender: Path, tmp_path: Path) -> None:
+    tree, _, report = detail_tree(blender, tmp_path, {"bump_strength": 0.4, "bump_scale": 300})
+    for node in ["ShaderNodeTexCoord", "ShaderNodeMapping", "ShaderNodeTexNoise"]:
+        assert node in tree["nodes"]
+    assert ["ShaderNodeBump", "Normal", PRINCIPLED, "Normal"] in tree["links"]
+    assert ["ShaderNodeTexNoise", "Fac", "ShaderNodeMath", "0"] in tree["links"]
+    assert ["ShaderNodeMath", "Value", "ShaderNodeBump", "Height"] in tree["links"]
+    [noise] = node_values(tree, "ShaderNodeTexNoise")
+    assert noise["Scale"] == 300.0
+    assert report["bump_strength"] == 0.4 and report["bump_scale"] == 300.0
+    assert report["seed"] == 0
+
+
+def test_voronoi_bump_uses_the_cell_distance(blender: Path, tmp_path: Path) -> None:
+    tree, _, _ = detail_tree(blender, tmp_path, {"bump_strength": 0.3, "bump_kind": "voronoi"})
+    assert node_attrs(tree, "ShaderNodeTexVoronoi") == [{"feature": "F1"}]
+    assert ["ShaderNodeTexVoronoi", "Distance", "ShaderNodeMath", "0"] in tree["links"]
+    [vor] = node_values(tree, "ShaderNodeTexVoronoi")
+    assert vor["Scale"] == 150.0
+
+
+def test_brushing_streaks_and_turns_anisotropy(blender: Path, tmp_path: Path) -> None:
+    tree, sockets, _ = detail_tree(
+        blender, tmp_path, {"brushing": 0.8, "brushing_angle": 90}, preset="anodised_metal"
+    )
+    assert sockets["Anisotropic"] == 0.8
+    assert sockets["Anisotropic Rotation"] == 0.25
+    [mapping] = node_values(tree, "ShaderNodeMapping")
+    assert mapping["Scale"] == [1.0, 900.0, 900.0]
+    assert math.isclose(mapping["Rotation"][2], math.pi / 2)
+    assert ["ShaderNodeBump", "Normal", PRINCIPLED, "Normal"] in tree["links"]
+
+
+def test_brushing_keeps_a_higher_preset_anisotropy(blender: Path, tmp_path: Path) -> None:
+    _, sockets, _ = detail_tree(blender, tmp_path, {"brushing": 0.2}, preset="brushed_metal")
+    assert sockets["Anisotropic"] == 0.6
+    assert sockets["Anisotropic Rotation"] == 0.0
+
+
+def test_scratches_vary_roughness_and_bump(blender: Path, tmp_path: Path) -> None:
+    tree, _, _ = detail_tree(blender, tmp_path, {"scratches": 0.5}, preset="polished_metal")
+    assert node_attrs(tree, "ShaderNodeTexVoronoi") == [{"feature": "DISTANCE_TO_EDGE"}]
+    assert ["ShaderNodeTexVoronoi", "Distance", "ShaderNodeMapRange", "Value"] in tree["links"]
+    assert ["ShaderNodeMath", "Value", PRINCIPLED, "Roughness"] in tree["links"]
+    rough = [v for v in node_values(tree, "ShaderNodeMath") if v.get("2") == 0.08]
+    assert rough and rough[0]["1"] == 0.15
+    assert ["ShaderNodeBump", "Normal", PRINCIPLED, "Normal"] in tree["links"]
+
+
+def test_edge_wear_alone_bevels_the_bsdf_normal(blender: Path, tmp_path: Path) -> None:
+    tree, _, _ = detail_tree(blender, tmp_path, {"edge_wear": 0.5})
+    assert "ShaderNodeBump" not in tree["nodes"]
+    assert ["ShaderNodeBevel", "Normal", PRINCIPLED, "Normal"] in tree["links"]
+    [bevel] = node_values(tree, "ShaderNodeBevel")
+    assert bevel["Radius"] == 0.015
+    assert node_attrs(tree, "ShaderNodeBevel") == [{"samples": 8}]
+
+
+def test_edge_wear_feeds_the_bump_normal(blender: Path, tmp_path: Path) -> None:
+    tree, _, _ = detail_tree(blender, tmp_path, {"edge_wear": 1, "bump_strength": 0.2})
+    assert ["ShaderNodeBevel", "Normal", "ShaderNodeBump", "Normal"] in tree["links"]
+    assert ["ShaderNodeBump", "Normal", PRINCIPLED, "Normal"] in tree["links"]
+
+
+ALL_DETAIL = {
+    "bump_strength": 0.3,
+    "bump_kind": "voronoi",
+    "brushing": 0.5,
+    "brushing_angle": 45,
+    "scratches": 0.4,
+    "edge_wear": 0.2,
+}
+
+
+def test_detail_is_deterministic_for_a_seed(blender: Path, tmp_path: Path) -> None:
+    for sub in "abc":
+        (tmp_path / sub).mkdir()
+    a, _, _ = detail_tree(blender, tmp_path / "a", {**ALL_DETAIL, "seed": 7})
+    b, _, _ = detail_tree(blender, tmp_path / "b", {**ALL_DETAIL, "seed": 7})
+    c, _, report = detail_tree(blender, tmp_path / "c", {**ALL_DETAIL, "seed": 8})
+    assert a == b
+    assert report["seed"] == 8
+    where = [v["Location"] for v in node_values(a, "ShaderNodeMapping")]
+    other = [v["Location"] for v in node_values(c, "ShaderNodeMapping")]
+    assert len(where) == 3 and where != other
+    assert a["nodes"] == c["nodes"] and a["links"] == c["links"]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"bump_strength": 1.5},
+        {"bump_scale": 0},
+        {"bump_scale": 2000},
+        {"bump_kind": "perlin"},
+        {"brushing": -0.1},
+        {"brushing_angle": 360},
+        {"scratches": "0.5"},
+        {"edge_wear": True},
+        {"seed": -1},
+        {"seed": 1.5},
+        {"seed": True},
+        {"seed": 2**31},
+    ],
+)
+def test_detail_is_validated_before_bpy(
+    blender: Path, tmp_path: Path, extra: dict[str, Any]
+) -> None:
+    step = {"object": "Slab", "preset": "rubber", **extra}
     refused(run_steps(blender, tmp_path, [CUBE, ("material.apply_preset", step)]))
 
 

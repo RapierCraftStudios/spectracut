@@ -82,13 +82,48 @@ def test_brand_colour_is_recorded_as_a_numeric_colour(session: Session) -> None:
         {"ior": 0.9},
         {"emission_strength": -1},
         {"anisotropy": 1.1},
-        {"seed": 3},
+        {"seed": -1},
+        {"seed": "3"},
+        {"seed": 2**31},
+        {"bump_kind": "perlin"},
+        {"bump_strength": 1.2},
+        {"bump_scale": 0},
+        {"brushing_angle": 360},
+        {"scratches": -0.1},
+        {"edge_wear": 2},
     ],
 )
 def test_material_refusals(session: Session, extra: dict[str, Any]) -> None:
     args = {"object": "Slab", "preset": "clear_glass", **extra}
     assert error_of(session, "material.apply_preset", args).code == "args.invalid"
     assert session.recorder.steps == []
+
+
+DETAIL = {
+    "bump_kind": "voronoi",
+    "bump_strength": 0.3,
+    "bump_scale": 220.0,
+    "brushing": 0.6,
+    "brushing_angle": 45.0,
+    "scratches": 0.2,
+    "edge_wear": 0.5,
+    "seed": 11,
+}
+
+
+def test_surface_detail_is_typed_and_recorded_in_one_step(session: Session) -> None:
+    args = {"object": "Slab", "preset": "brushed_metal", **DETAIL}
+    call(session, "material.apply_preset", args)
+    assert steps_of(session) == [("material.apply_preset", args)]
+
+
+def test_surface_detail_recording_is_deterministic(dispatcher: Any) -> None:
+    def record() -> list[tuple[str, dict[str, Any]]]:
+        session = Session(Recorder(), dispatcher)
+        call(session, "material.apply_preset", {"object": "S", "preset": "rubber", **DETAIL})
+        return steps_of(session)
+
+    assert record() == record()
 
 
 # --- light.add ------------------------------------------------------------------------------
@@ -214,6 +249,7 @@ def test_harness_tools_doc_has_all_sections_and_names_every_tool() -> None:
         "anisotropy",
         "metallic",
         "brand_color",
+        *DETAIL,
     ]:
         assert f"`{field}`" in materials, field
     for rig in RIGS:
