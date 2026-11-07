@@ -487,8 +487,9 @@ class RefusingRenderer(FakeRenderer):
         if len(self.attempted) <= self.refusals:
             raise JobFailed(
                 f"scene recipe {recipe.id!r}: job j-{len(self.attempted)} failed: "
-                "FlamencoJobFailed: flamenco job fl-1 ended active (task render-1-1 "
-                "soft-failed and no worker took it within 60s; cancelled); task log tail:\n"
+                "FlamencoJobFailed: flamenco job fl-1 ended soft-failed (task render-1-1 "
+                "soft-failed and no worker took it within 60s; job was active, cancelled); "
+                "task log tail:\n"
                 f"Blender 4.5\n{HOST_REFUSAL}",
                 usage=Usage(gpu_minutes=0.25),
             )
