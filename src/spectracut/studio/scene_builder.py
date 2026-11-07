@@ -344,22 +344,20 @@ class SceneBuilder:
         if request.window:
             parts += ["", "Recent iterations (oldest first):"]
             for it in request.window:
-                parts.append(
-                    _dumps(
-                        {
-                            "attempt": it.attempt,
-                            "recipe": it.recipe,
-                            "diff": it.diff,
-                            "frames": [str(p) for p in it.frames],
-                            "verdict": {
-                                "passed": it.verdict.passed,
-                                "scores": it.verdict.scores,
-                                "notes": it.verdict.comment,
-                            },
-                            "kept": it.kept,
-                        }
-                    )
-                )
+                verdict: dict[str, object] = {
+                    "passed": it.verdict.passed,
+                    "scores": it.verdict.scores,
+                    "notes": it.verdict.comment,
+                }
+                entry: dict[str, object] = {
+                    "attempt": it.attempt,
+                    "recipe": it.recipe,
+                    "diff": it.diff,
+                    "frames": [str(p) for p in it.frames],
+                    "verdict": verdict,
+                    "kept": it.kept,
+                }
+                parts.append(_dumps(entry))
         parts += ["", 'Answer as JSON: {"plan": "...", "calls": [{"tool": ..., "args": {...}}]}.']
         return "\n".join(parts)
 
