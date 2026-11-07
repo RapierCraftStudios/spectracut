@@ -32,6 +32,9 @@ function checkActions(value: unknown, field: string): void {
     if (a.do === "type" && (a.text === undefined) === (a.textEnv === undefined)) {
       throw new TypeError(`capture spec ${field}[${i}] type needs exactly one of text and textEnv`);
     }
+    if (a.do === "click" && a.optional !== undefined && typeof a.optional !== "boolean") {
+      throw new TypeError(`capture spec ${field}[${i}] click optional must be a boolean`);
+    }
     if (a.do === "reveal") {
       if (typeof a.selector !== "string" || a.selector === "") {
         throw new TypeError(`capture spec ${field}[${i}] reveal needs a selector`);

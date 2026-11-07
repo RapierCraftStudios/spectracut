@@ -28,7 +28,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 from spectracut.spec.asset import LicenseRecord
 from spectracut.templates.base import PinnedAsset
@@ -239,7 +239,15 @@ def in_frame(location: Vec3, target: Vec3, lens: float, aspect: float, points: l
     return True
 
 
-def kit_camera(entry: DeviceAsset, *, yaw: float, elevation: float, aspect: float) -> KitCamera:
+def kit_camera(
+    entry: DeviceAsset,
+    *,
+    yaw: float,
+    elevation: float,
+    aspect: float,
+    target: Literal["screen", "bounds"] = "screen",
+    scale: float = 1.0,
+) -> KitCamera:
     """The camera on ``entry``'s screen: from the screen centre along the screen
     normal turned ``yaw`` degrees about world Z (three-quarter at about 35) and
     raised to ``elevation`` degrees, ``KIT_LENS`` mm, aimed at the screen centre.
@@ -247,6 +255,9 @@ def kit_camera(entry: DeviceAsset, *, yaw: float, elevation: float, aspect: floa
     The distance starts at ``KIT_DISTANCE`` scaled by the screen width relative to
     the MacBook's and grows until the whole device (its normalised bounds) is in
     frame at ``aspect``.
+
+    ``target="bounds"`` aims at the device bounds centre instead. ``scale != 1``
+    multiplies the fitted distance (no re-fit), still aimed at the screen centre.
     """
     frame = entry.frame
     n = _unit((frame.normal[0], frame.normal[1], 0.0))
@@ -256,6 +267,8 @@ def kit_camera(entry: DeviceAsset, *, yaw: float, elevation: float, aspect: floa
     lo, hi = entry.bounds
     corners = _corners(lo, hi)
     c = frame.centre
+    if target == "bounds":
+        c = ((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2)
     distance = KIT_DISTANCE * frame.width / MACBOOK_PRO.frame.width
     for _ in range(80):
         loc = (
@@ -264,6 +277,14 @@ def kit_camera(entry: DeviceAsset, *, yaw: float, elevation: float, aspect: floa
             c[2] + direction[2] * distance,
         )
         if in_frame(loc, c, KIT_LENS, aspect, corners):
+            if scale != 1.0:
+                c = frame.centre
+                distance *= scale
+                loc = (
+                    c[0] + direction[0] * distance,
+                    c[1] + direction[1] * distance,
+                    c[2] + direction[2] * distance,
+                )
             return KitCamera(
                 location=_round(loc, 4),
                 rotation=_round(look_rotation(loc, c), 6),

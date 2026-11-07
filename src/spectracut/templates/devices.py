@@ -67,6 +67,11 @@ FRAMINGS: dict[str, tuple[float, float]] = {
     "front": (0.0, 8.0),
     "three-quarter": (THREE_QUARTER, 12.0),
 }
+# Front framing with a different target and distance: id -> (target, scale).
+EXTRA_FRAMINGS: dict[str, tuple[Literal["screen", "bounds"], float]] = {
+    "wide": ("bounds", 1.0),
+    "close": ("screen", 0.62),
+}
 
 
 def set_for(kit: BrandKit) -> SetVariant:
@@ -298,12 +303,23 @@ def _scene(kind: DeviceKind) -> object:
 
 
 def device_variants(entry: DeviceAsset) -> tuple[CameraVariant, ...]:
-    """Front and three-quarter cameras on ``entry``'s screen, each with its own 9:16
-    camera re-framed to keep the whole device in frame."""
+    """Front, three-quarter, wide (whole device, aimed at the bounds centre) and close
+    (front, 0.62x the fitted distance on the screen centre) cameras, each with its own
+    9:16 camera re-framed to keep the whole device in frame."""
+    framings: dict[str, tuple[float, float, Literal["screen", "bounds"], float]] = {
+        vid: (yaw, el, "screen", 1.0) for vid, (yaw, el) in FRAMINGS.items()
+    }
+    front = FRAMINGS["front"]
+    for vid, (target, scale) in EXTRA_FRAMINGS.items():
+        framings[vid] = (front[0], front[1], target, scale)
     out = []
-    for vid, (yaw, elevation) in FRAMINGS.items():
-        wide = device_kit.kit_camera(entry, yaw=yaw, elevation=elevation, aspect=16 / 9)
-        tall = device_kit.kit_camera(entry, yaw=yaw, elevation=elevation, aspect=9 / 16)
+    for vid, (yaw, elevation, target, scale) in framings.items():
+        wide = device_kit.kit_camera(
+            entry, yaw=yaw, elevation=elevation, aspect=16 / 9, target=target, scale=scale
+        )
+        tall = device_kit.kit_camera(
+            entry, yaw=yaw, elevation=elevation, aspect=9 / 16, target=target, scale=scale
+        )
         out.append(
             CameraVariant(
                 id=vid,

@@ -1,0 +1,45 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Full screen laptop chrome: 1728x1117, 37px black notch safe area, live frame below. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>screen</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 1728px; height: 1117px; background: #000; overflow: hidden; }
+  #band { position: absolute; left: 0; top: 0; width: 1728px; height: 37px; background: #000; }
+  #frame { position: absolute; left: 0; top: 37px; width: 1728px; height: 1080px; object-fit: fill; display: block; background: #000; }
+</style>
+</head>
+<body>
+<div id="band"></div>
+<img id="frame" alt="">
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var frames = JSON.parse(q.get("frames") || "[]");
+  var fps = Number(q.get("fps")) || 30;
+  var t = q.get("t");
+  var img = document.getElementById("frame");
+  function show(i) {
+    if (frames.length) img.src = frames[Math.max(0, Math.min(frames.length - 1, i))];
+  }
+  if (t !== null && t !== "") {
+    var tv = Math.max(0, Math.min(1, Number(t) || 0));
+    show(Math.min(frames.length - 1, Math.floor(tv * frames.length)));
+  } else {
+    var start = null, last = -1;
+    var tick = function () {
+      var now = performance.now();
+      if (start === null) start = now;
+      var i = Math.floor(((now - start) * fps) / 1000);
+      if (i !== last) { last = i; show(i); }
+      requestAnimationFrame(tick);
+    };
+    show(0);
+    requestAnimationFrame(tick);
+  }
+})();
+</script>
+</body>
+</html>

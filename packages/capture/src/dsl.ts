@@ -30,7 +30,13 @@ export type Target = Point | { selector: string };
 export type Action =
   | { do: "goto"; url: string }
   | { do: "move"; to: Target; durationMs: number; easing?: EasingName }
-  | { do: "click"; at?: Target; holdMs?: number }
+  | {
+      do: "click";
+      at?: Target;
+      holdMs?: number;
+      /** Skip the click when `at` is a selector that matches nothing (e.g. an absent promo close button). */
+      optional?: boolean;
+    }
   | { do: "drag"; from: Target; to: Target; durationMs: number; easing?: EasingName }
   | {
       do: "type";
@@ -180,6 +186,9 @@ async function runAction(ctx: ScriptContext, action: Action): Promise<void> {
       await path(ctx, await resolve(page, action.to), action.durationMs, action.easing ?? "easeInOutCubic");
       return;
     case "click": {
+      if (action.optional && action.at && "selector" in action.at && !(await page.boundingBox(action.at.selector))) {
+        return;
+      }
       if (action.at) await moveTo(ctx, await resolve(page, action.at));
       await page.mouseDown();
       ctx.emit({ type: "click", x: ctx.cursor.x, y: ctx.cursor.y });

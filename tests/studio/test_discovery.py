@@ -476,3 +476,23 @@ def test_runner_fails_the_product_node_on_an_unknown_route() -> None:
     bad = run([{**s, "route": "/admin"} if s.get("beat") == "Hook" else s for s in _screens()])
     assert bad.status("screens") is NodeStatus.FAILED
     assert "/admin" in str(bad.state("screens").error)
+
+
+def test_screen_mapping_takes_anchor_and_chrome_and_interlude_rejects_anchor() -> None:
+    from pydantic import ValidationError
+
+    from spectracut.studio.departments.discovery import ScreenMapping
+
+    steps = [{"action": "wait", "target": "1s"}]
+    plain = ScreenMapping.model_validate({"beat": "Hook", "route": "/", "steps": steps})
+    assert (plain.anchor, plain.chrome) == ("", "fullscreen")
+    shown = ScreenMapping.model_validate(
+        {"beat": "Hook", "route": "/", "steps": steps, "anchor": "#result", "chrome": "windowed"}
+    )
+    assert (shown.anchor, shown.chrome) == ("#result", "windowed")
+    with pytest.raises(ValidationError):
+        ScreenMapping.model_validate(
+            {"beat": "Hook", "route": "/", "steps": steps, "chrome": "iphone"}
+        )
+    with pytest.raises(ValidationError, match="anchor"):
+        ScreenMapping.model_validate({"beat": "Out", "interlude": True, "anchor": "#x"})

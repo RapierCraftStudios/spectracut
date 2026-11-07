@@ -394,6 +394,13 @@ def test_every_template_has_at_least_two_camera_variants() -> None:
     for template in TEMPLATES.values():
         ids = [v.id for v in template.variants]
         assert len(ids) >= 2 and len(set(ids)) == len(ids)
+    for device in ("device-laptop", "device-phone"):
+        assert [v.id for v in TEMPLATES[device].variants] == [
+            "front",
+            "three-quarter",
+            "wide",
+            "close",
+        ]
     cam = LAPTOP.variants[0]
     with pytest.raises(TemplateError, match="at least 2 camera variants"):
         Template(id="solo", slots=DeviceSlots, variants=(cam,), scene=lambda k, s, p: [])

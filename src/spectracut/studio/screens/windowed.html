@@ -1,0 +1,72 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Windowed laptop chrome: menu bar around the notch, wallpaper, Dock, window with shadow. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>screen</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 1728px; height: 1117px; overflow: hidden; font: 500 14px/37px "SF Pro Text", "Inter", "Segoe UI", sans-serif; color: #fff; }
+  body { background: radial-gradient(1200px 800px at 25% 20%, #4b3a8f 0%, #2a2766 40%, #0f1536 100%), #0f1536; position: relative; }
+  #menubar { position: absolute; left: 0; top: 0; width: 1728px; height: 37px; background: rgba(20, 20, 30, 0.55); }
+  #menubar .left { position: absolute; left: 18px; top: 0; height: 37px; display: flex; gap: 22px; width: 700px; }
+  #menubar .left b { font-weight: 700; }
+  #notch-clear { position: absolute; left: 764px; top: 0; width: 200px; height: 37px; background: #000; border-radius: 0 0 14px 14px; }
+  #menubar .right { position: absolute; right: 18px; top: 0; height: 37px; display: flex; gap: 18px; width: 740px; justify-content: flex-end; }
+ 
+  #window { position: absolute; left: 164px; top: 76px; width: 1400px; height: 921px; border-radius: 12px; overflow: hidden; background: #1c1c22; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.12); }
+  #titlebar { position: absolute; left: 0; top: 0; width: 1400px; height: 46px; background: linear-gradient(#34343c, #2a2a31); }
+  .light { position: absolute; top: 16px; width: 14px; height: 14px; border-radius: 7px; }
+  .light.r { left: 16px; background: #ff5f57; } .light.y { left: 38px; background: #febc2e; } .light.g { left: 60px; background: #28c840; }
+  #urlpill { position: absolute; left: 400px; top: 9px; width: 600px; height: 28px; border-radius: 8px; background: rgba(255, 255, 255, 0.1); text-align: center; font: 500 14px/28px "SF Pro Text", "Inter", sans-serif; color: #e6e6ee; }
+  #frame { position: absolute; left: 0; top: 46px; width: 1400px; height: 875px; object-fit: fill; display: block; background: #000; }
+  #dock { position: absolute; left: 464px; top: 1018px; width: 800px; height: 84px; border-radius: 24px; background: rgba(255, 255, 255, 0.18); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2); display: flex; gap: 14px; padding: 10px 16px; box-sizing: border-box; }
+  #dock i { display: block; width: 64px; height: 64px; border-radius: 15px; }
+</style>
+</head>
+<body>
+<div id="menubar">
+  <div class="left"><b>Browser</b><span>File</span><span>Edit</span><span>View</span><span>History</span><span>Window</span><span>Help</span></div>
+  <div id="notch-clear"></div>
+  <div class="right"><span>Wi-Fi</span><span>100%</span><span>Sat 7 Nov</span><span>9:41</span></div>
+</div>
+<div id="window">
+  <div id="titlebar">
+    <span class="light r"></span><span class="light y"></span><span class="light g"></span>
+    <div id="urlpill"></div>
+  </div>
+  <img id="frame" alt="">
+</div>
+<div id="dock">
+  <i style="background:#4aa3ff"></i><i style="background:#ff9f43"></i><i style="background:#5ad17a"></i><i style="background:#c56cf0"></i><i style="background:#ff6b81"></i><i style="background:#f6d55c"></i><i style="background:#8395a7"></i><i style="background:#48dbfb"></i><i style="background:#1dd1a1"></i><i style="background:#576574"></i>
+</div>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var frames = JSON.parse(q.get("frames") || "[]");
+  var fps = Number(q.get("fps")) || 30;
+  var t = q.get("t");
+  var img = document.getElementById("frame");
+  document.getElementById("urlpill").textContent = q.get("host") || "";
+  function show(i) {
+    if (frames.length) img.src = frames[Math.max(0, Math.min(frames.length - 1, i))];
+  }
+  if (t !== null && t !== "") {
+    var tv = Math.max(0, Math.min(1, Number(t) || 0));
+    show(Math.min(frames.length - 1, Math.floor(tv * frames.length)));
+  } else {
+    var start = null, last = -1;
+    var tick = function () {
+      var now = performance.now();
+      if (start === null) start = now;
+      var i = Math.floor(((now - start) * fps) / 1000);
+      if (i !== last) { last = i; show(i); }
+      requestAnimationFrame(tick);
+    };
+    show(0);
+    requestAnimationFrame(tick);
+  }
+})();
+</script>
+</body>
+</html>
