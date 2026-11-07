@@ -184,6 +184,17 @@ class Department:
         return None
 
     @classmethod
+    def check_params(cls, node_id: str, output: JsonValue, params: Mapping[str, JsonValue]) -> None:
+        """Check a validated ``output`` against the node's own ``params``; the default does nothing.
+
+        An override raises :class:`DepartmentOutputError` when the output contradicts
+        its params (e.g. a route the node was not given); the
+        :class:`~spectracut.studio.runner.DepartmentRunner` calls it right after
+        :meth:`check_output`.
+        """
+        return None
+
+    @classmethod
     def validate_inputs(
         cls, node_id: str, inputs: Mapping[str, JsonValue], kinds: Mapping[str, str]
     ) -> None:

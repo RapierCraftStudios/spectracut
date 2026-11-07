@@ -3,9 +3,16 @@
 
 ``mode="depth"`` adds a font object with ``extrude``. ``mode="cutout"`` turns that
 text into a hidden mesh cutter and adds a Boolean DIFFERENCE modifier to the
-named ``plate``, so the letters are cut through it. An optional font asset is
-loaded only from the host assets dir after its sha256 matches. Without one,
-Blender's built-in font is used. Arguments are checked before ``bpy`` is touched.
+named ``plate``, so the letters are cut through it. ``align`` sets which edge of
+the line sits on ``location`` (``left`` for key/value columns, ``center`` by
+default) and ``bevel`` rounds the extruded edges.
+
+Fonts: an optional ``font`` asset is loaded only from the host assets dir after its
+sha256 matches. Without one, the brand font shipped with the host package
+(Inter, SIL OFL, ``bpy_runtime/fonts``) is loaded at ``weight`` 400 or 600 after its
+pinned sha256 matches. A missing or altered font fails the step (``font.missing`` /
+``asset.hash_mismatch``); Blender's built-in font is never used as a silent fallback.
+The body is set verbatim. Arguments are checked before ``bpy`` is touched.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from typing import Any
 from bpy_runtime.ops import (
     Report,
     ToolError,
+    as_choice,
     as_name,
     as_num,
     as_vec3,
@@ -30,6 +38,35 @@ TOOL = "text.add"
 MODES = ("depth", "cutout")
 MAX_BODY = 500
 _HEX = frozenset("0123456789abcdef")
+ALIGNS = {"left": "LEFT", "center": "CENTER", "right": "RIGHT"}
+FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
+"""The brand fonts shipped with the host package (Inter 4.1, SIL Open Font License)."""
+BRAND_FONTS: dict[int, tuple[str, str]] = {
+    400: ("Inter-Regular.ttf", "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82"),
+    600: ("Inter-SemiBold.ttf", "78a843fade9d4612a5567302fb595b56976eb5fcebf4fea5a5912d638bafcde3"),
+}
+"""weight -> (file in :data:`FONTS_DIR`, pinned sha256)."""
+
+
+def brand_font(weight: int, fonts_dir: Path = FONTS_DIR) -> Path:
+    """The shipped brand font file for ``weight``, checked against its pinned sha256."""
+    if weight not in BRAND_FONTS:
+        raise ToolError(f"{TOOL}: weight must be one of {sorted(BRAND_FONTS)}")
+    name, want = BRAND_FONTS[weight]
+    path = Path(fonts_dir) / name
+    if not path.is_file():
+        raise ToolError(
+            f"{TOOL}: brand font {name} is missing from {fonts_dir}; reinstall spectracut-host "
+            "(spectracut setup) or pass a pinned font",
+            "font.missing",
+        )
+    got = file_sha256(path)
+    if got != want:
+        raise ToolError(
+            f"{TOOL}: brand font {path} has sha256 {got}, expected {want}",
+            "asset.hash_mismatch",
+        )
+    return path
 
 
 def _font(value: Any) -> Path:
@@ -52,7 +89,20 @@ def _font(value: Any) -> Path:
 def _parse(args: dict[str, Any]) -> dict[str, Any]:
     check_only(
         args,
-        {"body", "name", "size", "extrude", "mode", "plate", "location", "rotation", "font"},
+        {
+            "body",
+            "name",
+            "size",
+            "extrude",
+            "bevel",
+            "mode",
+            "plate",
+            "location",
+            "rotation",
+            "font",
+            "align",
+            "weight",
+        },
         TOOL,
     )
     body = args.get("body")
@@ -63,16 +113,24 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(f"{TOOL}: mode must be one of {list(MODES)}")
     if (mode == "cutout") != ("plate" in args):
         raise ToolError(f"{TOOL}: plate is required for mode 'cutout' and only allowed there")
+    if "font" in args and "weight" in args:
+        raise ToolError(f"{TOOL}: weight picks the host brand font and is not allowed with font")
+    weight = args.get("weight", 400)
+    if isinstance(weight, bool) or weight not in BRAND_FONTS:
+        raise ToolError(f"{TOOL}: weight must be one of {sorted(BRAND_FONTS)}")
     return {
         "body": body,
         "name": as_name(args.get("name", "Text"), "name"),
         "size": as_num(args.get("size", 1.0), "size", 0.001, 1000),
         "extrude": as_num(args.get("extrude", 0.1), "extrude", 0, 100),
+        "bevel": as_num(args.get("bevel", 0.0), "bevel", 0, 10),
+        "align": as_choice(args.get("align", "center"), "align", ALIGNS),
         "mode": mode,
         "plate": as_name(args["plate"], "plate") if "plate" in args else None,
         "location": as_vec3(args.get("location", [0, 0, 0]), "location"),
         "rotation": as_vec3(args.get("rotation", [0, 0, 0]), "rotation"),
         "font": _font(args["font"]) if "font" in args else None,
+        "brand_font": None if "font" in args else brand_font(int(weight)),
     }
 
 
@@ -85,18 +143,22 @@ def text_add(bpy: Any, args: dict[str, Any]) -> Report:
     curve.body = p["body"]
     curve.size = p["size"]
     curve.extrude = p["extrude"]
-    curve.align_x = "CENTER"
+    if p["bevel"]:
+        curve.bevel_depth = p["bevel"]
+    curve.align_x = p["align"]
     curve.align_y = "CENTER"
-    if p["font"] is not None:
-        curve.font = bpy.data.fonts.load(str(p["font"]), check_existing=True)
+    font = p["font"] if p["font"] is not None else p["brand_font"]
+    curve.font = bpy.data.fonts.load(str(font), check_existing=True)
     obj = bpy.data.objects.new(p["name"], curve)
     bpy.context.scene.collection.objects.link(obj)
     obj.location = p["location"]
     obj.rotation_euler = p["rotation"]
     report: dict[str, Any] = {
         "mode": p["mode"],
-        "font": args["font"]["path"] if p["font"] is not None else "builtin",
+        "font": args["font"]["path"] if p["font"] is not None else p["brand_font"].name,
     }
+    if "align" in args:
+        report["align"] = args["align"]
     if plate is not None:
         # A Boolean operand must be a mesh: bake the text into a hidden cutter.
         depsgraph = bpy.context.evaluated_depsgraph_get()

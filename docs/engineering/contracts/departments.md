@@ -97,7 +97,8 @@ front. For each node it:
    task takes an AI slot around `provider.complete(...)`. Both are
    `threading.BoundedSemaphore`s sized by `CapacityLimits(ai ≥ 1, gpu_leases ≥ 0)`.
 5. **Validates the output** with `validate_output`, then checks it against the
-   node's inputs with `check_output`. A failure of either raises
+   node's inputs with `check_output` and against its own params with
+   `check_params`. A failure of either raises
    `DepartmentOutputError`, so the graph records the node `failed` with the
    error and a `failed` ledger entry, and accepts no output. There is no
    automatic retry: revisions are for Critic verdicts.
@@ -139,7 +140,7 @@ packs under `src/spectracut/skills/story/<department>/` (each class sets
 | Department | Node kind | Inputs | Output |
 | --- | --- | --- | --- |
 | `intake` | `intake` | (none; node param `answers`) | `IntakeNotes`: goal, product, offer, deadline, platforms |
-| `product-understanding` | `product` | `intake` | `ProductNotes`: summary, sources (`ClaimSource`), features citing a source |
+| `product-understanding` | `product` | `intake` or `script` | `ProductNotes`: summary, sources (`ClaimSource`), features citing a source, optional `screens` (screen map) |
 | `strategist` | `brief` | `intake`, `product` | `CreativeBrief` (`spec/brief.py`) |
 | `concept-writer` | `concept` | `brief` (node param `angle`) | `Concept`: title, logline, structure, fit |
 | `script-writer` | `script` | `brief`, chosen `concept` | `Script`: lines of beat, VO, on-screen text and claims |
@@ -155,6 +156,31 @@ packs under `src/spectracut/skills/story/<department>/` (each class sets
   other concept still awaiting, and adds (or rewires) the `script` node to read
   the brief and the chosen concept. It raises `ValueError` for a node that is
   not a concept or not awaiting approval.
+
+### Product source and screen map
+
+A `product.yaml` (e.g. `brands/alterlab/product.yaml`) is a `ProductSource`
+(`spec/product.py`): repo, front-end directory, framework (`nextjs`), `run`
+command and/or URL, `seed_command`, and `demo_login` as **environment variable
+names** (`username_env`, `password_env`). The models are closed, so a literal
+password key is rejected; values are resolved at capture time, never by a
+department or the store. `studio new --product product.yaml` records the source
+in `production.json` (`ProductionMeta.product`) and scans the front end
+(`scan_nextjs_routes`: `app/`/`src/app/` `page.*` files with route groups
+stripped and `_private`/`@slot` folders skipped, plus `pages/` without `_app`,
+`_document`, `api/`), unless the YAML gives `routes`. Outside the device-shot
+profile it adds a `product` node (`product_screen_node`) reading the script node,
+with params `routes`, `pages` (one excerpt per route, so the department reads no
+files), `proof_points` (the brief's claims) and `product`. It is not a breakdown
+seed: the strategist declares a `product` input, so seeding it would make a cycle.
+
+Its `screens` map each proof point and each script beat to a scanned `route` and
+ordered `steps` (`visit`, `click`, `type`, `scroll`, `hover`, `wait`); a beat may
+be an abstract `interlude` with no route. `check_output` fails the node when a
+script beat has no mapping; `check_params` (a `Department` hook the runner calls
+right after `check_output`, a no-op by default) fails it when a route is not a
+scanned route (`[x]` segments match one segment, `[...x]` one or more) or a proof
+point has no screen.
 
 ### Copy gate
 

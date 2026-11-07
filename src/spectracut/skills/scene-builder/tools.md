@@ -97,22 +97,30 @@ Rules: Either one light or a preset rig, never both. One light: kind, energy, lo
 
 ## material.apply_preset
 
-Give a mesh a material preset (plastics, metals, glass incl. clear/frosted/smoked, emissive, anodised metal) with a colour or brand colour and optional roughness, ior, transmission, emission, anisotropy and metallic overrides.
+Give a mesh a material preset (plastics, metals, glass incl. clear/frosted/smoked, emissive, anodised metal) with a colour or brand colour and optional roughness, ior, transmission, emission, anisotropy and metallic overrides, plus seeded surface detail (noise/voronoi bump, brushing, scratches, edge wear).
 
-Rules: Pass color or brand_color, not both.
+Rules: Pass color or brand_color, not both. brand_color is linearised (sRGB EOTF) and recorded as a scene-linear color; numeric colors are scene-linear already, never hex/255. An emissive preset with brand_color defaults emission_strength to 1.0 and refuses more than 1.0.
 
 - `object` (required): string
 - `preset` (required): "matte_plastic" | "glossy_plastic" | "brushed_metal" | "polished_metal" | "glass" | "rubber" | "ceramic" | "clear_glass" | "frosted_glass" | "smoked_glass" | "emissive" | "anodised_metal"
 - `color` (optional): list[number (>= 0, <= 1)] (len >= 3, len <= 4)
-- `brand_color` (optional): string (matches ^#[0-9a-fA-F]{6}$). a brand-kit swatch '#rrggbb'; recorded as color
+- `brand_color` (optional): string (matches ^#[0-9a-fA-F]{6}$). a brand-kit swatch '#rrggbb'; linearised and recorded as color
 - `name` (optional): string
 - `roughness` (optional): number (>= 0, <= 1)
 - `ior` (optional): number (>= 1, <= 3)
 - `transmission` (optional): number (>= 0, <= 1)
 - `emission_color` (optional): list[number (>= 0, <= 1)] (len >= 3, len <= 4)
-- `emission_strength` (optional): number (>= 0, <= 1000)
+- `emission_strength` (optional): number (>= 0, <= 1000). emissive strength; with brand_color it defaults to 1 and is at most 1
 - `anisotropy` (optional): number (>= 0, <= 1)
 - `metallic` (optional): number (>= 0, <= 1)
+- `bump_kind` (optional): "noise" | "voronoi". micro-texture pattern for bump_strength (default noise)
+- `bump_strength` (optional): number (>= 0, <= 1). micro-texture bump amount
+- `bump_scale` (optional): number (> 0, <= 1000). micro-texture frequency per object unit (default 150)
+- `brushing` (optional): number (>= 0, <= 1). brushed streaks + anisotropy
+- `brushing_angle` (optional): number (>= 0, < 360). streak direction in degrees
+- `scratches` (optional): number (>= 0, <= 1). fine scratch lines
+- `edge_wear` (optional): number (>= 0, <= 1). bevel edge highlight (Cycles)
+- `seed` (optional): integer (>= 0, <= 2147483647). pattern seed; same seed, same surface
 
 ## object.add_primitive
 
@@ -279,17 +287,20 @@ Remove every object from the scene.
 
 Add 3D text: extruded depth or engraved cutout in a plate.
 
-Rules: plate is required for mode 'cutout' and only allowed there.
+Rules: plate is required for mode 'cutout' and only allowed there; weight is not allowed with font.
 
 - `body` (required): string (len >= 1, len <= 500)
 - `name` (optional): string (len >= 1, len <= 63)
 - `size` (optional): number (>= 0.001, <= 1000)
 - `extrude` (optional): number (>= 0, <= 100)
+- `bevel` (optional): number (>= 0, <= 10). rounds the extruded edges (bevel depth)
+- `align` (optional): "left" | "center" | "right". left: location is the first glyph's left edge; use for key/value columns
+- `weight` (optional): 400 | 600. host brand font Inter weight; ignored with font
 - `mode` (optional): "depth" | "cutout". depth: extruded type; cutout: engraved through plate
 - `plate` (optional): string (len >= 1, len <= 63). mesh the cutout is cut into
 - `location` (optional): list[number][3]
 - `rotation` (optional): list[number][3]
-- `font` (optional): TextFont. sha256-pinned font; default builtin
+- `font` (optional): TextFont. sha256-pinned font in the assets dir; default is the host-shipped Inter
 
 `TextFont`:
 
@@ -300,8 +311,12 @@ Rules: plate is required for mode 'cutout' and only allowed there.
 
 Set a vertical colour gradient world background (bottom to top) with a strength.
 
-- `bottom` (required): list[number (>= 0, <= 1)] (len >= 3, len <= 4)
-- `top` (required): list[number (>= 0, <= 1)] (len >= 3, len <= 4)
+Rules: Pass bottom or brand_bottom, and top or brand_top. Numeric colours are scene-linear; brand swatches are linearised (sRGB EOTF).
+
+- `bottom` (optional): list[number (>= 0, <= 1)] (len >= 3, len <= 4)
+- `top` (optional): list[number (>= 0, <= 1)] (len >= 3, len <= 4)
+- `brand_bottom` (optional): string (matches ^#[0-9a-fA-F]{6}$). a brand-kit swatch '#rrggbb'; linearised and recorded as bottom
+- `brand_top` (optional): string (matches ^#[0-9a-fA-F]{6}$). a brand-kit swatch '#rrggbb'; linearised and recorded as top
 - `strength` (optional): number (>= 0, <= 1000)
 
 ## world.set_haze

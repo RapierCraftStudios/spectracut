@@ -66,6 +66,15 @@ def test_each_tool_records_one_runtime_step_of_its_name(
     assert set(recorded_args) == set(args)
 
 
+def test_text_add_takes_align_weight_and_bevel(session: Session) -> None:
+    # #332: left-aligned key/value copy in the semibold host brand font, verbatim body.
+    body = 'POST /api/v1/scrape {"max_tier": 3}'
+    call(session, "text.add", {"body": body, "align": "left", "weight": 600, "bevel": 0.01})
+    assert steps_of(session) == [
+        ("text.add", {"body": body, "align": "left", "weight": 600, "bevel": 0.01})
+    ]
+
+
 def test_unset_fields_are_left_out(session: Session) -> None:
     call(session, "text.add", {"body": "Hi"})
     call(session, "object.add_slab", {"dimensions": [1, 1, 1]})
@@ -91,6 +100,13 @@ def test_unset_fields_are_left_out(session: Session) -> None:
         ("text.add", {"body": "Hi", "plate": "Box"}),
         ("text.add", {"body": "Hi", "font": {"path": "fonts/a.ttf", "sha256": "XYZ"}}),
         ("text.add", {"body": "a\x00b"}),
+        ("text.add", {"body": "Hi", "align": "justify"}),
+        ("text.add", {"body": "Hi", "weight": 700}),
+        ("text.add", {"body": "Hi", "bevel": 11}),
+        (
+            "text.add",
+            {"body": "Hi", "weight": 600, "font": {"path": "fonts/a.ttf", "sha256": "0" * 64}},
+        ),
     ],
 )
 def test_bad_args_are_refused_without_recording(

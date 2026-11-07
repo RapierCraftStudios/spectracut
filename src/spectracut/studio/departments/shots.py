@@ -49,7 +49,7 @@ from pydantic import (
 from spectracut.critique.scene_verifier import PACK as SCENE_PACK
 from spectracut.critique.scene_verifier import is_blank, scene_verifier_prompt
 from spectracut.edit.timeline import Edit
-from spectracut.finishing.color import ColorPipeline
+from spectracut.finishing.color import BRAND_PIPELINE, ColorPipeline
 from spectracut.queue.queue import JobQueue
 from spectracut.spec._base import Slug, StrictModel
 from spectracut.spec.brand import BrandKit
@@ -368,15 +368,25 @@ def _render_tier(tier: Tier) -> Tier:
     return Tier.PREVIEW if tier in (Tier.PREVIEW, Tier.REVIEW) else Tier.FINAL
 
 
-def tier_recipe(base: Recipe, tier: Tier, aspect: TemplateAspect = "16:9") -> Recipe:
-    """``base`` plus ``device_shot`` tier steps at ``tier`` (at ``aspect``), to PNG."""
+def tier_recipe(
+    base: Recipe,
+    tier: Tier,
+    aspect: TemplateAspect = "16:9",
+    pipeline: ColorPipeline = BRAND_PIPELINE,
+) -> Recipe:
+    """``base`` plus ``device_shot`` tier steps at ``tier`` (at ``aspect``), to PNG.
+
+    The colour ``pipeline`` steps come last but one, so they override any view
+    transform or exposure the scene set; the default :data:`BRAND_PIPELINE`
+    (Standard / sRGB / exposure 0) keeps linearised brand swatches on their hex.
+    """
     width, height = RESOLUTIONS[aspect]
     out: list[RecipeStep] = list(base.steps)
     for step in ds.tier_steps(_render_tier(tier), start=len(out)):
         if step.tool == "render.set_resolution":
             step = step.model_copy(update={"args": {**step.args, "width": width, "height": height}})
         out.append(step)
-    out += ColorPipeline().render_steps(start=len(out))
+    out += pipeline.render_steps(start=len(out))
     out.append(RecipeStep(index=len(out), tool="render.set_output", args={"format": "PNG"}))
     return base.model_copy(update={"steps": out})
 

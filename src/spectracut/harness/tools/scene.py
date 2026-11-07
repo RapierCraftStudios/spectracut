@@ -150,19 +150,33 @@ class TextFont(ToolArgs):
 
 
 class TextAdd(ToolArgs):
-    """plate is required for mode 'cutout' and only allowed there."""
+    """plate is required for mode 'cutout' and only allowed there; weight is not allowed
+    with font."""
 
     body: Annotated[str, Field(min_length=1, max_length=500)]
     name: Name | None = None
     size: Annotated[float, Field(ge=0.001, le=1000)] | None = None
     extrude: Annotated[float, Field(ge=0, le=100)] | None = None
+    bevel: Annotated[float, Field(ge=0, le=10)] | None = Field(
+        default=None, description="rounds the extruded edges (bevel depth)"
+    )
+    align: Literal["left", "center", "right"] | None = Field(
+        default=None,
+        description="left: location is the first glyph's left edge; use for key/value columns",
+    )
+    weight: Literal[400, 600] | None = Field(
+        default=None, description="host brand font Inter weight; ignored with font"
+    )
     mode: Literal["depth", "cutout"] | None = Field(
         default=None, description="depth: extruded type; cutout: engraved through plate"
     )
     plate: Name | None = Field(default=None, description="mesh the cutout is cut into")
     location: Vec3 | None = None
     rotation: Vec3 | None = None
-    font: TextFont | None = Field(default=None, description="sha256-pinned font; default builtin")
+    font: TextFont | None = Field(
+        default=None,
+        description="sha256-pinned font in the assets dir; default is the host-shipped Inter",
+    )
 
     @field_validator("body")
     @classmethod
@@ -175,6 +189,12 @@ class TextAdd(ToolArgs):
     def _plate_iff_cutout(self) -> TextAdd:
         if (self.mode == "cutout") != (self.plate is not None):
             raise ValueError("plate is required for mode 'cutout' and only allowed there")
+        return self
+
+    @model_validator(mode="after")
+    def _weight_without_font(self) -> TextAdd:
+        if self.weight is not None and self.font is not None:
+            raise ValueError("weight picks the host brand font and is not allowed with font")
         return self
 
 

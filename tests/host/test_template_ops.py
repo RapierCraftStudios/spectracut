@@ -106,6 +106,11 @@ def _dump():
             "calls": [str(c) for c in _bpy.mock_calls],
             "events": _events,
             "objects": sorted(o.name for o in _objects),
+            "texts": {
+                o.name: {k: getattr(o.data, k) for k in ("body", "align_x", "align_y")}
+                for o in _objects
+                if isinstance(getattr(o.data, "body", None), str)
+            },
         }
         with open(record, "w") as fh:
             json.dump(state, fh, default=str)
@@ -560,20 +565,98 @@ def test_text_depth_with_pinned_font(blender: Path, tmp_path: Path) -> None:
     assert any("curves.new('Title', type='FONT')" in c for c in run.calls)
 
 
-def test_text_cutout_builtin_font_cuts_the_plate(blender: Path, tmp_path: Path) -> None:
+def test_text_cutout_brand_font_cuts_the_plate(blender: Path, tmp_path: Path) -> None:
     step = {"body": "GO", "name": "Cut", "mode": "cutout", "plate": "Box", "extrude": 0.5}
     run = run_steps(blender, tmp_path, [CUBE, ("text.add", step)])
     assert run.proc.returncode == 0, run.proc.stderr
     assert run.report("text.add") == {
         "mode": "cutout",
-        "font": "builtin",
+        "font": "Inter-Regular.ttf",
         "plate": "Box",
         "modifier": "cutout.Cut",
         "object": "Cut",
     }
-    assert not any("fonts.load" in c for c in run.calls)
     assert ["modifier", "Box", "cutout.Cut", "BOOLEAN"] in run.state["events"]
     assert any("new_from_object" in c for c in run.calls)
+
+
+# #332: text.add loads the host-shipped brand font, sets the body verbatim and aligns.
+API_BODY = 'POST /api/v1/scrape {"max_tier": 3}'
+BRAND_FONT = (RUNTIME / "fonts" / "Inter-Regular.ttf").resolve()
+
+
+def test_text_left_align_sets_the_body_verbatim(blender: Path, tmp_path: Path) -> None:
+    step = {"body": API_BODY, "name": "Req", "align": "left", "bevel": 0.01}
+    run = run_steps(blender, tmp_path, [("text.add", step)])
+    assert run.proc.returncode == 0, run.proc.stderr
+    assert run.state["texts"]["Req"] == {"body": API_BODY, "align_x": "LEFT", "align_y": "CENTER"}
+    assert run.report("text.add") == {
+        "mode": "depth",
+        "font": "Inter-Regular.ttf",
+        "align": "left",
+        "object": "Req",
+    }
+
+
+def test_text_without_align_stays_centred(blender: Path, tmp_path: Path) -> None:
+    run = run_steps(blender, tmp_path, [("text.add", {"body": "ONE BEAM", "name": "T"})])
+    assert run.proc.returncode == 0, run.proc.stderr
+    assert run.state["texts"]["T"]["align_x"] == "CENTER"
+
+
+@pytest.mark.parametrize(
+    ("weight", "file"), [(None, "Inter-Regular.ttf"), (600, "Inter-SemiBold.ttf")]
+)
+def test_text_without_font_loads_the_shipped_brand_font(
+    blender: Path, tmp_path: Path, weight: int | None, file: str
+) -> None:
+    step: dict[str, Any] = {"body": "Hi", "name": "T"}
+    if weight is not None:
+        step["weight"] = weight
+    run = run_steps(blender, tmp_path, [("text.add", step)])
+    assert run.proc.returncode == 0, run.proc.stderr
+    font = str((RUNTIME / "fonts" / file).resolve())
+    assert any(f"fonts.load({font!r}, check_existing=True)" in c for c in run.calls)
+    assert run.report("text.add")["font"] == file
+
+
+def test_brand_font_missing_or_altered_fails_with_a_clear_code(tmp_path: Path) -> None:
+    (tmp_path / "altered").mkdir()
+    (tmp_path / "altered" / "Inter-Regular.ttf").write_bytes(b"not inter")
+    code = (
+        "from bpy_runtime.ops import ToolError\n"
+        "from bpy_runtime.ops.text import brand_font\n"
+        "out = {}\n"
+        "for d in sys.argv[2:]:\n"
+        "    try:\n"
+        "        brand_font(400, d)\n"
+        "    except ToolError as exc:\n"
+        "        out[d] = [exc.code, str(exc)]\n"
+        "print(json.dumps(out))\n"
+    )
+    empty, altered = str(tmp_path / "empty"), str(tmp_path / "altered")
+    got = pure(code, empty, altered)
+    assert got[empty][0] == "font.missing" and "Inter-Regular.ttf" in got[empty][1]
+    assert got[altered][0] == "asset.hash_mismatch"
+
+
+def test_shipped_brand_fonts_match_their_pins() -> None:
+    assert pure(
+        "from bpy_runtime.ops.text import brand_font\nprint(json.dumps(str(brand_font(400))))"
+    ) == str(BRAND_FONT)
+
+
+def test_brand_font_weight_is_refused_with_a_pinned_font() -> None:
+    args = {"body": "Hi", "font": {"path": "fonts/Brand.ttf", "sha256": "0" * 64}, "weight": 600}
+    code = (
+        "from bpy_runtime.ops import ToolError\n"
+        "from bpy_runtime.ops.text import _parse\n"
+        "try:\n"
+        "    _parse(json.loads(sys.argv[2]))\n"
+        "except ToolError as exc:\n"
+        "    print(json.dumps(str(exc)))\n"
+    )
+    assert "not allowed with font" in pure(code, json.dumps(args))
 
 
 def test_text_cutout_needs_an_existing_plate(blender: Path, tmp_path: Path) -> None:
