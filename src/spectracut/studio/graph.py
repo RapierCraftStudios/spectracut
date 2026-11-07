@@ -110,6 +110,9 @@ Escalate = Callable[[NodeSpec, Tier], Tier | None]
 Hold = Callable[[NodeSpec], str | None]
 """``hold(spec) -> reason``: a reason keeps a ready node from building this run."""
 
+Settled = Callable[[str], None]
+"""``settled(node_id)``: called once a node is reused or its build settles this run."""
+
 
 @dataclass
 class RunReport:
@@ -490,6 +493,7 @@ class ProductionGraph:
         hold: Hold | None = None,
         escalate: Escalate | None = None,
         conformance: Conformance | None = None,
+        settled: Settled | None = None,
     ) -> RunReport:
         """Build every pending or dirty node whose inputs are clean, in dependency order.
 
@@ -503,13 +507,16 @@ class ProductionGraph:
         Critic rejected after its revision budget; it is rebuilt there once.
         With a film contract frozen, ``conformance`` reviews each ``edit`` and
         ``delivery`` output row by row; anything but a passed review rejects it.
+        ``settled`` is called with a node's id once it is reused or its build settles
+        (clean, awaiting approval, rejected or failed), under the graph's lock, so
+        the caller may snapshot the graph after every node.
         """
         if max_workers < 1:
             raise ValueError(f"max_workers must be at least 1, got {max_workers}")
         self._escalate = escalate
         self._conformance = conformance
         if max_workers > 1:
-            return self._run_parallel(runner, critic, max_workers, hold)
+            return self._run_parallel(runner, critic, max_workers, hold, settled)
         report = RunReport()
         for nid, spec in self._specs.items():
             if self._states[nid].status not in NEEDS_BUILD:
@@ -526,6 +533,9 @@ class ProductionGraph:
                     status=NodeStatus.CLEAN, tier=tier, key=key, output_hash=hit.output_hash
                 )
                 report.reused.append(nid)
+                if settled is not None:
+                    with self._lock:
+                        settled(nid)
                 continue
             reason = hold(spec) if hold is not None else None
             if reason is not None:
@@ -534,6 +544,9 @@ class ProductionGraph:
                 continue
             report.executed.append(nid)
             status = self._build(spec, tier, key, runner, critic)
+            if settled is not None:
+                with self._lock:
+                    settled(nid)
             if status is NodeStatus.AWAITING_APPROVAL:
                 report.awaiting_approval.append(nid)
             elif status is NodeStatus.REJECTED:
@@ -543,7 +556,12 @@ class ProductionGraph:
         return report
 
     def _run_parallel(
-        self, runner: Runner, critic: Critic | None, workers: int, hold: Hold | None = None
+        self,
+        runner: Runner,
+        critic: Critic | None,
+        workers: int,
+        hold: Hold | None = None,
+        settled: Settled | None = None,
     ) -> RunReport:
         report = RunReport()
         waiting = [nid for nid in self._specs if self._states[nid].status in NEEDS_BUILD]
@@ -551,13 +569,16 @@ class ProductionGraph:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             while True:
                 with self._lock:
-                    self._dispatch(waiting, running, report, pool, runner, critic, hold)
+                    self._dispatch(waiting, running, report, pool, runner, critic, hold, settled)
                 if not running:
                     break
                 done, _ = wait(running, return_when=FIRST_COMPLETED)
                 for future in done:
                     nid = running.pop(future)
                     status = future.result()
+                    if settled is not None:
+                        with self._lock:
+                            settled(nid)
                     if status is NodeStatus.AWAITING_APPROVAL:
                         report.awaiting_approval.append(nid)
                     elif status is NodeStatus.REJECTED:
@@ -586,6 +607,7 @@ class ProductionGraph:
         runner: Runner,
         critic: Critic | None,
         hold: Hold | None = None,
+        settled: Settled | None = None,
     ) -> None:
         """Start, reuse, hold or block every waiting node whose inputs are settled."""
         in_flight = set(running.values())
@@ -610,6 +632,8 @@ class ProductionGraph:
                         status=NodeStatus.CLEAN, tier=tier, key=key, output_hash=hit.output_hash
                     )
                     report.reused.append(nid)
+                    if settled is not None:
+                        settled(nid)
                     continue
                 reason = hold(spec) if hold is not None else None
                 if reason is not None:

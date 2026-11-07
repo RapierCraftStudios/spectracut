@@ -13,6 +13,7 @@ Only ``passed`` lets edit and delivery through.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Annotated, Literal
 
@@ -22,6 +23,7 @@ from spectracut.spec._base import StrictModel
 from spectracut.studio.contract import FilmContract, RowId
 
 if TYPE_CHECKING:
+    from spectracut.providers.base import TextProvider
     from spectracut.studio.node import NodeSpec
 
 ConformanceVerdict = Literal["passed", "failed", "incomplete"]
@@ -94,3 +96,29 @@ def blockers(contract: FilmContract, review: ConformanceReview) -> list[str]:
     reasons = problems(contract, review)
     reasons.extend(f"row {j.row_id} unmet" for j in review.rows if j.status == "unmet")
     return reasons
+
+
+# ---- a reviewer over a text provider ---------------------------------------
+
+_SYSTEM = (
+    "You check a film's edit or delivery against its frozen contract. For every contract "
+    "row, say whether the output meets it, with evidence: a frame id, or a timecode with the "
+    "quoted voice-over or on-screen text. Judge each row once; do not invent rows."
+)
+
+
+def provider_conformance(provider: TextProvider) -> Conformance:
+    """One structured call per review; the verdict is still computed by code from its rows."""
+    schema = ConformanceReview.model_json_schema()
+
+    def review(spec: NodeSpec, output: JsonValue, contract: FilmContract) -> ConformanceReview:
+        rows = [r.model_dump(mode="json") for r in contract.rows]
+        prompt = (
+            f"Node {spec.id} (kind {spec.kind}), contract v{contract.version}.\n"
+            f"Contract rows JSON:\n{json.dumps(rows, sort_keys=True)}\n"
+            f"Output JSON:\n{json.dumps(output, sort_keys=True, default=str)[:20000]}"
+        )
+        done = provider.complete(_SYSTEM, prompt, schema=schema)
+        return ConformanceReview.model_validate(done.output)
+
+    return review

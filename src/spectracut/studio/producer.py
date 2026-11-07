@@ -56,7 +56,14 @@ from spectracut.studio.estimate import (
     estimate,
 )
 from spectracut.studio.gates import Critic, GateMode
-from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
+from spectracut.studio.graph import (
+    ProductionGraph,
+    RunContext,
+    Runner,
+    RunReport,
+    RunResult,
+    Settled,
+)
 from spectracut.studio.node import NodeSpec, Tier
 from spectracut.studio.profiles import QualityProfile
 from spectracut.studio.runner import CapacityLimits
@@ -349,6 +356,7 @@ class Producer:
         supervisor: Supervisor | None = None,
         autonomy: AutonomyPolicy | None = None,
         conformance: Conformance | None = None,
+        settled: Settled | None = None,
     ) -> ProducerReport:
         """Run ``graph``, holding any node that could push usage past a cap.
 
@@ -360,6 +368,7 @@ class Producer:
         cap builds without approval when its projected spend is within the
         policy's ceiling for every exceeded metric (``report.auto_approved``).
         ``conformance`` reviews edit and delivery against the film contract.
+        ``settled`` is passed to :meth:`ProductionGraph.run` (called per settled node).
         """
         if autonomy is not None:
             graph.autonomy = autonomy
@@ -421,7 +430,12 @@ class Producer:
 
         if supervisor is None:
             report = graph.run(
-                runner, critic=critic, max_workers=max_workers, hold=hold, conformance=conformance
+                runner,
+                critic=critic,
+                max_workers=max_workers,
+                hold=hold,
+                conformance=conformance,
+                settled=settled,
             )
         else:
             mark = {n: len(d) for n, d in supervisor.decisions.items()}
@@ -432,6 +446,7 @@ class Producer:
                 hold=hold,
                 escalate=supervisor.escalate,
                 conformance=conformance,
+                settled=settled,
             )
             for nid, log in supervisor.decisions.items():
                 if nid in graph.order() and len(log) > mark.get(nid, 0):

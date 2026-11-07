@@ -11,13 +11,14 @@ An unconfirmed HIGH is demoted to MEDIUM, so it earns a polish pass, not a stop.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from pydantic import JsonValue
 
-from spectracut.providers.base import judge_usage
+from spectracut.providers.base import TextProvider, judge_usage
 from spectracut.studio.gates import CriticVerdict, Finding, Severity
 from spectracut.studio.node import NodeSpec
 
@@ -144,3 +145,97 @@ class ReviewerPanel:
 def _add(total: dict[str, int], more: dict[str, int]) -> None:
     for k, v in more.items():
         total[k] = total.get(k, 0) + v
+
+
+# ---- a panel over a text provider ------------------------------------------
+
+FINDINGS_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["findings"],
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["severity", "text", "confidence"],
+                "properties": {
+                    "severity": {"type": "string", "enum": [s.value for s in Severity]},
+                    "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                },
+            },
+        }
+    },
+}
+"""What one reviewer call returns: its findings, each with a severity and a confidence."""
+
+CONFIRM_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["upheld"],
+    "properties": {"upheld": {"type": "boolean"}, "why": {"type": "string"}},
+}
+"""What the independent confirm call returns."""
+
+_REVIEW_SYSTEM = (
+    "You are the {name} reviewer of a film production. Judge only against your rubric: "
+    "{rubric} Report each problem once with severity high (the output must not ship), "
+    "medium (worth one polish pass) or low (a note), and how sure you are (0-1). "
+    "Report no findings when there is nothing to fix."
+)
+_CONFIRM_SYSTEM = (
+    "You independently check a HIGH finding another reviewer raised on a film production "
+    "node. Uphold it only when the output really has the problem and it must not ship."
+)
+
+
+def _prompt(spec: NodeSpec, output: JsonValue, extra: str = "") -> str:
+    body = json.dumps(output, sort_keys=True, default=str)[:20000]
+    return f"Node {spec.id} (kind {spec.kind}).{extra}\nOutput JSON:\n{body}"
+
+
+def provider_review_call(provider: TextProvider) -> Callable[[str], ReviewCall]:
+    """``call_for(name)``: one structured ``complete`` call per reviewer, returning findings."""
+
+    def call_for(name: str) -> ReviewCall:
+        def call(spec: NodeSpec, rubric: str, output: JsonValue) -> list[Finding]:
+            done = provider.complete(
+                _REVIEW_SYSTEM.format(name=name, rubric=rubric),
+                _prompt(spec, output),
+                schema=FINDINGS_SCHEMA,
+            )
+            rows = done.output.get("findings") if isinstance(done.output, dict) else None
+            if not isinstance(rows, list):
+                raise ValueError(f"reviewer {name}: {provider.name} returned no findings list")
+            return [
+                Finding.model_validate({**row, "reviewer": name})
+                for row in rows
+                if isinstance(row, dict)
+            ]
+
+        return call
+
+    return call_for
+
+
+def provider_confirm(provider: TextProvider) -> Confirm:
+    """An independent confirm call for a HIGH finding; anything but ``upheld: true`` demotes it."""
+
+    def confirm(spec: NodeSpec, finding: Finding, output: JsonValue) -> bool:
+        done = provider.complete(
+            _CONFIRM_SYSTEM,
+            _prompt(spec, output, f"\nFinding ({finding.reviewer}): {finding.text}"),
+            schema=CONFIRM_SCHEMA,
+        )
+        return isinstance(done.output, dict) and done.output.get("upheld") is True
+
+    return confirm
+
+
+def text_panel(provider: TextProvider) -> ReviewerPanel:
+    """The five built-in reviewers and the confirm check, each a call to ``provider``."""
+    return ReviewerPanel(
+        default_reviewers(provider_review_call(provider)), provider_confirm(provider)
+    )
