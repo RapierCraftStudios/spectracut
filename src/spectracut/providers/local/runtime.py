@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -71,8 +71,11 @@ class ModelRuntime:
         *,
         host: str = "local",
         clock: Callable[[], float] = time.monotonic,
+        installed: Collection[str] | None = None,
     ) -> None:
         self._loader = loader
+        self.installed: frozenset[str] | None = None if installed is None else frozenset(installed)
+        """Model ids setup recorded as installed on ``host``; ``None`` when unknown."""
         self._pool = pool
         self._host = host
         self._clock = clock

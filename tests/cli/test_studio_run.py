@@ -415,6 +415,60 @@ def test_standard_style_frames_render_on_the_farm_through_default_runner(
     assert [p.name for p in previews] == ["animatic.mp4"]
 
 
+def test_studio_run_without_the_image_model_skips_concepts_and_notes_the_nodes(
+    home: Path, brief_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spectracut.providers.local.runtime import ModelRuntime, ModelSpec
+    from spectracut.queue.executors.base import GpuCard, LeasePool
+
+    def no_load(spec: ModelSpec) -> Any:
+        raise AssertionError(f"{spec.id} is not installed and must not be loaded")
+
+    runtime = ModelRuntime(
+        no_load,
+        LeasePool(8, 28, [GpuCard(name="RTX", vram_gb=8)]),
+        host="legion",
+        installed=frozenset({"ezaudio-xl", "kokoro-82m"}),
+    )
+    monkeypatch.setattr(studio_mod, "model_runtime_factory", lambda h: (runtime, None))
+    monkeypatch.setattr(art_depts, "mock_mode", lambda: False)  # the image model is real here
+    monkeypatch.setattr(studio_mod, "text_provider_factory", _scene_text)
+    created = runner.invoke(app, ["studio", "new", str(brief_file), "--id", "film"])
+    assert created.exit_code == 0, created.output
+    fake = FakeFlamenco()
+    monkeypatch.setattr(studio_mod, "device_shot_factory", _fake_farm(tmp_path, fake, []))
+    monkeypatch.setattr(studio_mod, "DepartmentRunner", _FakeDepartments)
+    monkeypatch.setattr(_FakeDepartments, "kinds", [])
+    _fake_animatic_av(monkeypatch)
+    auto = {k: GateMode.AUTO for k in art_depts.PREPRODUCTION_GATES}
+    graph = ProductionGraph(
+        "film", profile=load_profile("standard"), gates=GatePolicy(defaults=auto)
+    )
+    graph.add_nodes(
+        [
+            NodeSpec(id="brief", kind="brief", department="strategist"),
+            NodeSpec(id="script", kind="script", department="script-writer", inputs=("brief",)),
+            *art_depts.preproduction_nodes(),
+        ]
+    )
+    run = studio_mod.default_runner(studio_mod.Production("film", ProductionStore(home)), graph)
+    report = graph.run(run)
+    assert report.failed == [], {n: graph.state(n).error for n in report.failed}
+
+    frames = StyleFrames.model_validate(graph.output(art_depts.STYLE_FRAMES))
+    assert all(f.concept is None for f in frames.frames)
+    assert all(f.render is not None and f.render.provider == "blender-farm" for f in frames.frames)
+    edit = Edit.model_validate(graph.output(art_depts.ANIMATIC))
+    board = next(t for t in edit.tracks if t.id == "picture").clips()[0]
+    assert Path(board.media_ref).is_file()
+    for node in (art_depts.STYLE_FRAMES, art_depts.ANIMATIC):
+        notes = graph.notes(node)
+        assert len(notes) == 1 and notes[0].author == "studio"
+        assert "concept images skipped" in notes[0].text and "z-image-turbo-q4" in notes[0].text
+        assert "image_exploration_requests" not in graph.ledger.totals(node).ai_usage
+    assert runtime.loads == {}
+
+
 def test_default_runner_routes_finishing_nodes_to_the_finishing_runner(
     home: Path, brief_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -612,6 +666,23 @@ def test_on_the_model_host_models_load_in_process(
     monkeypatch.setattr(studio_mod.socket, "gethostname", lambda: "legion")
     runtime, problem = studio_mod.model_runtime(control_plane)
     assert problem is None and runtime is not None and runtime._loader is load_model
+
+
+def test_model_runtime_carries_the_models_setup_installed_on_the_host(
+    control_plane: Path,
+) -> None:
+    from spectracut.setup.model_assets import ESSENTIAL_MODELS, model_version
+    from spectracut.setup.plan import MODEL_PREFIX, HostState, SetupState, save_state
+
+    _register(control_plane, ("legion", True))
+    runtime, _ = studio_mod.model_runtime(control_plane)
+    assert runtime is not None and runtime.installed is None
+    components = {f"{MODEL_PREFIX}{m}": model_version(m) for m in ESSENTIAL_MODELS}
+    save_state(SetupState(hosts={"legion": HostState(components=components)}), control_plane)
+    runtime, _ = studio_mod.model_runtime(control_plane)
+    assert runtime is not None and runtime.installed == frozenset(ESSENTIAL_MODELS)
+    reason = art_depts.concept_skip_reason(runtime=runtime)
+    assert reason is not None and "z-image-turbo-q4" in reason and "'legion'" in reason
 
 
 def _sound_edit() -> dict[str, JsonValue]:

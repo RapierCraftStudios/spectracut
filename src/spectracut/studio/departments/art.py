@@ -33,6 +33,7 @@
 
 from __future__ import annotations
 
+import logging
 import wave
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -43,7 +44,8 @@ from pydantic import BaseModel, JsonValue
 from spectracut.audio.vo import VoiceoverTrack
 from spectracut.edit.preview import AnimaticPreview
 from spectracut.edit.timeline import Edit
-from spectracut.providers.local.registry import get_provider, mock_mode
+from spectracut.providers.base import ProviderError
+from spectracut.providers.local.registry import get_provider, mock_mode, resolve_model
 from spectracut.providers.local.runtime import ModelRuntime
 from spectracut.providers.local.tts import LocalTts
 from spectracut.spec.brand import BrandKit
@@ -54,7 +56,12 @@ from spectracut.storyboard.animatic import (
     check_locked_timing,
     resolve_beats,
 )
-from spectracut.storyboard.explore import ExploreProvider, choose_exploration_provider, explore
+from spectracut.storyboard.explore import (
+    CONFIG_KEY,
+    ExploreProvider,
+    choose_exploration_provider,
+    explore,
+)
 from spectracut.storyboard.models import (
     ArtDirection,
     ImageRecord,
@@ -75,6 +82,8 @@ from spectracut.studio.gates import GateMode
 from spectracut.studio.graph import RunContext, Runner, RunResult
 from spectracut.studio.ledger import Usage
 from spectracut.studio.node import NodeSpec, Tier
+
+log = logging.getLogger(__name__)
 
 ART_DIRECTION = "art_direction"
 STYLE_FRAMES = "style_frames"
@@ -322,13 +331,45 @@ def default_explorer(
 
     The local model needs a ``runtime`` (the control plane on a render host); with
     none there is no explorer and style frames render from the art direction alone.
-    ``config`` may opt in to ChatGPT images (``choose_exploration_provider``).
+    ``config`` may opt in to ChatGPT images (``choose_exploration_provider``). When
+    the local image model is not installed on the model host
+    (:func:`concept_skip_reason`) there is no explorer either.
     """
     if mock_mode():
         return get_provider("image")
     if runtime is None:
         return None
+    reason = concept_skip_reason(config, runtime=runtime)
+    if reason is not None:
+        log.warning("%s", reason)
+        return None
     return choose_exploration_provider(config, local=get_provider("image", runtime))
+
+
+def concept_skip_reason(
+    config: Mapping[str, Any] | None = None, *, runtime: ModelRuntime | None = None
+) -> str | None:
+    """Why concept images are skipped: the local image model is not installed, else ``None``.
+
+    Only a runtime whose ``installed`` set is known (setup state recorded its host)
+    can say so; mock mode, no runtime, an unknown set or ChatGPT images give ``None``.
+    """
+    if mock_mode() or runtime is None:
+        return None
+    installed = getattr(runtime, "installed", None)
+    if installed is None:
+        return None
+    choice = str((config or {}).get(CONFIG_KEY, "local")).strip().lower() or "local"
+    if choice != "local":
+        return None
+    spec = resolve_model("image")
+    if spec.id in installed:
+        return None
+    host = getattr(runtime, "_host", "local")
+    return (
+        f"concept images skipped: image model {spec.id!r} is not installed on model "
+        f"host {host!r} (`spectracut setup --models all` installs it)"
+    )
 
 
 def _wav_seconds(path: Path) -> float:
@@ -413,7 +454,10 @@ class PreproductionRunner:
     the preview tier) and referenced by path, and ``preview`` writes
     ``workdir/animatic/<node>.mp4``. A voiced script with no VO source, or a voiced
     beat with no board, is an error, never a silent gap. With no ``explorer`` frames
-    and boards render without a concept. Other kinds pass through to ``inner``.
+    and boards render without a concept, and ``concept_note`` (why concept images are
+    skipped) is reported once per build through ``note(node_id, text)``. An explorer
+    failure never fails the node: it is logged and noted, and the rest of that build
+    renders without concepts. Other kinds pass through to ``inner``.
     """
 
     def __init__(
@@ -429,8 +473,12 @@ class PreproductionRunner:
         preview: AnimaticPreview,
         music: TempAudio | None = None,
         media_root: Path | None = None,
+        concept_note: str | None = None,
+        note: Callable[[str, str], None] | None = None,
     ) -> None:
         self.inner = inner
+        self.concept_note = concept_note
+        self.note = note
         self.media_root = None if media_root is None else Path(media_root)
         self.departments = departments
         self.explorer = explorer
@@ -450,6 +498,31 @@ class PreproductionRunner:
             return build_brand_kit(ctx)
         return self.inner(ctx)
 
+    def _note(self, node_id: str, text: str) -> None:
+        if self.note is not None:
+            self.note(node_id, text)
+
+    def _skip_concepts(self, node_id: str) -> list[bool]:
+        """Start one build's concepts: note a skip; the flag turns on once the explorer fails."""
+        if self.explorer is None and self.concept_note:
+            self._note(node_id, self.concept_note)
+        return [self.explorer is None]
+
+    def _concept(
+        self, node_id: str, prompt: str, path: Path, skipped: list[bool]
+    ) -> ImageRecord | None:
+        """A concept image, or ``None``: skipped, or the explorer failed (logged and noted)."""
+        if skipped[0] or self.explorer is None:
+            return None
+        try:
+            return explore(self.explorer, prompt, path)
+        except (ProviderError, OSError) as exc:
+            skipped[0] = True
+            text = f"concept images skipped: the image explorer failed: {exc}"
+            log.warning("%s: %s", node_id, text)
+            self._note(node_id, text)
+            return None
+
     def _style_frames(self, ctx: RunContext) -> RunResult:
         if ctx.tier not in (Tier.FINAL, Tier.HERO):
             raise ValueError(f"style frames render at the final tier, got {ctx.tier.value!r}")
@@ -460,11 +533,11 @@ class PreproductionRunner:
         gpu = 0.0
         render_ai: dict[str, int] = {}
         explored = 0
+        skipped = self._skip_concepts(ctx.spec.id)
         for frame in frames.frames:
-            concept = None
-            if self.explorer is not None:
-                path = self.workdir / f"{frame.id}-concept.png"
-                concept = explore(self.explorer, frame.prompt, path)
+            path = self.workdir / f"{frame.id}-concept.png"
+            concept = self._concept(ctx.spec.id, frame.prompt, path, skipped)
+            if concept is not None:
                 explored += 1
             rendered = self.renderer(
                 frame.model_copy(update={"concept": concept}), art, self.workdir / f"{frame.id}.png"
@@ -529,17 +602,20 @@ class PreproductionRunner:
             if line.vo
         }
 
-    def _boards(self, storyboard: Storyboard, art: ArtDirection) -> tuple[Storyboard, float, int]:
+    def _boards(
+        self, node_id: str, storyboard: Storyboard, art: ArtDirection
+    ) -> tuple[Storyboard, float, int]:
         """Each board rendered to ``workdir/boards/<shot>.png``; GPU minutes, explorations."""
         out = self.workdir / "boards"
         done = []
         gpu = 0.0
         explored = 0
+        skipped = self._skip_concepts(node_id)
         for board in storyboard.boards:
             prompt = " ".join(p for p in (board.action, board.screen_content, board.text) if p)
-            concept = None
-            if self.explorer is not None:
-                concept = explore(self.explorer, prompt, out / f"{board.shot_id}-concept.png")
+            concept_path = out / f"{board.shot_id}-concept.png"
+            concept = self._concept(node_id, prompt, concept_path, skipped)
+            if concept is not None:
                 explored += 1
             frame = StyleFrame(
                 id=board.shot_id, description=board.action, prompt=prompt, concept=concept
@@ -568,7 +644,7 @@ class PreproductionRunner:
         missing = _unboarded(script, storyboard)
         if missing:
             raise ValueError(f"animatic: script beats with VO have no board: {missing}")
-        storyboard, gpu, explored = self._boards(storyboard, art)
+        storyboard, gpu, explored = self._boards(ctx.spec.id, storyboard, art)
         edit = build_animatic(ctx.spec.id, storyboard, vo, self.music)
         problems = check_locked_timing(edit, storyboard)
         if problems:

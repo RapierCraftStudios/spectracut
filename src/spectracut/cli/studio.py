@@ -10,6 +10,7 @@ import threading
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -25,6 +26,7 @@ from spectracut.providers.base import (
     select_vision_judge,
 )
 from spectracut.providers.config import config_path
+from spectracut.providers.local.installed import installed_models
 from spectracut.providers.local.runtime import ModelRuntime
 from spectracut.queue.executors.flamenco import FlamencoApi
 from spectracut.spec.brand import BrandKit, load_brand_kit
@@ -45,7 +47,14 @@ from spectracut.studio.departments.style_frame_farm import (
     SceneStyleFrameRenderer,
 )
 from spectracut.studio.estimate import BRIEF_PARAM, breakdown, estimate
-from spectracut.studio.graph import ProductionGraph, RunContext, Runner, RunReport, RunResult
+from spectracut.studio.graph import (
+    ProductionGraph,
+    RevisionNote,
+    RunContext,
+    Runner,
+    RunReport,
+    RunResult,
+)
 from spectracut.studio.node import NodeSpec, Tier
 from spectracut.studio.producer import BudgetCaps, Producer, edge_problems, scheduled
 from spectracut.studio.profiles import available_profiles, load_profile
@@ -171,6 +180,15 @@ def model_host_name(home: Path) -> str | None:
     return gpu_hosts[0].name if len(gpu_hosts) == 1 else None
 
 
+def _note_once(graph: ProductionGraph, node_id: str, text: str) -> None:
+    """Pin the studio's note ``text`` to ``node_id`` unless the node already carries it."""
+    text = text[:4000]
+    if any(n.text == text for n in graph.notes(node_id)):
+        return
+    note = RevisionNote(node_id=node_id, text=text, author="studio", created_at=datetime.now(UTC))
+    graph.add_note(node_id, note)
+
+
 def model_runtime(home: Path) -> ModelRuntimeResult:
     """The model runtime on the model host from setup state, or the problem naming the host.
 
@@ -211,6 +229,7 @@ def model_runtime(home: Path) -> ModelRuntimeResult:
             )
         slot = gpu_hosts[0]
     pool = LeasePool(slot.cpus, slot.mem_gb, slot.gpus)
+    installed = installed_models(home, slot.name)
     if slot.name == socket.gethostname():
         try:
             from spectracut_host.models import (  # type: ignore[import-not-found,unused-ignore]
@@ -219,8 +238,9 @@ def model_runtime(home: Path) -> ModelRuntimeResult:
         except ImportError:
             pass
         else:
-            return ModelRuntime(load_model, pool, host=slot.name), None
-    return ModelRuntime(RemoteLoader(slot.name, slot.profile.os), pool, host=slot.name), None
+            return ModelRuntime(load_model, pool, host=slot.name, installed=installed), None
+    loader = RemoteLoader(slot.name, slot.profile.os)
+    return ModelRuntime(loader, pool, host=slot.name, installed=installed), None
 
 
 model_runtime_factory: Callable[[Path], ModelRuntimeResult] = model_runtime
@@ -400,6 +420,8 @@ def default_runner(production: Production, graph: ProductionGraph) -> Runner:
                     ),
                     preview=animatic_preview_factory(),
                     media_root=production_dir,
+                    concept_note=art_depts.concept_skip_reason(runtime=runtime),
+                    note=lambda node_id, text: _note_once(graph, node_id, text),
                 )
             runner = preproduction
         return runner(ctx)

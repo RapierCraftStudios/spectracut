@@ -194,3 +194,36 @@ def test_e2e_real_sfx_batch_loads_once(tmp_path: Path) -> None:
             out = provider.generate(f"short impact {i}", tmp_path / f"{i}.wav", duration_s=2)
             assert out.stat().st_size > 0
     assert count["n"] == 1
+
+
+# ---- which models setup installed on the model host (#326) --------------------
+
+
+def test_installed_models_reads_setup_state(tmp_path: Path) -> None:
+    from spectracut.providers.local.installed import installed_models
+    from spectracut.setup.model_assets import model_version
+    from spectracut.setup.plan import MODEL_PREFIX, HostState, SetupState, save_state
+
+    assert installed_models(tmp_path, "legion") is None  # no setup state: unknown
+    components = {
+        f"{MODEL_PREFIX}ezaudio-xl": model_version("ezaudio-xl"),
+        f"{MODEL_PREFIX}kokoro-82m": "stale-version",
+        f"{MODEL_PREFIX}no-such-model": "x",
+        "models-deps": "1",
+    }
+    state = SetupState(
+        hosts={"legion": HostState(components=components), "bare": HostState(components={})}
+    )
+    save_state(state, tmp_path)
+    assert installed_models(tmp_path, "legion") == frozenset({"ezaudio-xl"})
+    assert installed_models(tmp_path, "bare") == frozenset()  # setup --skip-models
+    assert installed_models(tmp_path, "elsewhere") is None  # set up by hand
+    (tmp_path / "setup-state.json").write_text("{not json", encoding="utf-8")
+    assert installed_models(tmp_path, "legion") is None
+
+
+def test_model_runtime_keeps_the_installed_set() -> None:
+    pool = LeasePool(8, 32, [GpuCard(name="g", vram_gb=8)])
+    assert ModelRuntime(lambda s: None, pool).installed is None  # type: ignore[arg-type,return-value]
+    runtime = ModelRuntime(lambda s: None, pool, installed=["a", "a"])  # type: ignore[arg-type,return-value]
+    assert runtime.installed == frozenset({"a"})
