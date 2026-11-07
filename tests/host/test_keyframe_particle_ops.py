@@ -401,7 +401,7 @@ def test_keys_a_camera_transform_and_lens(blender: Path, tmp_path: Path) -> None
         {"frame": 1, "location": [0, -5, 1], "lens": 35},
         {"frame": 48, "location": [0, -3, 1], "lens": 85},
     ]
-    steps = [
+    steps: list[tuple[str, dict[str, Any]]] = [
         ("camera.add", {"name": "Cam"}),
         ("object.keyframe", {"object": "Cam", "keys": keys, "easing": "ease_in"}),
     ]
