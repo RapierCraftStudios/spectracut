@@ -190,7 +190,7 @@ def test_departments_are_registered_with_their_stage() -> None:
     assert depts["template-shots"] is sd.TemplateShotsDepartment
     assert depts["shots"] is sd.ShotsDepartment
     assert set(sd.TemplateShotsDepartment.inputs) == {"storyboard", "animatic"}
-    assert set(sd.ShotsDepartment.inputs) == {sd.TEMPLATE_SHOTS}
+    assert set(sd.ShotsDepartment.inputs) == {sd.TEMPLATE_SHOTS, "ui_capture"}
 
 
 def test_shot_nodes_edges_and_params() -> None:

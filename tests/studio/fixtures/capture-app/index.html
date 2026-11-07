@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Fixture App</title><style>
+  body { margin: 0; font: 18px/1.4 sans-serif; background: #ffffff; color: #111111; }
+  header { display: flex; justify-content: space-between; padding: 16px 24px; background: #eef2ff; }
+  main { padding: 24px; }
+  #upgrade { font: 18px sans-serif; padding: 8px 16px; }
+  #result { min-height: 24px; }
+  #list { height: 240px; overflow-y: auto; border: 1px solid #ccc; margin: 0; padding: 0; list-style: none; }
+  #list li { height: 48px; padding: 12px; border-bottom: 1px solid #eee; box-sizing: border-box; }
+</style></head><body>
+  <!-- Static fixture product for the ui_capture tests: no timers, no animations. -->
+  <header><strong>Fixture App</strong>
+    <span><span data-user-name>Demo Person</span> &middot; <span id="email">demo@fixture.test</span></span>
+  </header>
+  <main>
+    <h1>Billing</h1>
+    <button id="upgrade" type="button">Upgrade plan</button>
+    <p id="result"></p>
+    <ul id="list"></ul>
+  </main>
+  <script>
+    const list = document.getElementById("list");
+    for (let i = 1; i <= 30; i += 1) {
+      const li = document.createElement("li");
+      li.textContent = "Invoice " + i + ": 12 credits";
+      list.appendChild(li);
+    }
+    document.getElementById("upgrade").addEventListener("click", () => {
+      document.getElementById("result").textContent = "Plan upgraded";
+    });
+  </script>
+</body></html>

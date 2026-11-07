@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sign in</title><style>
+  body { margin: 0; font: 18px/1.4 sans-serif; background: #ffffff; color: #111111; }
+  form { display: grid; gap: 12px; width: 320px; margin: 80px auto; }
+  input, button { font: 18px sans-serif; padding: 8px; }
+</style></head><body>
+  <form id="login">
+    <input type="email" name="email" placeholder="Email">
+    <input type="password" name="password" placeholder="Password">
+    <button type="submit">Sign in</button>
+  </form>
+  <script>
+    // Never put the credentials in the URL: navigate to the app on submit.
+    document.getElementById("login").addEventListener("submit", (event) => {
+      event.preventDefault();
+      location.href = "index.html";
+    });
+  </script>
+</body></html>

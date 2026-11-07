@@ -53,7 +53,7 @@ from spectracut.studio.departments.discovery import (
     ScreenMapping,
     ScreenStep,
 )
-from spectracut.studio.graph import RunContext, RunResult, Runner
+from spectracut.studio.graph import RunContext, Runner, RunResult
 from spectracut.studio.ledger import Usage
 from spectracut.studio.node import NodeSpec
 
@@ -630,7 +630,9 @@ class CaptureRunner:
             if self.probe(url):
                 return
             if server is not None and server.poll() is not None:
-                raise self._fail(ctx, f"dev server exited {server.returncode} before {url} answered")
+                raise self._fail(
+                    ctx, f"dev server exited {server.returncode} before {url} answered"
+                )
             if self.now() >= deadline:
                 raise self._fail(ctx, f"{url} did not answer within {self.ready_timeout:.0f}s")
             self.sleep(1.0)
@@ -669,8 +671,11 @@ class CaptureRunner:
             shutil.rmtree(out)
         command = self.command or default_capture_command(self.env)
         executor = self.executor_factory(command)
-        job = Job(id=f"{ctx.spec.id}-{out.parent.name}-{out.name}", kind="capture",
-                  payload={"spec": spec, "out_dir": str(out)})
+        job = Job(
+            id=f"{ctx.spec.id}-{out.parent.name}-{out.name}",
+            kind="capture",
+            payload={"spec": spec, "out_dir": str(out)},
+        )
         try:
             result = executor.run(job)
         except Exception as exc:  # noqa: BLE001 - surfaced as the node's failure
