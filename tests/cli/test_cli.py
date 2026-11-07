@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The ``spectracut`` CLI over the studio: studio, render, status, hosts, doctor, serve, make, mcp."""
+"""The spectracut CLI over the studio: studio, render, status, hosts, doctor, serve, make, mcp."""
 
 from __future__ import annotations
 
